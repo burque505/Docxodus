@@ -312,6 +312,14 @@ export interface DocxEditorOptions {
   comments?: boolean;
   /** Author stamped on comments posted from the gutter. Defaults to `revisionAuthor`. */
   commentAuthor?: string;
+  /**
+   * How typing becomes undo steps. `"block"` (the default): a block's typing commits when the
+   * block loses focus or a command runs, so one Undo takes back everything typed in it since.
+   * `"word"`, as Word does: the typing also commits as each word ends (a space typed after it) and
+   * after a pause of a second, so Undo takes it back a word at a time. Each commit is one session
+   * edit, so `"word"` suits an engine that answers in a few milliseconds.
+   */
+  typingUndo?: "block" | "word";
   /** Called after a block edit commits (with the affected anchor). */
   onEdit?: (info: { anchorId: string; unid: string }) => void;
   /**
@@ -1484,6 +1492,8 @@ export class DocxEditor {
   /** The most recently focused editable block — the target for ribbon/format commands. */
   private activeBlock: HTMLElement | null = null;
   private closed = false;
+  /** The pause after which `typingUndo: "word"` commits the typing so far (see onTypingInput). */
+  private typingPause: ReturnType<typeof setTimeout> | null = null;
   /**
    * Re-entrancy guard for node replacement. Replacing a contenteditable block that still holds
    * focus removes the focused node, which fires a SYNCHRONOUS `blur` → re-enters commitBlock; the
@@ -1912,6 +1922,7 @@ export class DocxEditor {
       revisionIdentities: options.revisionIdentities?.map(identity => ({...identity})) ?? null,
       comments: options.comments ?? true,
       commentAuthor: options.commentAuthor ?? options.revisionAuthor ?? "Reviewer",
+      typingUndo: options.typingUndo ?? "block",
       onEdit: options.onEdit,
       onEditFailed: options.onEditFailed,
       onMove: options.onMove,
@@ -2089,6 +2100,7 @@ export class DocxEditor {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    if (this.typingPause !== null) clearTimeout(this.typingPause);
     this.container.removeEventListener("copy", this.onCopy);
     if (typeof document !== "undefined") {
       document.removeEventListener("selectionchange", this.onSelectionChange);
@@ -3103,7 +3115,10 @@ export class DocxEditor {
       this.region?.noteFocus(el);
     });
     el.addEventListener("blur", event => this.commitBlock(el, event.relatedTarget));
-    el.addEventListener("input", (ev) => noteTypedSpace(el, ev));
+    el.addEventListener("input", (ev) => {
+      noteTypedSpace(el, ev);
+      this.onTypingInput(el, ev as InputEvent);
+    });
     el.addEventListener("beforeinput", (ev) => {
       guardChromeDeletion(el, ev as InputEvent);
       deleteAdjacentWhitespaceAtom(el, ev as InputEvent);
@@ -4561,6 +4576,8 @@ export class DocxEditor {
     const focused = !!el && el.isConnected && el.contains(el.ownerDocument.activeElement);
     let caret: { index: number; offset: number } | null = null;
     let story: { which: BandWhich; offset: number } | null = null;
+    if (this.typingPause !== null) clearTimeout(this.typingPause); // (committed below, if anything)
+    this.typingPause = null;
     if (focused && el) {
       if (this.commitTypingStep(el) === false) return; // refused: the block shows the session again
       const offset = caretOffsetIn(el) ?? 0;
@@ -4596,6 +4613,31 @@ export class DocxEditor {
    * Commit the typing in `el` as one step, keeping the DOM (it already shows the typing). Null
    * when nothing was typed (no step, so Redo keeps its steps); false when the engine refused it.
    */
+  /**
+   * `typingUndo: "word"`: commit the typing as a word ends (a space typed after a non-space), and
+   * after a pause of a second, so each becomes its own undo step. Nothing happens while an IME is
+   * composing, nor for anything but plain typing and deleting (paste, drops and line breaks have
+   * their own paths, and Enter splits the block, which commits it).
+   */
+  private onTypingInput(el: HTMLElement, ev: InputEvent): void {
+    if (this.options.typingUndo !== "word" || this.closed) return;
+    if (this.typingPause !== null) clearTimeout(this.typingPause);
+    this.typingPause = null;
+    if (ev.isComposing || !/^(insertText|deleteContent)/.test(ev.inputType)) return;
+    const commitIfStillHere = () => {
+      this.typingPause = null;
+      if (this.closed || this.replacing || !el.isConnected) return;
+      if (el.ownerDocument.activeElement !== el) return; // the blur already committed it
+      this.commitTypingStep(el);
+    };
+    const text = blockContentText(el);
+    const caret = caretOffsetIn(el);
+    const endsWord = ev.inputType === "insertText" && typeof ev.data === "string" && /^[  ]$/.test(ev.data)
+      && caret !== null && caret >= 2 && !/\s/.test(text[caret - 2] ?? " ");
+    if (endsWord) commitIfStillHere();
+    else this.typingPause = setTimeout(commitIfStillHere, 1000);
+  }
+
   private commitTypingStep(el: HTMLElement): boolean | null {
     const fullId = this.anchorIdOf(el);
     if (!fullId) return null;

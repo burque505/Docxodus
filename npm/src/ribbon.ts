@@ -690,6 +690,7 @@ class RibbonSurface implements RibbonEditor {
       revisionIdentities: this.options.revisionIdentities,
       comments: this.options.comments,
       commentAuthor: this.author,
+      typingUndo: this.options.typingUndo,
     });
     this.live?.close();
     candidate.adoptContainer(this.surface);
