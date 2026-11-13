@@ -8,6 +8,8 @@ All notable changes to this project will be documented in this file.
 
 - `DocxEditor` option `typingUndo: "word"` (also on the ribbon) makes Undo take typing back a word at a time, as Word does: the typing commits as each word ends and after a pause of a second, each commit its own undo step. The default, `"block"`, keeps one step per block, committed when the block loses focus or a command runs.
 
+- Comments and replies posted from `DocxEditor` (and the ribbon) carry `w:date`, the time they were made (UTC, to the second, as Word writes it), and `w:initials`: the new `commentInitials` option, or the first letter of each word of the author's name. `setCommentAuthor(author, initials?)` changes who later comments are from, the gutter's included; the ribbon's Author box now calls it as well as `setRevisionAuthor`, so comments follow the box as tracked changes did.
+
 ### Fixed
 
 - Pictures a session inserts (`InsertImage`, `ReplaceImage`, picture content controls) are stored in `/word/media/`, where Word keeps them, instead of `/media/` at the package root. The Open XML SDK gives every image part the target path `../media`, which is right beside a slide in `/ppt/slides/` but climbs out of `/word/` beside `document.xml` or a header. The part is now created through a short-lived chart part in `/word/charts/` and attached to its real owner; undo and redo restore it at the same place.
