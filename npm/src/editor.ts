@@ -4537,20 +4537,91 @@ export class DocxEditor {
     this.swapBlock(block, unid, res.modified?.[0])?.focus();
   }
 
-  /** Undo the last edit (incremental repaint; falls back to a full re-render). */
+  /** Undo the last edit (incremental repaint; falls back to a full re-render). Typing still in the
+   *  focused block is committed first, as a step of its own, so it is what Undo takes back. */
   undo(): void {
-    if (this.closed) return;
-    if (!this.exports.DocxSessionBridge.Undo(this.handle)) return;
-    this.invalidateBlockMoveTargets();
-    this.reconcile();
+    this.stepHistory((handle) => this.exports.DocxSessionBridge.Undo(handle));
   }
 
   /** Redo the last undone edit (incremental repaint; falls back to a full re-render). */
   redo(): void {
+    this.stepHistory((handle) => this.exports.DocxSessionBridge.Redo(handle));
+  }
+
+  /**
+   * Undo or Redo as Word does them from the keyboard. A block commits its typing on blur, so
+   * without this a Ctrl+Z pressed while typing undid an OLDER step, and the typing then committed
+   * on blur as a new edit, which emptied Redo. (A ribbon button worked: the click blurs the block
+   * first.) The caret goes back where it was, so the next Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y still
+   * reaches the editor after the repaint has replaced the focused block.
+   */
+  private stepHistory(step: (handle: number) => boolean): void {
     if (this.closed) return;
-    if (!this.exports.DocxSessionBridge.Redo(this.handle)) return;
+    const el = this.activeBlock;
+    const focused = !!el && el.isConnected && el.contains(el.ownerDocument.activeElement);
+    let caret: { index: number; offset: number } | null = null;
+    let story: { which: BandWhich; offset: number } | null = null;
+    if (focused && el) {
+      if (this.commitTypingStep(el) === false) return; // refused: the block shows the session again
+      const offset = caretOffsetIn(el) ?? 0;
+      const band = this.region?.bandOf(el);
+      if (band) story = { which: this.region!.whichOf(band), offset };
+      else {
+        const index = this.editableList().indexOf(el);
+        if (index >= 0) caret = { index, offset };
+      }
+    }
+    if (!step(this.handle)) return;
     this.invalidateBlockMoveTargets();
     this.reconcile();
+    // The header and footer stories sit outside the body's diff, so repaint them from the session
+    // too (two small renders); otherwise an undone header edit stays on screen.
+    this.region?.refreshAll();
+    let target: HTMLElement | undefined;
+    if (story) {
+      if (!this.region?.focusStory(story.which, null)) return;
+      const active = el?.ownerDocument.activeElement;
+      target = active instanceof HTMLElement && active.isContentEditable ? active : undefined;
+    } else if (caret) {
+      const blocks = this.editableList();
+      target = blocks[Math.min(caret.index, blocks.length - 1)];
+    }
+    if (!target) return;
+    this.activeBlock = target;
+    const offset = (story ?? caret)!.offset;
+    placeCaretAtOffset(target, Math.min(offset, blockContentText(target).length));
+  }
+
+  /**
+   * Commit the typing in `el` as one step, keeping the DOM (it already shows the typing). Null
+   * when nothing was typed (no step, so Redo keeps its steps); false when the engine refused it.
+   */
+  private commitTypingStep(el: HTMLElement): boolean | null {
+    const fullId = this.anchorIdOf(el);
+    if (!fullId) return null;
+    const result = this.commitTextChange(el, fullId);
+    if (!result) return null;
+    if (!result.success) {
+      this.restoreBlock(el, fullId);
+      return false;
+    }
+    el.dataset.committedText = blockContentText(el);
+    // The block keeps its unid, and its render signature still describes the text BEFORE the
+    // typing. Undo gives the session that text back, so the repaint's diff would match the
+    // signature and leave the typing on screen. Without one the block reads as a single-block swap
+    // (which never carries a signature) and is repainted. Should the commit move the block to
+    // another unid, follow it, as the blur commit does. (A band block resolves through
+    // data-hf-anchor and is repainted by its own region.)
+    el.removeAttribute("data-render-sig");
+    const modified = result.modified?.[0];
+    const oldUnid = el.getAttribute("data-anchor");
+    if (modified?.unid && modified.id && oldUnid && modified.unid !== oldUnid && !this.isBandBlock(el)) {
+      el.setAttribute("data-anchor", modified.unid);
+      this.unidToFullId.delete(oldUnid);
+      this.unidToFullId.set(modified.unid, modified.id);
+    }
+    this.options.onEdit?.({ anchorId: modified?.id ?? fullId, unid: modified?.unid ?? oldUnid ?? "" });
+    return true;
   }
 
   // ─── Header/footer region commands (no-ops unless `headerFooter` is on) ───────────────
