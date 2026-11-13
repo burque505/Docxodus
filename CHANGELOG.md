@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Pictures a session inserts (`InsertImage`, `ReplaceImage`, picture content controls) are stored in `/word/media/`, where Word keeps them, instead of `/media/` at the package root. The Open XML SDK gives every image part the target path `../media`, which is right beside a slide in `/ppt/slides/` but climbs out of `/word/` beside `document.xml` or a header. The part is now created through a short-lived chart part in `/word/charts/` and attached to its real owner; undo and redo restore it at the same place.
+
 ## [16.0.0] - 2026-11-13
 
 ### Added

@@ -970,6 +970,44 @@ public class DocxSessionImageTests
         Assert.Equal(-23456, layout.GetProperty("verticalOffsetEmu").GetInt64());
     }
 
+    [Fact]
+    public void IM029_NewImagePartsLiveInWordMedia_ForEveryOwnerAndThroughUndoRedo()
+    {
+        // The SDK's ImagePart target path is "../media", which is right beside a slide in
+        // /ppt/slides/ but resolves to the package root beside /word/document.xml and
+        // /word/header1.xml. Word keeps a document's pictures in /word/media/.
+        using var session = new DocxSession(DocxSessionTests.BuildDS001_SimpleTwoParagraphs());
+        var body = Paragraphs(session);
+        Assert.True(session.SetHeaderText(body[0], HeaderFooterKind.Default, "header").Success);
+        var header = Assert.Single(Paragraphs(session, "hdr1"));
+        Assert.True(session.InsertImage(body[0], 0, Png(2, 3)).Success);
+        Assert.True(session.InsertImage(header, 0, Png(5, 7)).Success);
+
+        void AssertWordMedia(byte[] saved)
+        {
+            var relationships = FlatImageRelationships(saved);
+            Assert.Equal(2, relationships.Length);
+            Assert.All(relationships, relationship =>
+                Assert.StartsWith("/word/media/", relationship.TargetUri, StringComparison.Ordinal));
+            using var zip = new System.IO.Compression.ZipArchive(new MemoryStream(saved));
+            var names = zip.Entries.Select(entry => entry.FullName).ToArray();
+            Assert.DoesNotContain(names, name => name.StartsWith("media/", StringComparison.Ordinal));
+            // The part the SDK is steered through must not survive in the package.
+            Assert.DoesNotContain(names, name => name.StartsWith("word/charts/", StringComparison.Ordinal));
+            using var types = new StreamReader(zip.GetEntry("[Content_Types].xml")!.Open());
+            Assert.DoesNotContain("chart", types.ReadToEnd(), StringComparison.Ordinal);
+            AssertSchemaValid(saved);
+        }
+
+        var inserted = session.Save(true);
+        AssertWordMedia(inserted);
+        Assert.True(session.Undo());
+        Assert.True(session.Redo());
+        var redone = session.Save(true);
+        AssertWordMedia(redone);
+        Assert.Equal(FlatImageRelationships(inserted), FlatImageRelationships(redone));
+    }
+
     private static void AssertSchemaValid(byte[] bytes) =>
         PackageValidation.AssertValid(bytes, DocumentFormat.OpenXml.FileFormatVersions.Office2007, IsRealValidationError);
 
