@@ -331,6 +331,8 @@ class RibbonSurface implements RibbonEditor {
   private density: "full" | "compact" = "full";
   private headerFooter: boolean;
   private author: string;
+  /** The author's initials on comments; "" takes them from the name (see DocxEditorOptions). */
+  private initials: string;
   /** The Markup choice, carried to every document opened; unset, the display follows tracking. */
   private showRevisions: boolean | undefined;
   private destroyed = false;
@@ -359,6 +361,7 @@ class RibbonSurface implements RibbonEditor {
     this.headerFooter = options.headerFooter ?? true;
     this.showRevisions = options.showRevisions;
     this.author = options.commentAuthor ?? options.revisionAuthor ?? "Reviewer";
+    this.initials = options.commentInitials ?? "";
     // false suppresses the overlay; true/omitted takes the defaults; an object rewords it.
     this.loaderOptions =
       options.loader === false
@@ -690,6 +693,7 @@ class RibbonSurface implements RibbonEditor {
       revisionIdentities: this.options.revisionIdentities,
       comments: this.options.comments,
       commentAuthor: this.author,
+      commentInitials: this.initials,
     });
     this.live?.close();
     candidate.adoptContainer(this.surface);
@@ -996,8 +1000,12 @@ class RibbonSurface implements RibbonEditor {
     });
     const author = this.require<HTMLInputElement>("author");
     author.addEventListener("change", () => {
-      this.author = author.value.trim() || "Reviewer";
+      const name = author.value.trim() || "Reviewer";
+      // Initials given for one name do not belong to another: a new name takes its own.
+      if (name !== this.author) this.initials = "";
+      this.author = name;
       this.live?.setRevisionAuthor(this.author);
+      this.live?.setCommentAuthor(this.author, this.initials);
     });
 
     this.wireFileActions();

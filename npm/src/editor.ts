@@ -312,6 +312,11 @@ export interface DocxEditorOptions {
   comments?: boolean;
   /** Author stamped on comments posted from the gutter. Defaults to `revisionAuthor`. */
   commentAuthor?: string;
+  /**
+   * Initials stamped on `commentAuthor`'s comments and replies (`w:initials`, shown in Word's
+   * balloons). Defaults to the first letter of each word of the author's name, as Word makes them.
+   */
+  commentInitials?: string;
   /** Called after a block edit commits (with the affected anchor). */
   onEdit?: (info: { anchorId: string; unid: string }) => void;
   /**
@@ -1265,6 +1270,16 @@ function setSelectionBetween(anchor: DomSelectionPoint, focus: DomSelectionPoint
   }
 }
 
+/** Word's initials for a user name: the first letter of each word ("Ada Lovelace" → "AL"). */
+function nameInitials(name: string): string {
+  return name.trim().split(/\s+/).filter(Boolean).map((word) => Array.from(word)[0]!.toUpperCase()).join("");
+}
+
+/** Now, in the form Word writes `w:date`: UTC to the second ("2026-11-13T20:10:45Z"). */
+function commentTimestamp(): string {
+  return new Date().toISOString().replace(/\.\d+Z$/, "Z");
+}
+
 /** Place the caret at content offset `offset` within `el`, skipping marker text. */
 function placeCaretAtOffset(el: HTMLElement, offset: number): void {
   const sel = typeof window !== "undefined" ? window.getSelection() : null;
@@ -1912,6 +1927,7 @@ export class DocxEditor {
       revisionIdentities: options.revisionIdentities?.map(identity => ({...identity})) ?? null,
       comments: options.comments ?? true,
       commentAuthor: options.commentAuthor ?? options.revisionAuthor ?? "Reviewer",
+      commentInitials: options.commentInitials ?? "",
       onEdit: options.onEdit,
       onEditFailed: options.onEditFailed,
       onMove: options.onMove,
@@ -2945,10 +2961,12 @@ export class DocxEditor {
   /** Build the comment gutter over the container (called once, after the first mount). */
   private createGutter(): void {
     ensureCommentGutterStyles(this.container.ownerDocument);
+    const options = this.options;
     this.gutter = new CommentGutter(
       {
         container: this.container,
-        commentAuthor: this.options.commentAuthor,
+        // Read at each use, so setCommentAuthor reaches the gutter's drafts and replies.
+        get commentAuthor() { return options.commentAuthor; },
         listComments: () => this.listComments(),
         addComment: (markdown, author, target) => this.addComment(markdown, author, target),
         addCommentReply: (parent, markdown, author) => this.addCommentReply(parent, markdown, author),
@@ -4340,7 +4358,8 @@ export class DocxEditor {
     if (!fullId) return null;
     const res = this.parseEdit(
       bridge.AddComment(
-        this.handle, fullId, span ? JSON.stringify(span) : "", author, "", "", markdown,
+        this.handle, fullId, span ? JSON.stringify(span) : "", author, this.commentInitialsFor(author),
+        commentTimestamp(), markdown,
       ),
     );
     if (!res.success) return null;
@@ -4359,7 +4378,8 @@ export class DocxEditor {
     const bridge = this.exports.DocxSessionBridge;
     if (!bridge.AddCommentReply) return false;
     const res = this.parseEdit(
-      bridge.AddCommentReply(this.handle, parentAnchorId, author, "", "", markdown),
+      bridge.AddCommentReply(this.handle, parentAnchorId, author, this.commentInitialsFor(author),
+        commentTimestamp(), markdown),
     );
     if (!res.success) return false;
     // A reply adds a reference run beside the parent's, so the host paragraph re-renders.
@@ -4988,6 +5008,24 @@ export class DocxEditor {
     const was = this.renderTrackedChanges;
     this.options.showRevisions = visible;
     if (was !== visible) this.remount();
+  }
+
+  /**
+   * Change who later comments and replies are from (the gutter's included): `author`, with
+   * `initials` (or, when omitted or empty, the first letter of each word of `author`).
+   * Comments already in the document keep theirs.
+   */
+  setCommentAuthor(author: string, initials = ""): void {
+    this.assertOpen();
+    this.options.commentAuthor = author;
+    this.options.commentInitials = initials;
+  }
+
+  /** The initials for a comment by `author`: the configured ones for the configured author. */
+  private commentInitialsFor(author: string): string {
+    return author === this.options.commentAuthor && this.options.commentInitials
+      ? this.options.commentInitials
+      : nameInitials(author);
   }
 
   setRevisionAuthor(author: string): void {

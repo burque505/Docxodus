@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Comments and replies posted from `DocxEditor` (and the ribbon) carry `w:date`, the time they were made (UTC, to the second, as Word writes it), and `w:initials`: the new `commentInitials` option, or the first letter of each word of the author's name. `setCommentAuthor(author, initials?)` changes who later comments are from, the gutter's included; the ribbon's Author box now calls it as well as `setRevisionAuthor`, so comments follow the box as tracked changes did.
+
 ## [16.0.0] - 2026-11-13
 
 ### Added
