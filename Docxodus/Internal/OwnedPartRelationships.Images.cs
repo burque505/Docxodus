@@ -108,18 +108,40 @@ internal static partial class OwnedPartRelationships
             ImageBinaryFormat.Webp => new PartTypeInfo("image/webp", ".webp"),
             _ => throw new NotSupportedException($"unsupported image format: {format}"),
         };
-        ImagePart created = owner switch
-        {
-            MainDocumentPart part => part.AddImagePart(partType),
-            HeaderPart part => part.AddImagePart(partType),
-            FooterPart part => part.AddImagePart(partType),
-            FootnotesPart part => part.AddImagePart(partType),
-            EndnotesPart part => part.AddImagePart(partType),
-            WordprocessingCommentsPart part => part.AddImagePart(partType),
-            _ => throw new NotSupportedException($"part cannot own a Word image: {owner.Uri}"),
-        };
+        if (owner is not (MainDocumentPart or HeaderPart or FooterPart or FootnotesPart
+            or EndnotesPart or WordprocessingCommentsPart))
+            throw new NotSupportedException($"part cannot own a Word image: {owner.Uri}");
+        var created = AddImagePartInWordMedia(document, owner, partType);
         using (var input = new MemoryStream(bytes, writable: false)) created.FeedData(input);
         return (created, owner.GetIdOfPart(created), false);
+    }
+
+    /// <summary>Add a new, empty image part to <paramref name="owner"/>, stored in the media folder
+    /// beside the main document part (<c>/word/media/</c>), where Word keeps a document's pictures.</summary>
+    /// <remarks>
+    /// The SDK gives every <see cref="ImagePart"/> the target path <c>../media</c>: right for a
+    /// slide in <c>/ppt/slides/</c>, but from <c>/word/document.xml</c> or <c>/word/header1.xml</c>
+    /// it resolves to <c>/media/</c> at the package root, a place Word never writes. The SDK lets a
+    /// caller choose neither the path nor the part URI, so the picture is created under a short-lived
+    /// chart part one folder below the main document part (<c>/word/charts/</c>), whose
+    /// <c>../media</c> is the main part's own media folder, then attached to its real owner (the same
+    /// part, not a copy), and the chart part is deleted again. Should anything fail before the
+    /// picture is attached, deleting the chart part takes the picture with it.
+    /// </remarks>
+    internal static ImagePart AddImagePartInWordMedia(
+        WordprocessingDocument document, OpenXmlPart owner, PartTypeInfo partType)
+    {
+        var main = document.MainDocumentPart
+            ?? throw new InvalidOperationException("the document has no main document part");
+        var steering = main.AddNewPart<ChartPart>();
+        try
+        {
+            return (ImagePart)owner.AddPart(steering.AddImagePart(partType));
+        }
+        finally
+        {
+            main.DeletePart(steering);
+        }
     }
 
     /// <summary>
