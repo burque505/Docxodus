@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The browser editor's session bridge, built for desktop .NET.
+
+       A desktop host that embeds the npm editor in a WebView (WebView2, CefSharp, ...) can run
+       the editing session natively instead of in the browser's WASM runtime: the page swaps
+       `exports.DocxSessionBridge` for a proxy that calls `NativeSessionBridge.Call` in the host.
+       The bridge source is the WASM project's own DocxSessionBridge.cs, compiled as is, against
+       the same WASM_BUILD flavour of Docxodus, so every call returns exactly what the browser
+       bridge returns; only the runtime differs (the desktop JIT is markedly faster than the
+       browser's interpreter/AOT mix on long documents). -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <AssemblyName>DocxodusNativeBridge</AssemblyName>
+    <RootNamespace>DocxodusNative</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DefineConstants>$(DefineConstants);WASM_BUILD</DefineConstants>
+    <!-- StyleCop file headers (as the WASM project), and CA1416: the shared bridge source is
+         marked [SupportedOSPlatform("browser")]; here it is reached only through reflection. -->
+    <NoWarn>$(NoWarn);SA1633;SA1636;CA1416</NoWarn>
+    <IsPackable>false</IsPackable>
+    <!-- A host loads the bridge from one folder: copy the package dependencies (Open XML SDK) beside it. -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../../wasm/DocxodusWasm/DocxSessionBridge.cs" Link="Shared/DocxSessionBridge.cs" />
+    <Compile Include="../../wasm/DocxodusWasm/DocumentConverter.cs" Link="Shared/DocumentConverter.cs" />
+    <Compile Include="../../wasm/DocxodusWasm/JsonContext.cs" Link="Shared/JsonContext.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../Docxodus/Docxodus.csproj" AdditionalProperties="WASM_BUILD=true" />
+  </ItemGroup>
+</Project>
