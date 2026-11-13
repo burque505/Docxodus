@@ -433,9 +433,12 @@ internal static class HtmlConversionOps
         var liveDoc = session.LiveDocument;
         EnsureListAnnotations(liveDoc);
         var targets = new List<XElement>();
+        var scanned = ScanBodyAnchors(session, anchorIds);
         foreach (var anchorId in anchorIds.Distinct(StringComparer.Ordinal))
         {
-            var el = ResolveSessionAnchor(session, anchorId);
+            var el = scanned is not null && scanned.TryGetValue(AnchorUnid(anchorId), out var found)
+                ? found
+                : ResolveSessionAnchor(session, anchorId);
             if (el is not null && (el.Name == W.p || el.Name == W.tbl)) targets.Add(el);
         }
         var rendered = new List<(string FirstUnid, string Html)>();
@@ -544,6 +547,36 @@ internal static class HtmlConversionOps
             }
         }
         return results;
+    }
+
+    /// <summary>
+    /// The body anchors among <paramref name="anchorIds"/> resolved in ONE pass over the main
+    /// document part. Resolving them one at a time with <see cref="ResolveSessionAnchor"/> walks
+    /// the part from its start for each anchor (the unindexed scan, or
+    /// <see cref="AnchorTarget.Resolve"/> once the session has an index), so a windowed mount (issue
+    /// #776) was quadratic in the document's length: each window cost more the further down it
+    /// was, about 2–3 s of a 9,500-paragraph mount natively and far more under WASM. Same answer
+    /// as both paths (the first element in the main part carrying the unid), as
+    /// <see cref="AnchorTarget.ResolveAll"/> does for the index (issue #1389). Unids not found are left
+    /// out, and the caller resolves those as before.
+    /// </summary>
+    private static Dictionary<string, XElement>? ScanBodyAnchors(DocxSession session, IReadOnlyList<string> anchorIds)
+    {
+        var wanted = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var anchorId in anchorIds)
+        {
+            if (!string.IsNullOrWhiteSpace(anchorId) && AnchorScope(anchorId) == "body") wanted.Add(AnchorUnid(anchorId));
+        }
+        if (wanted.Count < 2) return null;
+        var root = session.LiveDocument.MainDocumentPart?.GetXDocument().Root;
+        if (root is null) return null;
+        var found = new Dictionary<string, XElement>(wanted.Count, StringComparer.Ordinal);
+        foreach (var e in root.DescendantsAndSelf())
+        {
+            var unid = (string?)e.Attribute(PtOpenXml.Unid);
+            if (unid is not null && wanted.Contains(unid) && found.TryAdd(unid, e) && found.Count == wanted.Count) break;
+        }
+        return found;
     }
 
     /// <summary>
