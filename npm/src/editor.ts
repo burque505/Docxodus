@@ -1994,7 +1994,12 @@ export class DocxEditor {
       this.editRoot = flow;
     }
 
-    const plan = JSON.parse(this.renderPlanJson()) as RenderPlan & { error?: string };
+    const planJson = this.renderPlanJson();
+    // The session version the plan was read at: if nothing has committed by the end of the
+    // mount, stampPlanState reuses this plan instead of asking the engine for it again (a
+    // second whole-document plan, ~300 ms under WASM on a 9,500-paragraph document).
+    const planVersion = bridge.GetVersion?.(this.handle) ?? null;
+    const plan = JSON.parse(planJson) as RenderPlan & { error?: string };
     if (plan.error) throw new Error(plan.error);
     const units = plan.body;
     const sectionOf = new Map(units.map((u) => [unidOf(u.id), u.section ?? 0]));
@@ -2048,7 +2053,8 @@ export class DocxEditor {
     }
 
     if (attachNow) {
-      this.stampPlanState();
+      const unchanged = planVersion !== null && bridge.GetVersion?.(this.handle) === planVersion;
+      this.stampPlanState(unchanged ? planJson : undefined);
       if (this.region) this.dockBands(flow);
       this.viewport.attach(flow, true);
     } else {
@@ -6010,12 +6016,13 @@ export class DocxEditor {
 
   /** Stamp the DOM state the reconciler diffs against: container signatures on body
    *  tables and `data-note-anchor` + signature on notes-section items. Called after
-   *  every full mount; reconcile stamps its own insertions. */
-  private stampPlanState(): void {
+   *  every full mount; reconcile stamps its own insertions. `planJson`: a render plan the
+   *  caller has already read at the session's current version (the windowed mount's). */
+  private stampPlanState(planJson?: string): void {
     const bridge = this.exports.DocxSessionBridge;
     if (typeof bridge.ListBlocks !== "function") return;
     try {
-      const plan = JSON.parse(this.renderPlanJson()) as RenderPlan & { error?: string };
+      const plan = JSON.parse(planJson ?? this.renderPlanJson()) as RenderPlan & { error?: string };
       if (plan.error) return;
       // Positional pairing: a fresh full mount renders exactly the plan's units in
       // order (verified invariant). On any mismatch, leave unstamped — an unstamped
