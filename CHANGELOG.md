@@ -4,9 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `DocxEditor` option `typingUndo: "word"` (also on the ribbon) makes Undo take typing back a word at a time, as Word does: the typing commits as each word ends and after a pause of a second, each commit its own undo step. The default, `"block"`, keeps one step per block, committed when the block loses focus or a command runs.
+
 ### Fixed
 
 - Pictures a session inserts (`InsertImage`, `ReplaceImage`, picture content controls) are stored in `/word/media/`, where Word keeps them, instead of `/media/` at the package root. The Open XML SDK gives every image part the target path `../media`, which is right beside a slide in `/ppt/slides/` but climbs out of `/word/` beside `document.xml` or a header. The part is now created through a short-lived chart part in `/word/charts/` and attached to its real owner; undo and redo restore it at the same place.
+
+- Undo and Redo from the keyboard in `DocxEditor` behave as the ribbon's buttons do. A block commits its typing when it loses focus, so Ctrl+Z pressed while typing undid an older step and left the typing on screen, and the typing then committed as a new edit that emptied Redo; Ctrl+Shift+Z and Ctrl+Y found nothing to redo. `undo()` and `redo()` now commit the focused block's typing first, as a step of its own, repaint it, and put the caret back where it was, so the next shortcut still reaches the editor. They also repaint the header and footer bands, which the incremental repaint after an undo had left showing an undone header edit.
 
 ## [16.0.0] - 2026-11-13
 

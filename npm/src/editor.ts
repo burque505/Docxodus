@@ -312,6 +312,14 @@ export interface DocxEditorOptions {
   comments?: boolean;
   /** Author stamped on comments posted from the gutter. Defaults to `revisionAuthor`. */
   commentAuthor?: string;
+  /**
+   * How typing becomes undo steps. `"block"` (the default): a block's typing commits when the
+   * block loses focus or a command runs, so one Undo takes back everything typed in it since.
+   * `"word"`, as Word does: the typing also commits as each word ends (a space typed after it) and
+   * after a pause of a second, so Undo takes it back a word at a time. Each commit is one session
+   * edit, so `"word"` suits an engine that answers in a few milliseconds.
+   */
+  typingUndo?: "block" | "word";
   /** Called after a block edit commits (with the affected anchor). */
   onEdit?: (info: { anchorId: string; unid: string }) => void;
   /**
@@ -1484,6 +1492,8 @@ export class DocxEditor {
   /** The most recently focused editable block — the target for ribbon/format commands. */
   private activeBlock: HTMLElement | null = null;
   private closed = false;
+  /** The pause after which `typingUndo: "word"` commits the typing so far (see onTypingInput). */
+  private typingPause: ReturnType<typeof setTimeout> | null = null;
   /**
    * Re-entrancy guard for node replacement. Replacing a contenteditable block that still holds
    * focus removes the focused node, which fires a SYNCHRONOUS `blur` → re-enters commitBlock; the
@@ -1912,6 +1922,7 @@ export class DocxEditor {
       revisionIdentities: options.revisionIdentities?.map(identity => ({...identity})) ?? null,
       comments: options.comments ?? true,
       commentAuthor: options.commentAuthor ?? options.revisionAuthor ?? "Reviewer",
+      typingUndo: options.typingUndo ?? "block",
       onEdit: options.onEdit,
       onEditFailed: options.onEditFailed,
       onMove: options.onMove,
@@ -2095,6 +2106,7 @@ export class DocxEditor {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    if (this.typingPause !== null) clearTimeout(this.typingPause);
     this.container.removeEventListener("copy", this.onCopy);
     if (typeof document !== "undefined") {
       document.removeEventListener("selectionchange", this.onSelectionChange);
@@ -3109,7 +3121,10 @@ export class DocxEditor {
       this.region?.noteFocus(el);
     });
     el.addEventListener("blur", event => this.commitBlock(el, event.relatedTarget));
-    el.addEventListener("input", (ev) => noteTypedSpace(el, ev));
+    el.addEventListener("input", (ev) => {
+      noteTypedSpace(el, ev);
+      this.onTypingInput(el, ev as InputEvent);
+    });
     el.addEventListener("beforeinput", (ev) => {
       guardChromeDeletion(el, ev as InputEvent);
       deleteAdjacentWhitespaceAtom(el, ev as InputEvent);
@@ -4543,20 +4558,118 @@ export class DocxEditor {
     this.swapBlock(block, unid, res.modified?.[0])?.focus();
   }
 
-  /** Undo the last edit (incremental repaint; falls back to a full re-render). */
+  /** Undo the last edit (incremental repaint; falls back to a full re-render). Typing still in the
+   *  focused block is committed first, as a step of its own, so it is what Undo takes back. */
   undo(): void {
-    if (this.closed) return;
-    if (!this.exports.DocxSessionBridge.Undo(this.handle)) return;
-    this.invalidateBlockMoveTargets();
-    this.reconcile();
+    this.stepHistory((handle) => this.exports.DocxSessionBridge.Undo(handle));
   }
 
   /** Redo the last undone edit (incremental repaint; falls back to a full re-render). */
   redo(): void {
+    this.stepHistory((handle) => this.exports.DocxSessionBridge.Redo(handle));
+  }
+
+  /**
+   * Undo or Redo as Word does them from the keyboard. A block commits its typing on blur, so
+   * without this a Ctrl+Z pressed while typing undid an OLDER step, and the typing then committed
+   * on blur as a new edit, which emptied Redo. (A ribbon button worked: the click blurs the block
+   * first.) The caret goes back where it was, so the next Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y still
+   * reaches the editor after the repaint has replaced the focused block.
+   */
+  private stepHistory(step: (handle: number) => boolean): void {
     if (this.closed) return;
-    if (!this.exports.DocxSessionBridge.Redo(this.handle)) return;
+    const el = this.activeBlock;
+    const focused = !!el && el.isConnected && el.contains(el.ownerDocument.activeElement);
+    let caret: { index: number; offset: number } | null = null;
+    let story: { which: BandWhich; offset: number } | null = null;
+    if (this.typingPause !== null) clearTimeout(this.typingPause); // (committed below, if anything)
+    this.typingPause = null;
+    if (focused && el) {
+      if (this.commitTypingStep(el) === false) return; // refused: the block shows the session again
+      const offset = caretOffsetIn(el) ?? 0;
+      const band = this.region?.bandOf(el);
+      if (band) story = { which: this.region!.whichOf(band), offset };
+      else {
+        const index = this.editableList().indexOf(el);
+        if (index >= 0) caret = { index, offset };
+      }
+    }
+    if (!step(this.handle)) return;
     this.invalidateBlockMoveTargets();
     this.reconcile();
+    // The header and footer stories sit outside the body's diff, so repaint them from the session
+    // too (two small renders); otherwise an undone header edit stays on screen.
+    this.region?.refreshAll();
+    let target: HTMLElement | undefined;
+    if (story) {
+      if (!this.region?.focusStory(story.which, null)) return;
+      const active = el?.ownerDocument.activeElement;
+      target = active instanceof HTMLElement && active.isContentEditable ? active : undefined;
+    } else if (caret) {
+      const blocks = this.editableList();
+      target = blocks[Math.min(caret.index, blocks.length - 1)];
+    }
+    if (!target) return;
+    this.activeBlock = target;
+    const offset = (story ?? caret)!.offset;
+    placeCaretAtOffset(target, Math.min(offset, blockContentText(target).length));
+  }
+
+  /**
+   * Commit the typing in `el` as one step, keeping the DOM (it already shows the typing). Null
+   * when nothing was typed (no step, so Redo keeps its steps); false when the engine refused it.
+   */
+  /**
+   * `typingUndo: "word"`: commit the typing as a word ends (a space typed after a non-space), and
+   * after a pause of a second, so each becomes its own undo step. Nothing happens while an IME is
+   * composing, nor for anything but plain typing and deleting (paste, drops and line breaks have
+   * their own paths, and Enter splits the block, which commits it).
+   */
+  private onTypingInput(el: HTMLElement, ev: InputEvent): void {
+    if (this.options.typingUndo !== "word" || this.closed) return;
+    if (this.typingPause !== null) clearTimeout(this.typingPause);
+    this.typingPause = null;
+    if (ev.isComposing || !/^(insertText|deleteContent)/.test(ev.inputType)) return;
+    const commitIfStillHere = () => {
+      this.typingPause = null;
+      if (this.closed || this.replacing || !el.isConnected) return;
+      if (el.ownerDocument.activeElement !== el) return; // the blur already committed it
+      this.commitTypingStep(el);
+    };
+    const text = blockContentText(el);
+    const caret = caretOffsetIn(el);
+    const endsWord = ev.inputType === "insertText" && typeof ev.data === "string" && /^[  ]$/.test(ev.data)
+      && caret !== null && caret >= 2 && !/\s/.test(text[caret - 2] ?? " ");
+    if (endsWord) commitIfStillHere();
+    else this.typingPause = setTimeout(commitIfStillHere, 1000);
+  }
+
+  private commitTypingStep(el: HTMLElement): boolean | null {
+    const fullId = this.anchorIdOf(el);
+    if (!fullId) return null;
+    const result = this.commitTextChange(el, fullId);
+    if (!result) return null;
+    if (!result.success) {
+      this.restoreBlock(el, fullId);
+      return false;
+    }
+    el.dataset.committedText = blockContentText(el);
+    // The block keeps its unid, and its render signature still describes the text BEFORE the
+    // typing. Undo gives the session that text back, so the repaint's diff would match the
+    // signature and leave the typing on screen. Without one the block reads as a single-block swap
+    // (which never carries a signature) and is repainted. Should the commit move the block to
+    // another unid, follow it, as the blur commit does. (A band block resolves through
+    // data-hf-anchor and is repainted by its own region.)
+    el.removeAttribute("data-render-sig");
+    const modified = result.modified?.[0];
+    const oldUnid = el.getAttribute("data-anchor");
+    if (modified?.unid && modified.id && oldUnid && modified.unid !== oldUnid && !this.isBandBlock(el)) {
+      el.setAttribute("data-anchor", modified.unid);
+      this.unidToFullId.delete(oldUnid);
+      this.unidToFullId.set(modified.unid, modified.id);
+    }
+    this.options.onEdit?.({ anchorId: modified?.id ?? fullId, unid: modified?.unid ?? oldUnid ?? "" });
+    return true;
   }
 
   // ─── Header/footer region commands (no-ops unless `headerFooter` is on) ───────────────
