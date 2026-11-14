@@ -169,6 +169,12 @@ export interface RibbonOptions extends DocxEditorOptions {
   fileMenu?: RibbonFileMenuItem[];
   /** One of the host's File menu commands was chosen, by its `id`. */
   onFileMenu?: (id: string) => void;
+  /**
+   * The ribbon's text in another language: each label, menu entry, tooltip and placeholder, keyed
+   * by the English it replaces (`{ "Home": "Inicio", "Bold (Ctrl+B)": "Negrita (Ctrl+N)" }`). Text
+   * without an entry stays English; the document is never touched. `setLabels` changes it later.
+   */
+  labels?: Record<string, string>;
   /** Called after any document opens, with the live editor. */
   onOpen?: (editor: DocxEditor) => void;
   /** Called whenever the status line changes. */
@@ -249,6 +255,8 @@ export interface RibbonEditor {
   markSaved(): void;
   /** The documents the Recent list beside Open shows, most recent first ([] hides the list). Needs `onOpenRecent`. */
   setRecent(entries: RibbonRecentEntry[]): void;
+  /** Put the ribbon's text in another language (see the `labels` option); `{}` brings back the English. */
+  setLabels(labels: Record<string, string>): void;
   /** Replace the host's commands at the foot of the File menu (see the `fileMenu` option). */
   setFileMenu(items: RibbonFileMenuItem[]): void;
   /** Open the File menu (as its tab's click, or Alt+F, does). */
@@ -432,6 +440,10 @@ class RibbonSurface implements RibbonEditor {
   private dirtyCheckQueued = false;
   private recentEntries: RibbonRecentEntry[] = [];
   private fileMenuItems: RibbonFileMenuItem[] = [];
+  // The chrome's text in the host's language (setLabels), and the English each text had.
+  private labels: Record<string, string> = {};
+  private readonly englishText = new WeakMap<Text, { english: string; written: string }>();
+  private readonly englishAttrs = new WeakMap<Element, Record<string, { english: string; written: string }>>();
   private readonly onSelectionChange: () => void;
   private readonly onDocumentMouseDown: (event: MouseEvent) => void;
   private readonly onKeydown: (event: KeyboardEvent) => void;
@@ -483,6 +495,7 @@ class RibbonSurface implements RibbonEditor {
     this.wire();
     this.wireScrollFades();
     this.applyChrome();
+    if (options.labels) this.setLabels(options.labels);
 
     this.loader = this.createLoaderController();
     if (this.loaderOptions) this.loader.show();
@@ -843,6 +856,49 @@ class RibbonSurface implements RibbonEditor {
     select.replaceChildren(select.options[0], ...options);
     select.value = "";
     select.hidden = !this.options.onOpenRecent || options.length === 0;
+  }
+
+  setLabels(labels: Record<string, string>): void {
+    this.labels = { ...labels };
+    const root = this.element;
+    const doc = root.ownerDocument;
+    const surface = this.surface;
+    // A text's English is what it said when first seen, unless the ribbon has written new text
+    // there since (the document's name, a count): then that text is the English.
+    const english = (now: string, seen: { english: string; written: string } | undefined) =>
+      seen && seen.written === now ? seen.english : now;
+    const translate = (text: string) => {
+      const key = text.trim();
+      const to = key ? this.labels[key] : undefined;
+      return to ? text.replace(key, to) : text;
+    };
+    // The document is never touched: the walk skips the editing surface.
+    const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, {
+      acceptNode: (node) => node === surface ? NodeFilter.FILTER_REJECT
+        : node.nodeName === "STYLE" || node.nodeName === "SCRIPT" ? NodeFilter.FILTER_REJECT
+        : NodeFilter.FILTER_ACCEPT,
+    });
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const text = node as Text;
+        const from = english(text.data, this.englishText.get(text));
+        const to = translate(from);
+        this.englishText.set(text, { english: from, written: to });
+        if (text.data !== to) text.data = to;
+        continue;
+      }
+      const el = node as Element;
+      for (const attr of ["title", "aria-label", "placeholder"]) {
+        const now = el.getAttribute(attr);
+        if (now === null) continue;
+        const seen = this.englishAttrs.get(el) ?? {};
+        const from = english(now, seen[attr]);
+        const to = translate(from);
+        seen[attr] = { english: from, written: to };
+        this.englishAttrs.set(el, seen);
+        if (now !== to) el.setAttribute(attr, to);
+      }
+    }
   }
 
   setFileMenu(items: RibbonFileMenuItem[]): void {
