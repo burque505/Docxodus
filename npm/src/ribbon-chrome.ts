@@ -1456,7 +1456,7 @@ export const RIBBON_HTML = `
           <option value="right">Right</option>
         </select>
       </label>
-      <label class="dxr-toggle"><input data-dxr="gridborderless" type="checkbox" checked /> Borderless</label>
+      <label class="dxr-toggle"><input data-dxr="gridborderless" type="checkbox" /> Borderless</label>
     </span>
   </div>
 </div>
