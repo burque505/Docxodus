@@ -918,6 +918,7 @@ export const RIBBON_HTML = `
     <div class="dxr-quick" data-dxr-files>
       <button type="button" data-dxr="new" title="Start a new blank document">New</button>
       <label class="dxr-btn" tabindex="0">Open<input data-dxr="file" type="file" accept=".docx" hidden /></label>
+      <select data-dxr="recent" title="Open a recent document" aria-label="Recent documents" hidden><option value="">Recent&#8230;</option></select>
       <button type="button" data-dxr="save" disabled>Save</button>
     </div>
     <button type="button" class="dxr-btn" data-dxr="history" title="Browse and save document versions" aria-haspopup="dialog">Version history</button>

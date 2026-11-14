@@ -626,9 +626,23 @@ behind it.
 size its iframe wide enough to trip the roomy layout); `"auto"` is the default.
 
 Options the host controls: `chrome`, `compactBreakpoint`, `rail`, `fileActions`, `hint`, `loader`,
-`documentName`, `idPrefix`, `onSave`, `onOpen`, `onStatus`, `onCommand`, plus every
-`DocxEditorOptions` field (`comments`, `commentAuthor`, `headerFooter`, `trackedChanges`,
-`showRevisions`, …).
+`documentName`, `idPrefix`, `onSave`, `onOpen`, `onStatus`, `onCommand`, `onDirtyChange`,
+`onNewRequest`, `onOpenRequest`, `onOpenRecent`, plus every `DocxEditorOptions` field (`comments`,
+`commentAuthor`, `headerFooter`, `trackedChanges`, `showRevisions`, …).
+
+**A host that keeps files itself** (a desktop program, say) gets what it needs to save to a path,
+mark the title of a changed document and ask before discarding one:
+
+- `isDirty` is true once the document has changed since it was opened or last saved: the session
+  moved to another version, or the user typed in a block (typing counts before the editor commits
+  it, so the document reads as changed from the first key). `onDirtyChange(dirty)` reports each
+  turn. The default Save counts as saving; with `onSave` the host calls `markSaved()` once it has
+  stored the bytes, so a cancelled or failed save leaves the document changed.
+- `onNewRequest` and `onOpenRequest` replace New and the browser's file picker, so the host can ask
+  to save first, and open a file through its own dialog (which knows the file's path).
+- `setRecent(entries)` fills a Recent list beside Open, shown only with `onOpenRecent`, which
+  receives the entry picked.
+- Ctrl+S saves and Ctrl+O opens, as in Word, while the file actions are shown.
 
 ---
 
