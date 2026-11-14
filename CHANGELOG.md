@@ -10,6 +10,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- `DocxEditor.save()` now includes the typing still in the focused block. A block commits its typing when it loses focus, so a save made while the caret stayed in it (Ctrl+S, a host's save on close, an autosave) left out what was typed last. `save()` commits that typing first, as an undo step of its own, and leaves the caret where it was; the new `commitTyping()` does the same on its own.
 - Undo and Redo from the keyboard in `DocxEditor` behave as the ribbon's buttons do. A block commits its typing when it loses focus, so Ctrl+Z pressed while typing undid an older step and left the typing on screen, and the typing then committed as a new edit that emptied Redo; Ctrl+Shift+Z and Ctrl+Y found nothing to redo. `undo()` and `redo()` now commit the focused block's typing first, as a step of its own, repaint it, and put the caret back where it was, so the next shortcut still reaches the editor. They also repaint the header and footer bands, which the incremental repaint after an undo had left showing an undone header edit.
 
 ## [16.0.0] - 2026-11-13

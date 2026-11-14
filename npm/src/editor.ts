@@ -2083,10 +2083,27 @@ export class DocxEditor {
     return DocxEditor.open(container, exports.DocxSessionBridge.CreateBlankDocx(), exports, options);
   }
 
-  /** Lossless DOCX bytes reflecting all edits. */
+  /** Lossless DOCX bytes reflecting all edits, the typing still in the focused block included (`commitTyping`). */
   save(): Uint8Array {
     this.assertOpen();
+    this.commitTyping();
     return this.exports.DocxSessionBridge.Save(this.handle);
+  }
+
+  /**
+   * Commit the typing still in the focused block, as an undo step of its own, keeping the caret
+   * where it is. A block commits its typing when it loses focus (with `typingUndo: "word"` also
+   * as a word ends or typing pauses), so a save made while the caret stays in the block (Ctrl+S,
+   * a host's save on close or an autosave) would otherwise leave out what was typed last.
+   * Nothing happens when no block has focus or nothing was typed.
+   */
+  commitTyping(): void {
+    if (this.closed) return;
+    if (this.typingPause !== null) clearTimeout(this.typingPause);
+    this.typingPause = null;
+    const el = this.activeBlock;
+    if (!el || !el.isConnected || !el.contains(el.ownerDocument.activeElement)) return;
+    this.commitTypingStep(el);
   }
 
   /** Monotonic committed document version, when supported by the loaded engine. */
