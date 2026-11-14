@@ -131,14 +131,48 @@ export interface RibbonOptions extends DocxEditorOptions {
    * so a second ribbon never collides with the first.
    */
   idPrefix?: string;
-  /** Replace the default Save behaviour (download the bytes). */
+  /**
+   * Replace the default Save behaviour (download the bytes). The document stays changed
+   * (`isDirty`) until the host calls `markSaved()`, once it has stored the bytes: a host whose
+   * save can be cancelled or fail must not lose the changed state.
+   */
   onSave?: (bytes: Uint8Array, name: string) => void;
+  /**
+   * Called when the document turns changed, or back to unchanged (it was saved, or another
+   * document opened). See `isDirty`.
+   */
+  onDirtyChange?: (dirty: boolean) => void;
+  /**
+   * Replace New's default (open a blank document at once). For a host that asks to save the
+   * changed document first; it opens the blank one itself (`openBlank`).
+   */
+  onNewRequest?: () => void;
+  /**
+   * Replace Open's file picker (and Ctrl+O's). For a host with a picker of its own, such as a
+   * desktop host that needs the file's path to save it back; it opens the bytes itself (`open`).
+   */
+  onOpenRequest?: () => void;
+  /**
+   * Open a document from the Recent list beside Open, which shows the entries given to
+   * `setRecent`. Without this option there is no Recent list.
+   */
+  onOpenRecent?: (entry: RibbonRecentEntry) => void;
   /** Called after any document opens, with the live editor. */
   onOpen?: (editor: DocxEditor) => void;
   /** Called whenever the status line changes. */
   onStatus?: (text: string) => void;
   /** Called after every ribbon command, with its label and measured duration. */
   onCommand?: (label: string, ms: number) => void;
+}
+
+/** One document in the Recent list beside Open (`setRecent`, `onOpenRecent`). */
+export interface RibbonRecentEntry {
+  /** The host's key for it, such as a file path. Handed back to `onOpenRecent`. */
+  id: string;
+  /** What the list shows, such as the file name. */
+  name: string;
+  /** The entry's tooltip, such as the full path. */
+  title?: string;
 }
 
 /** Drives the loading overlay. Safe to call when the loader is disabled — every method no-ops. */
@@ -177,6 +211,16 @@ export interface RibbonEditor {
   save(): Uint8Array | null;
   /** Save and hand the bytes to `onSave` (default: browser download). */
   download(name?: string): void;
+  /**
+   * True when the document has changed since it was opened or last marked saved: the session
+   * moved to another version, or the user typed in it (typing the editor has not committed yet
+   * counts too). False when nothing is open.
+   */
+  readonly isDirty: boolean;
+  /** The document as it is now counts as saved. The default Save does this itself; a host with `onSave` calls it. */
+  markSaved(): void;
+  /** The documents the Recent list beside Open shows, most recent first ([] hides the list). Needs `onOpenRecent`. */
+  setRecent(entries: RibbonRecentEntry[]): void;
   /** Set the status line. */
   setStatus(text: string): void;
   /** Activate a ribbon tab by name ("home" | "insert" | "layout" | "references" | "review" | "view" | "table" | "headerfooter"). */
@@ -225,7 +269,7 @@ const DEFAULT_FEATURES: RibbonLoaderFeature[] = [
 
 /** Every `data-dxr` name the template defines — the id-collision probe set. */
 const CONTROL_NAMES = [
-  "docname", "new", "file", "save", "undo", "redo", "status", "ribbon",
+  "docname", "new", "file", "recent", "save", "undo", "redo", "status", "ribbon",
   "fontsize", "fontsizes", "fontfamily", "fontgrow", "fontshrink", "clearformat", "smallcaps",
   "fontcolorbtn", "fontcolorbar", "fontcolor", "highlight", "listmenu", "linespacing",
   "style", "delblock", "findtoggle", "replacetoggle",
@@ -345,9 +389,19 @@ class RibbonSurface implements RibbonEditor {
   private statsTimer: ReturnType<typeof setTimeout> | null = null;
   private findMatches: EditorMatch[] = [];
   private findIndex = -1;
+  // Changed state (isDirty): the session version and the count of typing events at the last
+  // open or markSaved. Typing counts before the editor commits it (on a pause, a word or blur),
+  // so the document reads as changed from the first key.
+  private savedVersion: number | null = null;
+  private typed = 0;
+  private savedTyped = 0;
+  private dirty = false;
+  private dirtyCheckQueued = false;
+  private recentEntries: RibbonRecentEntry[] = [];
   private readonly onSelectionChange: () => void;
   private readonly onDocumentMouseDown: (event: MouseEvent) => void;
   private readonly onKeydown: (event: KeyboardEvent) => void;
+  private readonly onInput: (event: Event) => void;
 
   constructor(container: HTMLElement, options: RibbonOptions) {
     this.options = options;
@@ -412,6 +466,15 @@ class RibbonSurface implements RibbonEditor {
     doc.addEventListener("mousedown", this.onDocumentMouseDown);
     this.onKeydown = (event) => this.handleShortcut(event);
     root.addEventListener("keydown", this.onKeydown);
+    // Typing in the document marks it changed at once, before the editor commits it (isDirty).
+    // Text boxes of the chrome and the comment gutter are not contenteditable, so they don't count.
+    this.onInput = (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement) || !target.isContentEditable || !this.surface.contains(target)) return;
+      this.typed++;
+      this.scheduleDirtyCheck();
+    };
+    root.addEventListener("input", this.onInput);
 
     if (this.chromeMode === "auto" && typeof ResizeObserver !== "undefined") {
       this.resizeObserver = new ResizeObserver(() => this.applyChrome());
@@ -675,12 +738,13 @@ class RibbonSurface implements RibbonEditor {
       fitToWidth: this.options.fitToWidth,
       onEdit: (info) => {
         this.history?.edited();
+        this.scheduleDirtyCheck();
         this.options.onEdit?.(info);
         this.scheduleStats();
       },
-      onMove: info => { this.history?.edited(); this.options.onMove?.(info); },
+      onMove: info => { this.history?.edited(); this.scheduleDirtyCheck(); this.options.onMove?.(info); },
       onStoryChange: (which) => this.onStoryChange(which),
-      onCommentsChange: (info) => this.onCommentsChange(info),
+      onCommentsChange: (info) => { this.scheduleDirtyCheck(); this.onCommentsChange(info); },
       paginated,
       headerFooter: this.headerFooter,
       blockDrag: this.options.blockDrag ?? true,
@@ -699,6 +763,7 @@ class RibbonSurface implements RibbonEditor {
     this.require('docname').textContent = this.documentName;
     this.closeFindBar();
     this.history?.documentOpened(this.documentName);
+    this.markSaved(); // a document just opened is unchanged
     const saveButton = this.control<HTMLButtonElement>("save");
     if (saveButton) saveButton.disabled = false;
     this.require("ribbon").setAttribute("aria-disabled", "false");
@@ -717,6 +782,62 @@ class RibbonSurface implements RibbonEditor {
     return this.live;
   }
 
+  get isDirty(): boolean {
+    this.checkDirty();
+    return this.dirty;
+  }
+
+  markSaved(): void {
+    this.savedVersion = this.sessionVersion();
+    this.savedTyped = this.typed;
+    this.checkDirty();
+  }
+
+  setRecent(entries: RibbonRecentEntry[]): void {
+    this.recentEntries = entries.slice();
+    const select = this.control<HTMLSelectElement>("recent");
+    if (!select) return;
+    const doc = select.ownerDocument;
+    const options = this.recentEntries.map((entry, i) => {
+      const option = doc.createElement("option");
+      option.value = String(i);
+      option.textContent = entry.name;
+      if (entry.title) option.title = entry.title;
+      return option;
+    });
+    select.replaceChildren(select.options[0], ...options);
+    select.value = "";
+    select.hidden = !this.options.onOpenRecent || options.length === 0;
+  }
+
+  /** The session's committed version, or null when nothing is open or the engine can't tell. */
+  private sessionVersion(): number | null {
+    try {
+      return this.live?.version ?? null;
+    } catch {
+      return null; // the session is closed
+    }
+  }
+
+  /** Recompute `isDirty` after whatever may have changed the document, and report a change of it. */
+  private checkDirty(): void {
+    if (this.destroyed) return;
+    const dirty = !!this.live && (this.typed !== this.savedTyped || this.sessionVersion() !== this.savedVersion);
+    if (dirty === this.dirty) return;
+    this.dirty = dirty;
+    this.options.onDirtyChange?.(dirty);
+  }
+
+  /** One check after the current task: a command, a commit and its onEdit come as one change. */
+  private scheduleDirtyCheck(): void {
+    if (this.dirtyCheckQueued) return;
+    this.dirtyCheckQueued = true;
+    queueMicrotask(() => {
+      this.dirtyCheckQueued = false;
+      this.checkDirty();
+    });
+  }
+
   openBlank(name = "untitled.docx"): DocxEditor {
     if (!this.exports) throw new Error("Docxodus ribbon: WASM exports are not set yet");
     return this.open(this.exports.DocxSessionBridge.CreateBlankDocx(), name);
@@ -731,9 +852,10 @@ class RibbonSurface implements RibbonEditor {
     if (!bytes) return;
     const filename = name ?? this.documentName ?? "edited.docx";
     if (this.options.onSave) {
-      this.options.onSave(bytes, filename);
+      this.options.onSave(bytes, filename); // the host calls markSaved() once the bytes are stored
       return;
     }
+    this.markSaved();
     const url = URL.createObjectURL(
       new Blob([bytes as BlobPart], {
         type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -755,6 +877,7 @@ class RibbonSurface implements RibbonEditor {
     doc.removeEventListener("selectionchange", this.onSelectionChange);
     doc.removeEventListener("mousedown", this.onDocumentMouseDown);
     this.element.removeEventListener("keydown", this.onKeydown);
+    this.element.removeEventListener("input", this.onInput);
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
     this.stripObserver?.disconnect();
@@ -791,6 +914,10 @@ class RibbonSurface implements RibbonEditor {
       if (el) el.textContent = `${label} ${ms >= 1000 ? `${(ms / 1000).toFixed(2)} s` : `${Math.round(ms)} ms`}`;
       this.options.onCommand?.(label, ms);
       this.history?.edited();
+      // An engine that has no session version can't say whether the command changed anything:
+      // count it as a change, so the document is never taken for saved when it may not be.
+      if (this.live && this.sessionVersion() === null) this.typed++;
+      this.scheduleDirtyCheck();
       this.refreshRailCounts();
       this.refreshRailAnchor();
       this.scheduleStats();
@@ -1010,6 +1137,12 @@ class RibbonSurface implements RibbonEditor {
     this.wireViewToggles();
   }
 
+  /** Open a document: the host's picker (onOpenRequest), otherwise the browser's. */
+  private requestOpen(): void {
+    if (this.options.onOpenRequest) { this.options.onOpenRequest(); return; }
+    this.control<HTMLInputElement>("file")?.click();
+  }
+
   /** A `<select>` that acts on change and snaps back to its placeholder. */
   private wireSelect(name: string, label: string, apply: (value: string) => void): void {
     const select = this.require<HTMLSelectElement>(name);
@@ -1033,11 +1166,32 @@ class RibbonSurface implements RibbonEditor {
       // Reset so re-picking the same file fires `change` again.
       file.value = "";
     });
+    // Open is a label around the hidden file input: a click on it opens the browser's picker,
+    // unless the host has its own (onOpenRequest). The label is focusable, so Enter and Space
+    // work it too.
+    const openLabel = file?.closest("label");
+    openLabel?.addEventListener("click", (event) => {
+      if (!this.options.onOpenRequest) return;
+      event.preventDefault();
+      this.options.onOpenRequest();
+    });
+    openLabel?.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      this.requestOpen();
+    });
     this.control("new")?.addEventListener("click", () => {
+      if (this.options.onNewRequest) { this.options.onNewRequest(); return; }
       if (this.history) { void this.history.newDocument(); return; }
       if (this.exports) this.openBlank("untitled.docx");
     });
     this.control("save")?.addEventListener("click", () => this.download());
+    const recent = this.control<HTMLSelectElement>("recent");
+    recent?.addEventListener("change", () => {
+      const entry = recent.value === "" ? undefined : this.recentEntries[Number(recent.value)];
+      recent.value = ""; // back to the placeholder, so the same entry can be picked again
+      if (entry) this.options.onOpenRecent?.(entry);
+    });
 
     const picture = this.control<HTMLInputElement>("picturefile");
     picture?.addEventListener("change", async () => {
@@ -1046,7 +1200,7 @@ class RibbonSurface implements RibbonEditor {
       if (!chosen || !this.live) return;
       const started = performance.now();
       const ok = await this.live.insertImageFile(chosen, { altText: chosen.name });
-      if (ok) this.history?.edited();
+      if (ok) { this.history?.edited(); this.scheduleDirtyCheck(); }
       const ms = performance.now() - started;
       const el = this.control("railOp");
       if (el) el.textContent = `picture ${Math.round(ms)} ms`;
@@ -1512,6 +1666,12 @@ class RibbonSurface implements RibbonEditor {
       if (key === "m" && inDocument) { event.preventDefault(); this.beginComment(); }
       return;
     }
+    // The editor has already acted on its own chords (Undo, Redo, Bold, ...) by now: the key
+    // reaches the block before it bubbles up here.
+    this.scheduleDirtyCheck();
+    // Save and Open, as in Word, while the surface shows them (fileActions).
+    if (!event.shiftKey && key === "s" && this.control("save")) { event.preventDefault(); this.download(); return; }
+    if (!event.shiftKey && key === "o" && this.control("file")) { event.preventDefault(); this.requestOpen(); return; }
     if (key === "f") { event.preventDefault(); this.openFindBar(false); return; }
     if (key === "h") { event.preventDefault(); this.openFindBar(true); return; }
     if (!inDocument) return;
