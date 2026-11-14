@@ -2112,6 +2112,73 @@ public class DocxSessionTests
         Assert.Contains("· Second bullet", text, StringComparison.Ordinal);  // sibling stays level 0
     }
 
+    [Theory]
+    [InlineData(ListFormat.Decimal, "1.", "a.", "i.", "2.")]
+    [InlineData(ListFormat.DecimalParenthesis, "(1)", "(a)", "(i)", "(2)")]
+    [InlineData(ListFormat.UpperRoman, "I.", "A.", "1.", "II.")]
+    public void DS054c_SetListLevel_NumberedList_NestedLevelsStepThroughWordsFormats(
+        ListFormat format, string first, string nested, string nestedTwice, string next)
+    {
+        // A numbered list the editor made: a nested item reads "a." under "1.", as in Word, not
+        // "1." again in the same format as the level above it.
+        var s = new DocxSession(BuildDS001_SimpleTwoParagraphs());
+        using var _ = s;
+        var ps = s.Project().AnchorIndex.Keys.Where(k => k.StartsWith("p:")).ToList();
+        var fourth = s.InsertParagraph(ps[1], Position.After, "Fourth.").Created[0].Id;
+        var third = s.InsertParagraph(ps[1], Position.After, "Third.").Created[0].Id;
+        var r = s.ApplyListFormatRange(ps[0], fourth, format);
+        Assert.True(r.Success, r.Error?.Message);
+        var lis = r.Modified.Select(a => a.Id).ToList();
+        Assert.Equal(4, lis.Count);
+
+        Assert.True(s.SetListLevel(lis[1], +1).Success);
+        Assert.True(s.SetListLevel(lis[2], +1).Success);
+        Assert.True(s.SetListLevel(lis[2], +1).Success);
+
+        Assert.Equal(new[] { first, nested, nestedTwice, next },
+            lis.Select(a => s.GetListMembership(a)!.GeneratedLabel).ToArray());
+    }
+
+    [Fact]
+    public void DS054d_SetListLevel_SingleLevelNumbering_SynthesizedLevelStepsFormat()
+    {
+        // A list defined only at level 0 (decimal, as python-docx's "List Number"): the level the
+        // nest synthesizes takes the next format in Word's cycle, "a.", not "1." again.
+        using var ms = new MemoryStream();
+        using (var wDoc = WordprocessingDocument.Create(ms, WordprocessingDocumentType.Document))
+        {
+            var main = wDoc.AddMainDocumentPart();
+            main.Document = new Document();
+            var body = new Body();
+            main.Document.Body = body;
+            main.AddNewPart<StyleDefinitionsPart>().Styles = BuildHeadingStyles();
+            var num = new DocumentFormat.OpenXml.Wordprocessing.Numbering();
+            var abs = new AbstractNum(new MultiLevelType { Val = MultiLevelValues.SingleLevel }) { AbstractNumberId = 0 };
+            abs.Append(new Level(
+                new StartNumberingValue { Val = 1 },
+                new NumberingFormat { Val = NumberFormatValues.Decimal },
+                new LevelText { Val = "%1." })
+            { LevelIndex = 0 });
+            num.Append(abs);
+            num.Append(new NumberingInstance(new AbstractNumId { Val = 0 }) { NumberID = 1 });
+            main.AddNewPart<NumberingDefinitionsPart>().Numbering = num;
+            foreach (var text in new[] { "First", "Second", "Third" })
+                body.Append(new Paragraph(
+                    new ParagraphProperties(new NumberingProperties(
+                        new NumberingLevelReference { Val = 0 }, new NumberingId { Val = 1 })),
+                    new Run(new Text(text))));
+            main.Document.Save();
+        }
+
+        using var s = new DocxSession(ms.ToArray());
+        var lis = s.Project().AnchorIndex.Keys.Where(k => k.StartsWith("li:")).ToList();
+        Assert.Equal(3, lis.Count);
+        Assert.True(s.SetListLevel(lis[1], +1).Success);
+
+        Assert.Equal(new[] { "1.", "a.", "2." },
+            lis.Select(a => s.GetListMembership(a)!.GeneratedLabel).ToArray());
+    }
+
     [Fact]
     public void DS055_RemoveListMembership()
     {
