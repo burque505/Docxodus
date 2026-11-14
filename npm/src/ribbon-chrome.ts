@@ -216,6 +216,41 @@ export const RIBBON_CSS = `
 .dxr-tab[data-contextual] { color: var(--dxr-accent); }
 .dxr-tab[data-contextual]::before { content: "\\2022"; margin-right: 6px; opacity: .6; }
 .dxr-tab[hidden] { display: none; }
+/* The File tab opens a menu, not a panel: an accent chip at the head of the row, as in Word. */
+.dxr-tab.dxr-filetab {
+  margin: 3px 8px 3px 0;
+  padding: 3px 14px;
+  border-radius: 6px;
+  background: var(--dxr-accent);
+  color: #fff;
+}
+.dxr-tab.dxr-filetab:hover, .dxr-tab.dxr-filetab[aria-expanded="true"] { background: var(--dxr-accent-hover); color: #fff; }
+
+/* ── File menu ────────────────────────────────────────────────────────────── */
+.dxr-filemenu { min-width: 270px; max-width: 420px; padding: 6px; }
+.dxr-filemenu [hidden] { display: none !important; }
+.dxr-filemenu button {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 24px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 7px;
+  background: none;
+  color: var(--dxr-ink);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.dxr-filemenu button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dxr-filemenu button:hover:not(:disabled), .dxr-filemenu button:focus-visible { background: var(--dxr-chrome-sunk); outline: none; }
+.dxr-filemenu button:disabled { color: var(--dxr-muted); cursor: default; }
+.dxr-filemenu kbd { flex: none; font: inherit; font-size: 11.5px; color: var(--dxr-muted); }
+.dxr-filesep { margin: 5px 4px; border-top: 1px solid var(--dxr-rule); }
+.dxr-filehead { padding: 6px 10px 2px; color: var(--dxr-muted); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
 
 /* ── Ribbon panels ────────────────────────────────────────────────────────── */
 .dxr-ribbon { background: var(--dxr-chrome-sunk); border-top: 1px solid var(--dxr-rule); }
@@ -931,6 +966,7 @@ export const RIBBON_HTML = `
   </div>
 
   <div class="dxr-tabs" role="tablist">
+    <button type="button" class="dxr-tab dxr-filetab" data-dxr="filebutton" aria-haspopup="menu" aria-expanded="false" title="File (Alt+F)">File</button>
     <button type="button" class="dxr-tab" role="tab" data-tab="home" aria-selected="true">Home</button>
     <button type="button" class="dxr-tab" role="tab" data-tab="insert" aria-selected="false">Insert</button>
     <button type="button" class="dxr-tab" role="tab" data-tab="layout" aria-selected="false">Layout</button>
@@ -1441,6 +1477,21 @@ export const RIBBON_HTML = `
       <button type="button" data-dxr="zoomin" title="Zoom in" aria-label="Zoom in">+</button>
     </span>
   </span>
+</div>
+
+<!-- File menu, anchored to the File tab: the ribbon's file commands, the host's recent documents
+     (setRecent) and the host's own commands (fileMenu). -->
+<div class="dxr-pop dxr-filemenu" data-dxr="filemenu" role="menu" aria-label="File">
+  <button type="button" role="menuitem" data-file="new"><span>New</span><kbd aria-hidden="true"></kbd></button>
+  <button type="button" role="menuitem" data-file="open" aria-keyshortcuts="Control+O"><span>Open&#8230;</span><kbd aria-hidden="true">Ctrl+O</kbd></button>
+  <button type="button" role="menuitem" data-file="save" aria-keyshortcuts="Control+S"><span>Save</span><kbd aria-hidden="true">Ctrl+S</kbd></button>
+  <button type="button" role="menuitem" data-file="saveas" hidden><span>Save As&#8230;</span><kbd aria-hidden="true"></kbd></button>
+  <div data-dxr="filerecent" hidden>
+    <div class="dxr-filesep"></div>
+    <div class="dxr-filehead">Recent</div>
+    <div data-dxr="filerecentitems"></div>
+  </div>
+  <div data-dxr="filehostitems"></div>
 </div>
 
 <!-- Table size picker, anchored to the Insert tab's Table button. -->
