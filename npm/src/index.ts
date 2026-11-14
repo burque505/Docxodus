@@ -23,6 +23,8 @@ export { mountRibbon } from "./ribbon.js";
 export type {
   RibbonEditor,
   RibbonOptions,
+  RibbonRecentEntry,
+  RibbonFileMenuItem,
   RibbonHistoryOptions,
   RibbonHistoryBinding,
   RibbonChromeMode,

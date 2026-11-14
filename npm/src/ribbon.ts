@@ -157,6 +157,18 @@ export interface RibbonOptions extends DocxEditorOptions {
    * `setRecent`. Without this option there is no Recent list.
    */
   onOpenRecent?: (entry: RibbonRecentEntry) => void;
+  /**
+   * Save As in the File menu: the host asks where and saves there. Without this option the File
+   * menu has no Save As (the default Save downloads, and a browser asks where itself).
+   */
+  onSaveAsRequest?: () => void;
+  /**
+   * The host's own commands at the foot of the File menu (Print, Settings, Close, ...), after the
+   * ribbon's New, Open, Save, Save As and recent documents. `setFileMenu` replaces them later.
+   */
+  fileMenu?: RibbonFileMenuItem[];
+  /** One of the host's File menu commands was chosen, by its `id`. */
+  onFileMenu?: (id: string) => void;
   /** Called after any document opens, with the live editor. */
   onOpen?: (editor: DocxEditor) => void;
   /** Called whenever the status line changes. */
@@ -173,6 +185,22 @@ export interface RibbonRecentEntry {
   name: string;
   /** The entry's tooltip, such as the full path. */
   title?: string;
+}
+
+/** One of the host's commands in the File menu (`fileMenu`, `setFileMenu`, `onFileMenu`). */
+export interface RibbonFileMenuItem {
+  /** Handed back to `onFileMenu`. */
+  id: string;
+  /** What the menu shows. */
+  label: string;
+  /** The item's tooltip. */
+  title?: string;
+  /** The key that does the same, shown beside the label (the host handles the key itself). */
+  shortcut?: string;
+  /** A rule above this item. */
+  separatorBefore?: boolean;
+  /** Shown but not available. */
+  disabled?: boolean;
 }
 
 /** Drives the loading overlay. Safe to call when the loader is disabled — every method no-ops. */
@@ -221,6 +249,10 @@ export interface RibbonEditor {
   markSaved(): void;
   /** The documents the Recent list beside Open shows, most recent first ([] hides the list). Needs `onOpenRecent`. */
   setRecent(entries: RibbonRecentEntry[]): void;
+  /** Replace the host's commands at the foot of the File menu (see the `fileMenu` option). */
+  setFileMenu(items: RibbonFileMenuItem[]): void;
+  /** Open the File menu (as its tab's click, or Alt+F, does). */
+  openFileMenu(): void;
   /** Set the status line. */
   setStatus(text: string): void;
   /** Activate a ribbon tab by name ("home" | "insert" | "layout" | "references" | "review" | "view" | "table" | "headerfooter"). */
@@ -288,6 +320,7 @@ const CONTROL_NAMES = [
   "railAnchor", "railBlocks", "railSession", "railOp", "pageinfo", "wordcount",
   "zoomout", "zoomlevel", "zoomin",
   "gridpicker", "gridcells", "gridlabel", "gridalign", "gridborderless",
+  "filebutton", "filemenu", "filerecent", "filerecentitems", "filehostitems",
   "linkpop", "linkform", "linkurl", "linkcancel",
   "editor",
   "loader", "loaderEyebrow", "loaderTitle", "loaderCopy", "loaderAd", "loaderNumber",
@@ -398,6 +431,7 @@ class RibbonSurface implements RibbonEditor {
   private dirty = false;
   private dirtyCheckQueued = false;
   private recentEntries: RibbonRecentEntry[] = [];
+  private fileMenuItems: RibbonFileMenuItem[] = [];
   private readonly onSelectionChange: () => void;
   private readonly onDocumentMouseDown: (event: MouseEvent) => void;
   private readonly onKeydown: (event: KeyboardEvent) => void;
@@ -405,6 +439,7 @@ class RibbonSurface implements RibbonEditor {
 
   constructor(container: HTMLElement, options: RibbonOptions) {
     this.options = options;
+    this.fileMenuItems = options.fileMenu?.slice() ?? [];
     this.exports = options.exports ?? null;
     this.documentName = options.documentName ?? "untitled.docx";
     this.chromeMode = options.chrome ?? "auto";
@@ -810,6 +845,109 @@ class RibbonSurface implements RibbonEditor {
     select.hidden = !this.options.onOpenRecent || options.length === 0;
   }
 
+  setFileMenu(items: RibbonFileMenuItem[]): void {
+    this.fileMenuItems = items.slice();
+    this.renderFileMenu();
+  }
+
+  openFileMenu(): void {
+    const button = this.control("filebutton"), menu = this.control("filemenu");
+    if (!button || !menu) return;
+    this.closePopovers();
+    this.renderFileMenu();
+    menu.setAttribute("data-open", "");
+    button.setAttribute("aria-expanded", "true");
+    this.positionPopover(menu, button);
+    menu.querySelector<HTMLButtonElement>("button:not([hidden]):not(:disabled)")?.focus({ preventScroll: true });
+  }
+
+  /** The File menu's state and its lists, from the open document, setRecent and fileMenu. */
+  private renderFileMenu(): void {
+    const menu = this.control("filemenu");
+    if (!menu) return;
+    const doc = menu.ownerDocument;
+    const item = (attrs: Record<string, string>, label: string, shortcut = "", title = "", disabled = false) => {
+      const b = doc.createElement("button");
+      b.type = "button";
+      b.setAttribute("role", "menuitem");
+      for (const [k, v] of Object.entries(attrs)) b.setAttribute(k, v);
+      const text = doc.createElement("span");
+      text.textContent = label;
+      const key = doc.createElement("kbd");
+      key.textContent = shortcut;
+      key.setAttribute("aria-hidden", "true");    // (the item's name is its label; the key goes in aria-keyshortcuts)
+      if (shortcut) b.setAttribute("aria-keyshortcuts", shortcut.replace(/\bCtrl\b/g, "Control"));
+      b.append(text, key);
+      if (title) b.title = title;
+      b.disabled = disabled;
+      return b;
+    };
+    const save = menu.querySelector<HTMLButtonElement>('[data-file="save"]');
+    if (save) save.disabled = !this.live;
+    const saveAs = menu.querySelector<HTMLButtonElement>('[data-file="saveas"]');
+    if (saveAs) { saveAs.hidden = !this.options.onSaveAsRequest; saveAs.disabled = !this.live; }
+
+    const recent = this.control("filerecent"), recentItems = this.control("filerecentitems");
+    if (recent && recentItems) {
+      recentItems.replaceChildren(...this.recentEntries.map((entry, i) =>
+        item({ "data-recent": String(i) }, entry.name, "", entry.title ?? "")));
+      recent.hidden = !this.options.onOpenRecent || this.recentEntries.length === 0;
+    }
+
+    const hostItems = this.control("filehostitems");
+    if (hostItems) {
+      const nodes: HTMLElement[] = [];
+      this.fileMenuItems.forEach((entry, i) => {
+        if (entry.separatorBefore || i === 0) {
+          const rule = doc.createElement("div");
+          rule.className = "dxr-filesep";
+          nodes.push(rule);
+        }
+        nodes.push(item({ "data-host": entry.id }, entry.label, entry.shortcut ?? "", entry.title ?? "", !!entry.disabled));
+      });
+      hostItems.replaceChildren(...nodes);
+    }
+  }
+
+  private wireFileMenu(): void {
+    const button = this.control("filebutton"), menu = this.control("filemenu");
+    if (!button || !menu) return;
+    this.keepSelection(button);
+    button.addEventListener("click", () => {
+      if (menu.hasAttribute("data-open")) this.closePopovers();
+      else this.openFileMenu();
+    });
+    // The document keeps its selection while the menu is used.
+    menu.addEventListener("mousedown", (event) => event.preventDefault());
+    menu.addEventListener("click", (event) => {
+      const chosen = (event.target as HTMLElement).closest<HTMLButtonElement>("button");
+      if (!chosen || chosen.disabled) return;
+      this.closePopovers();
+      const file = chosen.dataset.file;
+      if (file === "new") this.requestNew();
+      else if (file === "open") this.requestOpen();
+      else if (file === "save") this.download();
+      else if (file === "saveas") this.options.onSaveAsRequest?.();
+      else if (chosen.dataset.recent != null) {
+        const entry = this.recentEntries[Number(chosen.dataset.recent)];
+        if (entry) this.options.onOpenRecent?.(entry);
+      } else if (chosen.dataset.host != null) this.options.onFileMenu?.(chosen.dataset.host);
+    });
+    // Arrow keys move through the items, Home and End go to the first and last, Escape closes.
+    menu.addEventListener("keydown", (event) => {
+      const items = Array.from(menu.querySelectorAll<HTMLButtonElement>("button"))
+        .filter((b) => !b.disabled && b.offsetParent !== null);
+      const at = items.indexOf(event.target as HTMLButtonElement);
+      let next = -1;
+      if (event.key === "ArrowDown") next = (at + 1) % items.length;
+      else if (event.key === "ArrowUp") next = (at - 1 + items.length) % items.length;
+      else if (event.key === "Home") next = 0;
+      else if (event.key === "End") next = items.length - 1;
+      else if (event.key === "Escape") { event.preventDefault(); this.closePopovers(); button.focus(); return; }
+      if (next >= 0 && items[next]) { event.preventDefault(); items[next].focus(); }
+    });
+  }
+
   /** The session's committed version, or null when nothing is open or the engine can't tell. */
   private sessionVersion(): number | null {
     try {
@@ -932,7 +1070,8 @@ class RibbonSurface implements RibbonEditor {
   private wire(): void {
     const ribbon = this.require("ribbon");
 
-    for (const tab of Array.from(this.element.querySelectorAll<HTMLElement>(".dxr-tab"))) {
+    // (the File tab opens a menu instead: wireFileMenu)
+    for (const tab of Array.from(this.element.querySelectorAll<HTMLElement>(".dxr-tab[data-tab]"))) {
       this.keepSelection(tab);
       tab.addEventListener("click", () => this.selectTab(tab.dataset.tab ?? "home"));
     }
@@ -1130,11 +1269,19 @@ class RibbonSurface implements RibbonEditor {
     this.wireFileActions();
     this.wireLayout();
     this.wirePicker();
+    this.wireFileMenu();
     this.wireLinkPopover();
     this.wireFindBar();
     this.wireHeaderFooterTab();
     this.wireZoom();
     this.wireViewToggles();
+  }
+
+  /** New: the host's (onNewRequest), the history's, or a blank document at once. */
+  private requestNew(): void {
+    if (this.options.onNewRequest) { this.options.onNewRequest(); return; }
+    if (this.history) { void this.history.newDocument(); return; }
+    if (this.exports) this.openBlank("untitled.docx");
   }
 
   /** Open a document: the host's picker (onOpenRequest), otherwise the browser's. */
@@ -1180,11 +1327,7 @@ class RibbonSurface implements RibbonEditor {
       event.preventDefault();
       this.requestOpen();
     });
-    this.control("new")?.addEventListener("click", () => {
-      if (this.options.onNewRequest) { this.options.onNewRequest(); return; }
-      if (this.history) { void this.history.newDocument(); return; }
-      if (this.exports) this.openBlank("untitled.docx");
-    });
+    this.control("new")?.addEventListener("click", () => this.requestNew());
     this.control("save")?.addEventListener("click", () => this.download());
     const recent = this.control<HTMLSelectElement>("recent");
     recent?.addEventListener("change", () => {
@@ -1657,6 +1800,12 @@ class RibbonSurface implements RibbonEditor {
   // ── keyboard shortcuts the engine does not own ──────────────────────────────
 
   private handleShortcut(event: KeyboardEvent): void {
+    // Alt+F opens the File menu, as in Word.
+    if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key.toLowerCase() === "f") {
+      event.preventDefault();
+      this.openFileMenu();
+      return;
+    }
     if (!this.live || !(event.ctrlKey || event.metaKey)) return;
     const key = event.key.toLowerCase();
     const target = event.target instanceof Element ? event.target : null;
@@ -1796,22 +1945,25 @@ class RibbonSurface implements RibbonEditor {
   private closePopovers(): void {
     this.control("gridpicker")?.removeAttribute("data-open");
     this.control("linkpop")?.removeAttribute("data-open");
+    this.control("filemenu")?.removeAttribute("data-open");
+    this.control("filebutton")?.setAttribute("aria-expanded", "false");
   }
 
   private maybeClosePopovers(event: MouseEvent): void {
     const target = event.target as Node;
-    for (const [popName, buttonName] of [["gridpicker", "table"], ["linkpop", "link"]] as const) {
+    for (const [popName, buttonName] of [["gridpicker", "table"], ["linkpop", "link"], ["filemenu", "filebutton"]] as const) {
       const pop = this.control(popName);
       if (!pop?.hasAttribute("data-open")) continue;
       if (pop.contains(target) || this.control(buttonName)?.contains(target)) continue;
       pop.removeAttribute("data-open");
+      if (popName === "filemenu") this.control("filebutton")?.setAttribute("aria-expanded", "false");
     }
   }
 
   // ── tabs ────────────────────────────────────────────────────────────────────
 
   selectTab(name: string): void {
-    for (const tab of Array.from(this.element.querySelectorAll<HTMLElement>(".dxr-tab"))) {
+    for (const tab of Array.from(this.element.querySelectorAll<HTMLElement>(".dxr-tab[data-tab]"))) {
       tab.setAttribute("aria-selected", String(tab.dataset.tab === name));
     }
     for (const panel of Array.from(this.element.querySelectorAll<HTMLElement>(".dxr-panel"))) {
