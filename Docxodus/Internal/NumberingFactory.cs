@@ -163,6 +163,27 @@ internal static class NumberingFactory
         return max + 1;
     }
 
+    /// <summary>
+    /// The number format a nested level takes, as in Word: each level steps through
+    /// 1. → a. → i. → 1. …, and an outline started in capitals steps I. → A. → 1. → a. → i. …
+    /// (parenthesized level text, the legal presets, steps the same way: (1) → (a) → (i)).
+    /// Bullets and any other format stay as they are.
+    /// </summary>
+    private static string NestedFormat(string numFmtToken, int steps)
+    {
+        for (int i = 0; i < steps; i++)
+            numFmtToken = numFmtToken switch
+            {
+                "decimal" => "lowerLetter",
+                "lowerLetter" => "lowerRoman",
+                "lowerRoman" => "decimal",
+                "upperRoman" => "upperLetter",
+                "upperLetter" => "decimal",
+                _ => numFmtToken,
+            };
+        return numFmtToken;
+    }
+
     /// <summary>The level text for a numbered level: <c>(%N)</c> when parenthesized, else <c>%N.</c></summary>
     private static string NumberedLvlText(bool paren, int lvl) =>
         paren ? $"(%{lvl + 1})" : $"%{lvl + 1}.";
@@ -212,7 +233,7 @@ internal static class NumberingFactory
                 lvl_ = new XElement(W + "lvl",
                     new XAttribute(W + "ilvl", lvl),
                     new XElement(W + "start", new XAttribute(W + "val", 1)),
-                    new XElement(W + "numFmt", new XAttribute(W + "val", numFmtToken)),
+                    new XElement(W + "numFmt", new XAttribute(W + "val", NestedFormat(numFmtToken, lvl))),
                     new XElement(W + "lvlText", new XAttribute(W + "val", NumberedLvlText(paren, lvl))),
                     new XElement(W + "lvlJc", new XAttribute(W + "val", "left")),
                     pPr);
@@ -384,9 +405,10 @@ internal static class NumberingFactory
         bool Defines(int l) => abstractNum.Elements(W + "lvl").Any(e => LvlOf(e) == l);
         if (Defines(targetIlvl)) return false;
 
-        // Synthesize missing levels in the numbering's own format, read off the deepest
-        // already-defined level (default: bullet). Parenthesized level text carries down too,
-        // so nesting a "(a)" list yields "(a)" sub-levels rather than reverting to "a.".
+        // Synthesize missing levels from the numbering's own format, read off the deepest
+        // already-defined level (default: bullet), each level below it a step further through
+        // Word's cycle (NestedFormat: 1. → a. → i.). Parenthesized level text carries down too,
+        // so nesting a "(1)" list yields "(a)" sub-levels rather than reverting to "a.".
         var deepest = abstractNum.Elements(W + "lvl")
             .Where(e => LvlOf(e) >= 0).OrderByDescending(LvlOf).FirstOrDefault();
         string numFmtToken = deepest is null
@@ -399,7 +421,9 @@ internal static class NumberingFactory
         for (int l = 0; l <= targetIlvl; l++)
         {
             if (Defines(l)) continue;
-            var lvlEl = BuildLevel(numFmtToken, paren, l, SynthBulletGlyphs[l % 3], SynthBulletFonts[l % 3]);
+            int steps = deepest is null ? 0 : Math.Max(0, l - LvlOf(deepest));
+            var lvlEl = BuildLevel(NestedFormat(numFmtToken, steps), paren, l,
+                SynthBulletGlyphs[l % 3], SynthBulletFonts[l % 3]);
             // w:lvl children must be in ilvl order; insert after the nearest lower level, or before
             // the nearest higher one, else append (lvl is the last child in CT_AbstractNum).
             var prevLvl = abstractNum.Elements(W + "lvl")

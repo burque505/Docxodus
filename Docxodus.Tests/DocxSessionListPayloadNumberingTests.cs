@@ -80,7 +80,8 @@ public class DocxSessionListPayloadNumberingTests
         Assert.NotEqual(a.NumId, b.NumId);
         var saved = session.Save();
         Assert.Equal(NumberFormat.Bullet, NumFmt(saved, b.NumId, 1));
-        Assert.Equal(NumberFormat.Decimal, NumFmt(saved, c.NumId, 2));
+        // (an ordered item at level 2 reads "i.", as in Word: 1. -> a. -> i.)
+        Assert.Equal(NumberFormat.LowerRoman, NumFmt(saved, c.NumId, 2));
         Assert.Equal("1. a", session.GetAnchorInfo(result.Created[0].Id)!.FullText);
         Assert.Equal("2. d", session.GetAnchorInfo(result.Created[3].Id)!.FullText);
         Assert.Empty(ValidationErrors(saved));
@@ -319,6 +320,7 @@ public class DocxSessionListPayloadNumberingTests
             null => null,
             "bullet" => NumberFormat.Bullet,
             "decimal" => NumberFormat.Decimal,
+            "lowerRoman" => NumberFormat.LowerRoman,
             _ => throw new InvalidOperationException("unexpected numFmt " + token),
         };
     }
