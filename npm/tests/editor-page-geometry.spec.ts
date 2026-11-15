@@ -227,9 +227,25 @@ test.describe('Editor — page geometry on a wide window', () => {
       expect(box!.width).toBeGreaterThan(pageViewWidth - 80);
       expect(box!.width).toBeLessThanOrEqual(pageViewWidth);
       await page.locator('[data-dxr="viewweb"]').click();
-      await page.locator('[data-dxr="zoomonepage"]').click(); // One page: 100%
-      expect(Math.abs((await measure()).sheet.width - original.pageWidth)).toBeLessThan(1);
-      expect(await page.locator('[data-dxr="zoom"]').inputValue()).toBe('1');
+      // One page is Word's too: a whole page in view, its height included (here the window's
+      // height decides), kept as the window resizes.
+      await page.locator('[data-dxr="viewpage"]').click();
+      await page.locator('[data-dxr="zoomonepage"]').click();
+      const onePage = async () => {
+        const area = await page.evaluate(() => document.querySelector<HTMLElement>('.dxr-scroll')!.clientHeight);
+        const pageBox = (await page.locator('.page-box').first().boundingBox())!;
+        return { area, height: pageBox.height };
+      };
+      let shown = await onePage();
+      expect(shown.height).toBeLessThanOrEqual(shown.area);
+      expect(shown.height).toBeGreaterThan(shown.area - 80);
+      await page.setViewportSize({ width: 1000, height: 700 });
+      await page.waitForTimeout(200);
+      shown = await onePage();
+      expect(shown.height).toBeLessThanOrEqual(shown.area);
+      expect(shown.height).toBeGreaterThan(shown.area - 80);
+      await page.setViewportSize({ width: 1000, height: 900 });
+      await page.locator('[data-dxr="viewweb"]').click();
       await page.locator('[data-dxr="zoomfit"]').click();
       await page.locator('[data-dxr="zoom"]').selectOption('1'); // a chosen zoom ends page width too
       await page.setViewportSize({ width: 1280, height: 900 });

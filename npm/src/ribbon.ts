@@ -873,7 +873,7 @@ class RibbonSurface implements RibbonEditor {
       ["viewpage", "page view", () => this.setPaginated(true)],
       ["viewweb", "continuous view", () => this.setPaginated(false)],
       ["zoomfit", "page width", () => this.fitPageWidth()],
-      ["zoomonepage", "one page", () => this.setZoom(1)],
+      ["zoomonepage", "one page", () => this.fitOnePage()],
       ["zoomin", "zoom in", () => this.stepZoom(1)],
       ["zoomout", "zoom out", () => this.stepZoom(-1)],
     ];
@@ -1347,6 +1347,13 @@ class RibbonSurface implements RibbonEditor {
   private fitPageWidth(): void {
     if (!this.live) return;
     this.run("page width", () => this.live!.fitPageWidth());
+    this.syncZoom();
+  }
+
+  /** One page: a whole page in view, as Word's One Page (kept as the window resizes). */
+  private fitOnePage(): void {
+    if (!this.live) return;
+    this.run("one page", () => this.live!.fitOnePage());
     this.syncZoom();
   }
 

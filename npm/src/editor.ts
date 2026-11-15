@@ -5268,6 +5268,21 @@ export class DocxEditor {
     return this.viewport.fitsPageWidth;
   }
 
+  /**
+   * Word's One Page: zoom so a whole page shows (its width and its height), and keep it so as
+   * the editor's size changes, until `setZoom` sets a zoom again.
+   */
+  fitOnePage(): void {
+    this.assertOpen();
+    this.viewport.fitOnePage();
+    this.gutter?.schedule();
+  }
+
+  /** Whether the zoom keeps one whole page in view (fitOnePage). */
+  get fitsOnePage(): boolean {
+    return this.viewport.fitsOnePage;
+  }
+
   /** Word count over the body's editable text. */
   wordCount(): number {
     let count = 0;
