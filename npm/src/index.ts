@@ -2,6 +2,8 @@
 export * from "./core.js";
 
 export { DocxEditor } from "./editor.js";
+export { EditorCommandError } from "./editor-commands.js";
+export type { EditorCommandArgs, EditorCommandErrorCode, EditorCommandInfo } from "./editor-commands.js";
 export type {
   DocxEditorOptions,
   DocxEditorExports,
