@@ -663,7 +663,10 @@ function noteTypedSpace(block: HTMLElement, event: Event): void {
   const input = event as InputEvent;
   const typedSpace =
     input.inputType === "insertText" && typeof input.data === "string" && /[ \u00a0]$/.test(input.data);
-  const atEnd = typedSpace && caretOffsetIn(block) === blockContentText(block).length;
+  // At the end, or before nothing but whitespace: the placeholder an empty paragraph renders as
+  // stays after the caret when the caret was put at the paragraph's start, and is not content.
+  const caret = typedSpace ? caretOffsetIn(block) : null;
+  const atEnd = caret !== null && trimSpaces(blockContentText(block).slice(caret)).length === 0;
   if (atEnd) block.dataset.typedTrailingSpace = "1";
   else delete block.dataset.typedTrailingSpace;
 }
@@ -4655,15 +4658,37 @@ export class DocxEditor {
     else this.typingPause = setTimeout(commitIfStillHere, 1000);
   }
 
+  /**
+   * Show the session's text in `el` (its contents re-rendered in place: the element, its wiring
+   * and the focus stay), the caret at `caret` when the block has the focus. See commitTypingStep.
+   */
+  private showCommittedText(el: HTMLElement, anchorId: string, caret: number | null): void {
+    const fresh = this.renderInto(anchorId);
+    if (!fresh || fresh.tagName !== el.tagName) return;
+    el.replaceChildren(...Array.from(fresh.childNodes));
+    if (caret !== null && el.ownerDocument.activeElement === el)
+      placeCaretAtOffset(el, Math.min(caret, blockContentText(el).length));
+  }
+
   private commitTypingStep(el: HTMLElement): boolean | null {
     const fullId = this.anchorIdOf(el);
     if (!fullId) return null;
+    // The first typing in a blank paragraph goes in trimmed (commitTextChange), while the DOM
+    // still holds the placeholder space the paragraph rendered as, before or after the typing.
+    // The DOM then no longer matches the session, offset by offset, and the next commit's span
+    // lands past the session's text: the engine refuses it, and the block shows the session
+    // again, taking back what was typed since (and the focus). So such a commit shows the
+    // session's text in the block, the caret mapped into it as the commit trimmed it.
+    const wasBlank = trimSpaces(stripBidi(el.dataset.committedText ?? "")).length === 0;
+    const domCaret = wasBlank ? caretOffsetIn(el) : null;
+    const caretAfter = domCaret === null ? null : trimmedSplitOffset(el, domCaret);
     const result = this.commitTextChange(el, fullId);
     if (!result) return null;
     if (!result.success) {
       this.restoreBlock(el, fullId);
       return false;
     }
+    if (wasBlank) this.showCommittedText(el, result.modified?.[0]?.id ?? fullId, caretAfter);
     el.dataset.committedText = blockContentText(el);
     // The block keeps its unid, and its render signature still describes the text BEFORE the
     // typing. Undo gives the session that text back, so the repaint's diff would match the
