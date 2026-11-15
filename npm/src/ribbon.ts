@@ -236,7 +236,7 @@ const CONTROL_NAMES = [
   "toc", "footnote", "endnote", "pagenum", "totalpages",
   "comment", "commentdelete", "commentprev", "commentnext", "commentresolve", "showcomments",
   "commentcount", "trackchanges", "markup", "author", "revcount",
-  "viewpage", "viewweb", "zoom", "zoomfit", "showrail", "showhint",
+  "viewpage", "viewweb", "zoom", "zoomfit", "zoomonepage", "showrail", "showhint",
   "shadebtn", "shadebar", "shade", "repeatheader",
   "hfFirst", "hfEven", "hfstory",
   "findbar", "findtext", "findprev", "findnext", "findcount", "findcase", "replacegroup",
@@ -873,6 +873,7 @@ class RibbonSurface implements RibbonEditor {
       ["viewpage", "page view", () => this.setPaginated(true)],
       ["viewweb", "continuous view", () => this.setPaginated(false)],
       ["zoomfit", "page width", () => this.fitPageWidth()],
+      ["zoomonepage", "one page", () => this.setZoom(1)],
       ["zoomin", "zoom in", () => this.stepZoom(1)],
       ["zoomout", "zoom out", () => this.stepZoom(-1)],
     ];
@@ -1342,7 +1343,7 @@ class RibbonSurface implements RibbonEditor {
     this.syncZoom();
   }
 
-  /** Fit width: the page as wide as the window, as Word's Page Width (kept as the window resizes). */
+  /** Page width: the page as wide as the window, as Word's Page Width (kept as the window resizes). */
   private fitPageWidth(): void {
     if (!this.live) return;
     this.run("page width", () => this.live!.fitPageWidth());

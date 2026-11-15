@@ -1296,7 +1296,8 @@ export const RIBBON_HTML = `
             <option value="1.5">150%</option>
             <option value="2">200%</option>
           </select>
-          <button type="button" data-dxr="zoomfit" title="Fit the page to the window">Fit width</button>
+          <button type="button" data-dxr="zoomfit" title="Zoom so the page is as wide as the window">Page width</button>
+          <button type="button" data-dxr="zoomonepage" title="Zoom to 100%">One page</button>
         </div>
       </div>
       <div class="dxr-group">
