@@ -205,7 +205,29 @@ test.describe('Editor — page geometry on a wide window', () => {
       expect(Math.abs(firstPage!.width - original.pageWidth * 2)).toBeLessThan(1);
       await page.locator('[data-dxr="viewweb"]').click();
       expect(Math.abs((await measure()).sheet.width - original.pageWidth * 2)).toBeLessThan(1);
+      // Fit width is Word's Page Width: the page fills the window (here wider than 100%), with
+      // nothing to scroll sideways, follows the window as it resizes, and a zoom chosen
+      // afterwards pins the zoom again.
       await page.locator('[data-dxr="zoomfit"]').click();
+      let fitted = await measure();
+      expect(fitted.sheet.width).toBeGreaterThan(original.pageWidth + 50);
+      expect(fitted.sheet.width).toBeGreaterThan(fitted.viewportWidth - 80);
+      expect(fitted.sheet.right).toBeLessThanOrEqual(fitted.viewportWidth);
+      expect(await page.locator('[data-dxr="zoom"]').inputValue())
+        .toBe(String(Math.round(fitted.sheet.width / original.pageWidth * 100) / 100));
+      await page.setViewportSize({ width: 1000, height: 900 });
+      await page.waitForTimeout(200);
+      const narrower = await measure();
+      expect(narrower.sheet.width).toBeLessThan(fitted.sheet.width - 100);
+      expect(narrower.sheet.width).toBeGreaterThan(narrower.viewportWidth - 80);
+      expect(narrower.sheet.right).toBeLessThanOrEqual(narrower.viewportWidth);
+      await page.locator('[data-dxr="viewpage"]').click();
+      const pageViewWidth = await page.evaluate(() => document.querySelector<HTMLElement>('.dxr-scroll')!.clientWidth);
+      const box = await page.locator('.page-box').first().boundingBox();
+      expect(box!.width).toBeGreaterThan(pageViewWidth - 80);
+      expect(box!.width).toBeLessThanOrEqual(pageViewWidth);
+      await page.locator('[data-dxr="viewweb"]').click();
+      await page.locator('[data-dxr="zoom"]').selectOption('1');
       expect(Math.abs((await measure()).sheet.width - original.pageWidth)).toBeLessThan(1);
     });
   }
