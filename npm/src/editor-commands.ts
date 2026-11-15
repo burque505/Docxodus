@@ -307,6 +307,8 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
 
   // ── view ──
   zoom: { group: "view", description: "Set the zoom (1 = 100%).", args: { scale: "number" }, run: (e, a) => e.setZoom(a.number("scale")) },
+  pageWidth: { group: "view", description: "Zoom so the page is as wide as the window (kept as it resizes).", args: {}, run: (e) => e.fitPageWidth() },
+  onePage: { group: "view", description: "Zoom so a whole page shows (kept as the window resizes).", args: {}, run: (e) => e.fitOnePage() },
   pageView: { group: "view", description: "Show the pages (or one continuous sheet).", args: { on: "boolean" }, run: (e, a) => e.setPaginated(a.bool("on")) },
 
   // ── query ──

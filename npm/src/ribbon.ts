@@ -2076,7 +2076,7 @@ class RibbonSurface implements RibbonEditor {
       this.require<HTMLInputElement>("paginated").checked = on;
       this.surface.dataset.view = on ? "paginated" : "continuous";
       this.syncViewButtons();
-    } else if (name === "zoom") {
+    } else if (name === "zoom" || name === "pageWidth" || name === "onePage") {
       this.syncZoom();
     } else if (name === "trackChanges") {
       this.require<HTMLInputElement>("trackchanges").checked = on;

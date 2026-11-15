@@ -151,6 +151,11 @@ test.describe('RibbonEditor.exec', () => {
       ribbon.exec('insertText', { text: 'Ribbon text' });
       ribbon.exec('zoom', { scale: 1.5 });
       ribbon.exec('trackChanges', { on: true });
+      ribbon.exec('pageWidth');
+      const fits = ribbon.editor.fitsPageWidth;
+      ribbon.exec('onePage');
+      const whole = ribbon.editor.fitsOnePage;
+      ribbon.exec('zoom', { scale: 1.5 });
       let error: unknown = null;
       try { ribbon.exec('fontSize', { pts: -1 }); } catch (e: any) { error = e.code; }
       return {
@@ -161,6 +166,7 @@ test.describe('RibbonEditor.exec', () => {
         reported,
         error,
         listed: ribbon.commands().length === D.DocxEditor.commands().length,
+        fits, whole, pinned: !ribbon.editor.fitsPageWidth && !ribbon.editor.fitsOnePage,
       };
     });
     expect(result.text).toBe('Ribbon text');
@@ -169,13 +175,15 @@ test.describe('RibbonEditor.exec', () => {
     expect(result.rail).toMatch(/^fontSize \d/); // (the "text" query after it is no command)
     expect(result.error).toBe('bad_arguments');
     expect(result.listed).toBe(true);
+    expect([result.fits, result.whole, result.pinned]).toEqual([true, true, true]);
     expect(result.reported.slice(0, 3)).toEqual([
       { label: 'insertText', command: { name: 'insertText', args: { text: 'Ribbon text' } } },
       { label: 'zoom', command: { name: 'zoom', args: { scale: 1.5 } } },
       { label: 'trackChanges', command: { name: 'trackChanges', args: { on: true } } },
     ]);
     // a command that failed is reported without its name and arguments (nothing to record)
-    expect(result.reported[3]).toEqual({ label: 'fontSize', command: undefined });
-    expect(result.reported).toHaveLength(4);
+    expect(result.reported.slice(3, 6).map((r: any) => r.command?.name)).toEqual(['pageWidth', 'onePage', 'zoom']);
+    expect(result.reported[6]).toEqual({ label: 'fontSize', command: undefined });
+    expect(result.reported).toHaveLength(7);
   });
 });
