@@ -5247,9 +5247,25 @@ export class DocxEditor {
     this.gutter?.schedule();
   }
 
-  /** The zoom the user asked for (what a zoom control shows), before fit-to-width caps it. */
+  /** The zoom the user asked for (what a zoom control shows), before fit-to-width caps it; in
+   *  page width, the zoom that fits. */
   get requestedZoom(): number {
     return this.viewport.requestedScale;
+  }
+
+  /**
+   * Word's Page Width: zoom so the widest page fills the editor's width, and keep it filling it
+   * as the width changes (window resized, view switched), until `setZoom` sets a zoom again.
+   */
+  fitPageWidth(): void {
+    this.assertOpen();
+    this.viewport.fitPageWidth();
+    this.gutter?.schedule();
+  }
+
+  /** Whether the zoom follows the editor's width (fitPageWidth). */
+  get fitsPageWidth(): boolean {
+    return this.viewport.fitsPageWidth;
   }
 
   /** Word count over the body's editable text. */

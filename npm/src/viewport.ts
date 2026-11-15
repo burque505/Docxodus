@@ -51,6 +51,9 @@ export interface DocumentViewportOptions {
   scale?: number;
 }
 
+/** What page width leaves beside the page: about a scrollbar's width (see pageWidthScale). */
+const PAGE_WIDTH_SLACK_PX = 24;
+
 export class DocumentViewport {
   private host: HTMLElement;
   private readonly options: Required<DocumentViewportOptions>;
@@ -58,6 +61,8 @@ export class DocumentViewport {
   /** Natural page size in points — the widest section's PAGE box, which is what must fit. */
   private natural = { width: 0, height: 0 };
   private observer: ResizeObserver | null = null;
+  /** Page width (fitPageWidth): the zoom follows the host's width, larger or smaller. */
+  private fitPage = false;
 
   constructor(host: HTMLElement, options: DocumentViewportOptions = {}) {
     this.host = host;
@@ -118,18 +123,36 @@ export class DocumentViewport {
    * than the host never magnifies past what fits, so "100%" on a phone is the fit zoom.
    */
   setScale(scale: number): void {
+    this.fitPage = false;
     this.options.scale = Math.max(0.1, Math.min(4, scale));
     this.refresh();
   }
 
-  /** The author-pinned zoom (the value a zoom control shows), before fit-to-width caps it. */
+  /**
+   * Word's Page Width: the zoom that makes the widest page exactly as wide as the host (up or
+   * down), kept as the host's width changes, until `setScale` pins a zoom again.
+   */
+  fitPageWidth(): void {
+    this.fitPage = true;
+    this.refresh();
+  }
+
+  /** Whether the zoom follows the host's width (fitPageWidth). */
+  get fitsPageWidth(): boolean {
+    return this.fitPage;
+  }
+
+  /** The author-pinned zoom (the value a zoom control shows), before fit-to-width caps it; in
+   *  page width, the zoom that fits. */
   get requestedScale(): number {
-    return this.options.scale;
+    return this.fitPage ? this.scale : this.options.scale;
   }
 
   /** The zoom currently applied (1 = 100%). Reported by the ribbon's anchor rail. */
   get scale(): number {
     if (!this.root) return this.options.scale;
+    const pageWidth = this.pageWidthScale();
+    if (pageWidth !== null) return pageWidth;
     return this.options.fitToWidth
       ? fitScale(this.availableWidthPx(), this.natural.width, this.options.scale)
       : this.options.scale;
@@ -145,6 +168,18 @@ export class DocumentViewport {
     this.observer = null;
     if (this.root) applyZoom(this.root, 1);
     this.host.style.removeProperty("--docx-sheet-width");
+  }
+
+  /**
+   * In page width, the zoom at which the widest page fills the host; null otherwise, or when
+   * there is no page to measure (a fluid column). A few pixels are left over, so a scrollbar
+   * the new zoom brings or takes away does not tip the width back and forth.
+   */
+  private pageWidthScale(): number | null {
+    if (!this.fitPage || !(this.natural.width > 0)) return null;
+    const available = this.availableWidthPx() - PAGE_WIDTH_SLACK_PX;
+    if (!(available > 0)) return null;
+    return Math.max(0.1, Math.min(4, available / ptToPx(this.natural.width)));
   }
 
   /** The host's content box, which is the space a page has to fit into. */

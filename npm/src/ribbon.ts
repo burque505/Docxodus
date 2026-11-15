@@ -872,7 +872,7 @@ class RibbonSurface implements RibbonEditor {
       ["gotofooter", "go to footer", () => this.live!.goToHeaderFooter("footer")],
       ["viewpage", "page view", () => this.setPaginated(true)],
       ["viewweb", "continuous view", () => this.setPaginated(false)],
-      ["zoomfit", "fit width", () => this.setZoom(1)],
+      ["zoomfit", "page width", () => this.fitPageWidth()],
       ["zoomin", "zoom in", () => this.stepZoom(1)],
       ["zoomout", "zoom out", () => this.stepZoom(-1)],
     ];
@@ -1342,6 +1342,13 @@ class RibbonSurface implements RibbonEditor {
     this.syncZoom();
   }
 
+  /** Fit width: the page as wide as the window, as Word's Page Width (kept as the window resizes). */
+  private fitPageWidth(): void {
+    if (!this.live) return;
+    this.run("page width", () => this.live!.fitPageWidth());
+    this.syncZoom();
+  }
+
   private stepZoom(direction: 1 | -1): void {
     if (!this.live) return;
     const current = this.live.requestedZoom;
@@ -1353,7 +1360,8 @@ class RibbonSurface implements RibbonEditor {
 
   private syncZoom(): void {
     if (!this.live) return;
-    const requested = this.live.requestedZoom;
+    // (page width's zoom is any number: shown, and offered, as a whole percent)
+    const requested = Math.round(this.live.requestedZoom * 100) / 100;
     const value = String(ZOOM_STEPS.find((z) => Math.abs(z - requested) < 1e-6) ?? requested);
     for (const name of ["zoom", "zoomlevel"]) {
       const select = this.control<HTMLSelectElement>(name);
