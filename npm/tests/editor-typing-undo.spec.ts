@@ -94,5 +94,54 @@ for (const paginated of [false, true]) {
       await page.keyboard.press('Control+z');
       expect(await saved(page)).not.toContain('tualpha');
     });
+
+    // A blank paragraph renders a placeholder space. Its first commit (here, the space after the
+    // first word) goes in trimmed, and with the placeholder left in the DOM the next word's commit
+    // landed past the session's text: refused, the block showed the session again and the rest
+    // of the typing (and the focus) was gone. The caret can be put before the placeholder (a host
+    // putting it at the document's start) or after it (a click), and Enter makes another one.
+    for (const how of ['click', 'caret at start', 'after Enter'] as const) {
+      test(`"word": typing in a blank paragraph (${how}) keeps every word`, async ({ page }) => {
+        await page.goto('/test-harness.html');
+        await waitForDocxodus(page);
+        await page.evaluate((options) => {
+          const D = (window as any).Docxodus;
+          const container = document.createElement('div');
+          container.id = 'tu-editor';
+          document.body.appendChild(container);
+          (window as any).__ed = D.DocxEditor.openBlank(container, D, options);
+        }, { paginated, typingUndo: 'word' });
+        const blocks = page.locator('#tu-editor [data-anchor][contenteditable="true"]');
+        if (how === 'caret at start') {
+          await page.evaluate(() => {
+            const p = document.querySelector<HTMLElement>('#tu-editor [data-anchor][contenteditable="true"]')!;
+            p.focus();
+            const r = document.createRange();
+            r.selectNodeContents(p);
+            r.collapse(true);
+            window.getSelection()!.removeAllRanges();
+            window.getSelection()!.addRange(r);
+          });
+        } else {
+          await blocks.first().click();
+        }
+        if (how === 'after Enter') {
+          await page.keyboard.type('tufirst');
+          await page.keyboard.press('Enter');
+        }
+        await page.keyboard.type('tuone tutwo tuthree tufour', { delay: 20 });
+        await page.waitForTimeout(1300); // the pause commit
+
+        const target = blocks.nth(how === 'after Enter' ? 1 : 0);
+        await expect(target).toHaveText(/^\s*tuone tutwo tuthree tufour\s*$/);
+        await expect(target).toBeFocused();
+        expect(await saved(page)).toContain('tuone tutwo tuthree tufour');
+
+        await page.keyboard.press('Control+z');
+        const text = await saved(page);
+        expect(text).toContain('tuone tutwo tuthree');
+        expect(text).not.toContain('tufour');
+      });
+    }
   });
 }
