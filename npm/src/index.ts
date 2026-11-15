@@ -26,6 +26,7 @@ export type {
   RibbonEditor,
   RibbonOptions,
   RibbonRecentEntry,
+  RibbonCommand,
   RibbonFileMenuItem,
   RibbonHistoryOptions,
   RibbonHistoryBinding,

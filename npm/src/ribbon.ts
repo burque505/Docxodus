@@ -31,6 +31,7 @@ import type {
   DocxEditorOptions,
   EditorAlignment,
   EditorMatch,
+  EditorPageSetup,
   FormatKey,
 } from "./editor.js";
 import { threadMembers } from "./editor-comments.js";
@@ -182,11 +183,14 @@ export interface RibbonOptions extends DocxEditorOptions {
   /** Called whenever the status line changes. */
   onStatus?: (text: string) => void;
   /**
-   * Called after every ribbon command, with its label and measured duration; for a command run
-   * by name (`exec`) that succeeded, also its name and arguments, as `exec` takes them again
-   * (what a macro recorder keeps).
+   * Called after every ribbon command, with its label and measured duration; for one that
+   * succeeded, also the command it was as `exec` takes it (`{ name: "fontSize", args: { pts: 14 } }`),
+   * whatever ran it: a button, a list, a shortcut (the editor's own Ctrl+B and Ctrl+Z among them),
+   * or `exec` itself. Running those again repeats what the user did: what a macro recorder keeps.
+   * A command with no `exec` equivalent (a comment's Resolve, the next tracked change) comes
+   * without one.
    */
-  onCommand?: (label: string, ms: number, command?: { name: string; args: EditorCommandArgs }) => void;
+  onCommand?: (label: string, ms: number, command?: RibbonCommand) => void;
 }
 
 /** One document in the Recent list beside Open (`setRecent`, `onOpenRecent`). */
@@ -228,6 +232,15 @@ export interface RibbonLoader {
   /** Show the failure state with a Retry button. */
   fail(error: unknown): void;
 }
+
+/** A command as `exec` takes it: what `onCommand` reports. */
+export interface RibbonCommand {
+  name: string;
+  args: EditorCommandArgs;
+}
+/** A control's command: known when it is wired, or worked out once it has run (zoom in: the zoom it reached). */
+type CommandOf = RibbonCommand | (() => RibbonCommand | undefined);
+const cmd = (name: string, args: EditorCommandArgs = {}): RibbonCommand => ({ name, args });
 
 /** The commands that only read the document (DocxEditor.commands(), group "query"). */
 const QUERY_COMMANDS: ReadonlySet<string> = new Set(DocxEditor.commands().filter((c) => c.group === "query").map((c) => c.name));
@@ -1120,7 +1133,7 @@ class RibbonSurface implements RibbonEditor {
    * Every control routes through here, which is what makes the rail's "last op"
    * an honest measurement rather than a label the surface makes up.
    */
-  private run(label: string, fn: () => void, command?: { name: string; args: EditorCommandArgs }): void {
+  private run(label: string, fn: () => void, command?: CommandOf): void {
     if (!this.live) return;
     const started = performance.now();
     let ok = false;
@@ -1131,7 +1144,11 @@ class RibbonSurface implements RibbonEditor {
       const ms = performance.now() - started;
       const el = this.control("railOp");
       if (el) el.textContent = `${label} ${ms >= 1000 ? `${(ms / 1000).toFixed(2)} s` : `${Math.round(ms)} ms`}`;
-      this.options.onCommand?.(label, ms, ok ? command : undefined);
+      let done: RibbonCommand | undefined;
+      if (ok) {
+        try { done = typeof command === "function" ? command() : command; } catch { done = undefined; }
+      }
+      this.options.onCommand?.(label, ms, done);
       this.history?.edited();
       // An engine that has no session version can't say whether the command changed anything:
       // count it as a change, so the document is never taken for saved when it may not be.
@@ -1157,23 +1174,39 @@ class RibbonSurface implements RibbonEditor {
       tab.addEventListener("click", () => this.selectTab(tab.dataset.tab ?? "home"));
     }
 
-    const delegate = <T extends HTMLElement>(selector: string, label: (el: T) => string, fn: (el: T) => void) => {
+    const delegate = <T extends HTMLElement>(selector: string, label: (el: T) => string, fn: (el: T) => void,
+      command?: (el: T) => CommandOf | undefined) => {
       for (const el of Array.from(ribbon.querySelectorAll<T>(selector))) {
         this.keepSelection(el);
-        el.addEventListener("click", () => this.run(label(el), () => fn(el)));
+        el.addEventListener("click", () => this.run(label(el), () => fn(el), command?.(el)));
       }
     };
 
     delegate<HTMLElement>("button[data-cmd]", (b) => b.dataset.cmd!, (b) =>
-      this.live!.format(b.dataset.cmd as FormatKey));
+      this.live!.format(b.dataset.cmd as FormatKey), (b) => cmd(b.dataset.cmd!));
     delegate<HTMLElement>("button[data-align]", (b) => `align ${b.dataset.align}`, (b) =>
-      this.live!.setAlignment(b.dataset.align as EditorAlignment));
+      this.live!.setAlignment(b.dataset.align as EditorAlignment), (b) => cmd("align", { alignment: b.dataset.align! }));
     delegate<HTMLElement>("button[data-indent]", () => "indent", (b) =>
-      this.live!.indent(parseInt(b.dataset.indent ?? "720", 10)));
+      this.live!.indent(parseInt(b.dataset.indent ?? "720", 10)), (b) => cmd("indent", { twips: parseInt(b.dataset.indent ?? "720", 10) }));
     delegate<HTMLElement>("button[data-list]", (b) => `list ${b.dataset.list}`, (b) =>
-      this.live!.toggleList(b.dataset.list as "bullet" | "decimal"));
+      this.live!.toggleList(b.dataset.list as "bullet" | "decimal"), (b) => cmd("list", { kind: b.dataset.list! }));
     delegate<HTMLElement>("button[data-pagebreak]", () => "page break", () =>
-      this.live!.pageBreakBefore(true));
+      this.live!.pageBreakBefore(true), () => cmd("pageBreakBefore", { on: true }));
+    const tableCommands: Record<string, RibbonCommand> = {
+      rowAbove: cmd("insertRow", { where: "above" }),
+      rowBelow: cmd("insertRow", { where: "below" }),
+      colLeft: cmd("insertColumn", { where: "left" }),
+      colRight: cmd("insertColumn", { where: "right" }),
+      delRow: cmd("deleteRow"),
+      delCol: cmd("deleteColumn"),
+      mergeRight: cmd("mergeCells", { rows: 1, columns: 2 }),
+      mergeDown: cmd("mergeCells", { rows: 2, columns: 1 }),
+      unmerge: cmd("unmergeCells"),
+      borders: cmd("tableBorders", { spec: { scope: "all", style: "single", size: 4 } }),
+      noborders: cmd("tableBorders", { spec: { scope: "all", style: "none" } }),
+      noshade: cmd("cellShading", { fill: "", scope: "cell" }),
+      delTable: cmd("deleteTable"),
+    };
     delegate<HTMLElement>('.dxr-panel[data-panel="table"] button[data-tt]', (b) => b.dataset.tt!, (b) => {
       const ops: Record<string, () => void> = {
         rowAbove: () => this.live!.insertTableRow("above"),
@@ -1191,44 +1224,63 @@ class RibbonSurface implements RibbonEditor {
         delTable: () => this.live!.deleteTable(),
       };
       ops[b.dataset.tt ?? ""]?.();
-    });
+    }, (b) => tableCommands[b.dataset.tt ?? ""]);
+    const revisionCommands: Record<string, RibbonCommand> = { acceptall: cmd("acceptAllChanges"), rejectall: cmd("rejectAllChanges") };
     delegate<HTMLElement>("button[data-rev]", (b) => `revision ${b.dataset.rev}`, (b) =>
-      this.runRevisionCommand(b.dataset.rev ?? ""));
+      this.runRevisionCommand(b.dataset.rev ?? ""), (b) => revisionCommands[b.dataset.rev ?? ""]);
+    const headerFooterCommands: Record<string, RibbonCommand> = {
+      pagenum: cmd("pageNumber", { field: "currentPage" }),
+      totalpages: cmd("pageNumber", { field: "totalPages" }),
+      pageof: cmd("pageNumber", { field: "pageOfTotal" }),
+      header: cmd("goToHeaderFooter", { which: "header" }),
+      footer: cmd("goToHeaderFooter", { which: "footer" }),
+      close: cmd("closeHeaderFooter"),
+    };
     delegate<HTMLElement>("button[data-hf]", (b) => `header/footer ${b.dataset.hf}`, (b) =>
-      this.runHeaderFooterCommand(b.dataset.hf ?? ""));
+      this.runHeaderFooterCommand(b.dataset.hf ?? ""), (b) => headerFooterCommands[b.dataset.hf ?? ""]);
 
     const rulepos = () => (this.require<HTMLSelectElement>("rulepos").value === "above" ? "above" : "below");
-    const simple: Array<[string, string, () => void]> = [
-      ["undo", "undo", () => this.live!.undo()],
-      ["redo", "redo", () => this.live!.redo()],
-      ["hr", "rule", () => this.live!.insertHorizontalRule(12, "single", rulepos())],
-      ["hrThick", "thick rule", () => this.live!.insertHorizontalRule(24, "single", rulepos())],
-      ["hrDouble", "double rule", () => this.live!.insertHorizontalRule(12, "double", rulepos())],
-      ["hrClear", "clear border", () => this.live!.clearParagraphBorders()],
-      ["delblock", "delete block", () => this.live!.deleteBlock()],
-      ["footnote", "footnote", () => this.live!.insertFootnote()],
-      ["endnote", "endnote", () => this.live!.insertEndnote()],
-      ["pagenum", "page number", () => this.live!.insertPageNumber("currentPage")],
-      ["totalpages", "total pages", () => this.live!.insertPageNumber("totalPages")],
-      ["fontgrow", "grow font", () => this.live!.adjustFontSize(1)],
-      ["fontshrink", "shrink font", () => this.live!.adjustFontSize(-1)],
-      ["clearformat", "clear formatting", () => this.live!.clearFormatting()],
-      ["toc", "table of contents", () => this.live!.insertTableOfContents()],
-      ["unlink", "remove link", () => this.live!.removeHyperlink()],
-      ["gotoheader", "go to header", () => this.live!.goToHeaderFooter("header")],
-      ["gotofooter", "go to footer", () => this.live!.goToHeaderFooter("footer")],
-      ["viewpage", "page view", () => this.setPaginated(true)],
-      ["viewweb", "continuous view", () => this.setPaginated(false)],
-      ["zoomfit", "page width", () => this.fitPageWidth()],
-      ["zoomonepage", "one page", () => this.fitOnePage()],
-      ["zoomin", "zoom in", () => this.stepZoom(1)],
-      ["zoomout", "zoom out", () => this.stepZoom(-1)],
+    const rule = (weight: number, style: string) => () => cmd("horizontalRule", { weight, style, position: rulepos() });
+    const simple: Array<[string, string, () => void, CommandOf]> = [
+      ["undo", "undo", () => this.live!.undo(), cmd("undo")],
+      ["redo", "redo", () => this.live!.redo(), cmd("redo")],
+      ["hr", "rule", () => this.live!.insertHorizontalRule(12, "single", rulepos()), rule(12, "single")],
+      ["hrThick", "thick rule", () => this.live!.insertHorizontalRule(24, "single", rulepos()), rule(24, "single")],
+      ["hrDouble", "double rule", () => this.live!.insertHorizontalRule(12, "double", rulepos()), rule(12, "double")],
+      ["hrClear", "clear border", () => this.live!.clearParagraphBorders(), cmd("clearBorders")],
+      ["delblock", "delete block", () => this.live!.deleteBlock(), cmd("deleteParagraph")],
+      ["footnote", "footnote", () => this.live!.insertFootnote(), cmd("footnote")],
+      ["endnote", "endnote", () => this.live!.insertEndnote(), cmd("endnote")],
+      ["pagenum", "page number", () => this.live!.insertPageNumber("currentPage"), cmd("pageNumber", { field: "currentPage" })],
+      ["totalpages", "total pages", () => this.live!.insertPageNumber("totalPages"), cmd("pageNumber", { field: "totalPages" })],
+      ["fontgrow", "grow font", () => this.live!.adjustFontSize(1), cmd("growFont")],
+      ["fontshrink", "shrink font", () => this.live!.adjustFontSize(-1), cmd("shrinkFont")],
+      ["clearformat", "clear formatting", () => this.live!.clearFormatting(), cmd("clearFormatting")],
+      ["toc", "table of contents", () => this.live!.insertTableOfContents(), cmd("tableOfContents")],
+      ["unlink", "remove link", () => this.live!.removeHyperlink(), cmd("removeHyperlink")],
+      ["gotoheader", "go to header", () => this.live!.goToHeaderFooter("header"), cmd("goToHeaderFooter", { which: "header" })],
+      ["gotofooter", "go to footer", () => this.live!.goToHeaderFooter("footer"), cmd("goToHeaderFooter", { which: "footer" })],
     ];
-    for (const [name, label, fn] of simple) {
+    for (const [name, label, fn, command] of simple) {
       const el = this.control(name);
       if (!el) continue;
       this.keepSelection(el);
-      el.addEventListener("click", () => this.run(label, fn));
+      el.addEventListener("click", () => this.run(label, fn, command));
+    }
+    // (these run their command themselves, so it is reported once)
+    const own: Array<[string, () => void]> = [
+      ["viewpage", () => this.setPaginated(true)],
+      ["viewweb", () => this.setPaginated(false)],
+      ["zoomfit", () => this.fitPageWidth()],
+      ["zoomonepage", () => this.fitOnePage()],
+      ["zoomin", () => this.stepZoom(1)],
+      ["zoomout", () => this.stepZoom(-1)],
+    ];
+    for (const [name, fn] of own) {
+      const el = this.control(name);
+      if (!el) continue;
+      this.keepSelection(el);
+      el.addEventListener("click", fn);
     }
 
     const smallcaps = this.control("smallcaps");
@@ -1236,7 +1288,7 @@ class RibbonSurface implements RibbonEditor {
       this.keepSelection(smallcaps);
       smallcaps.addEventListener("click", () => {
         const on = smallcaps.getAttribute("aria-pressed") !== "true";
-        this.run("small caps", () => this.live!.setSmallCaps(on));
+        this.run("small caps", () => this.live!.setSmallCaps(on), cmd("smallCaps", { on }));
         smallcaps.setAttribute("aria-pressed", String(on));
       });
     }
@@ -1246,7 +1298,7 @@ class RibbonSurface implements RibbonEditor {
     const fontsize = this.require<HTMLInputElement>("fontsize");
     fontsize.addEventListener("change", () => {
       const pts = parseFloat(fontsize.value);
-      if (this.live && pts > 0) this.run("font size", () => this.live!.setFontSize(pts));
+      if (this.live && pts > 0) this.run("font size", () => this.live!.setFontSize(pts), cmd("fontSize", { pts }));
     });
     fontsize.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
@@ -1255,13 +1307,15 @@ class RibbonSurface implements RibbonEditor {
       }
     });
 
-    this.wireSelect("fontfamily", "font family", (v) => this.live!.setFontFamily(v));
-    this.wireSelect("style", "style", (v) => this.live!.setParagraphStyle(v));
-    this.wireSelect("listmenu", "list style", (v) => this.live!.setListFormat(v as ListFormat));
-    this.wireSelect("linespacing", "line spacing", (v) => this.live!.setLineSpacing(parseFloat(v)));
-    this.wireSelect("highlight", "highlight", (v) => this.live!.setHighlight(v === "none" ? "" : v));
-    this.wireSelect("pagenummenu", "page number", (v) =>
-      this.live!.insertPageNumber(v === "pageOf" ? "pageOfTotal" : (v as "currentPage" | "totalPages")));
+    this.wireSelect("fontfamily", "font family", (v) => this.live!.setFontFamily(v), (v) => cmd("fontFamily", { name: v }));
+    this.wireSelect("style", "style", (v) => this.live!.setParagraphStyle(v), (v) => cmd("style", { styleId: v }));
+    this.wireSelect("listmenu", "list style", (v) => this.live!.setListFormat(v as ListFormat), (v) => cmd("listFormat", { format: v }));
+    this.wireSelect("linespacing", "line spacing", (v) => this.live!.setLineSpacing(parseFloat(v)),
+      (v) => cmd("lineSpacing", { multiple: parseFloat(v) }));
+    this.wireSelect("highlight", "highlight", (v) => this.live!.setHighlight(v === "none" ? "" : v), (v) => cmd("highlight", { color: v }));
+    const pageNumberField = (v: string) => (v === "pageOf" ? "pageOfTotal" : (v as "currentPage" | "totalPages"));
+    this.wireSelect("pagenummenu", "page number", (v) => this.live!.insertPageNumber(pageNumberField(v)),
+      (v) => cmd("pageNumber", { field: pageNumberField(v) }));
 
     // Colour pickers: the native input steals focus, so the engine's last-selection
     // bookmark is what the command applies to.
@@ -1269,29 +1323,32 @@ class RibbonSurface implements RibbonEditor {
     fontcolor.addEventListener("input", () => {
       this.require("fontcolorbar").style.setProperty("--dxr-swatch", fontcolor.value);
     });
+    const fontColor = () => this.run("font color", () => this.live!.setFontColor(fontcolor.value), cmd("fontColor", { color: fontcolor.value }));
     fontcolor.addEventListener("change", () => {
       this.require("fontcolorbar").style.setProperty("--dxr-swatch", fontcolor.value);
-      this.run("font color", () => this.live!.setFontColor(fontcolor.value));
+      fontColor();
     });
     const fontcolorbtn = this.control("fontcolorbtn");
     if (fontcolorbtn) {
       this.keepSelection(fontcolorbtn);
-      fontcolorbtn.addEventListener("click", () => this.run("font color", () => this.live!.setFontColor(fontcolor.value)));
+      fontcolorbtn.addEventListener("click", fontColor);
     }
     const shade = this.require<HTMLInputElement>("shade");
+    const cellShading = () => this.run("cell shading", () => this.live!.setCellShading(shade.value, "cell"),
+      cmd("cellShading", { fill: shade.value, scope: "cell" }));
     shade.addEventListener("input", () => this.require("shadebar").style.setProperty("--dxr-swatch", shade.value));
     shade.addEventListener("change", () => {
       this.require("shadebar").style.setProperty("--dxr-swatch", shade.value);
-      this.run("cell shading", () => this.live!.setCellShading(shade.value, "cell"));
+      cellShading();
     });
     const shadebtn = this.control("shadebtn");
     if (shadebtn) {
       this.keepSelection(shadebtn);
-      shadebtn.addEventListener("click", () => this.run("cell shading", () => this.live!.setCellShading(shade.value, "cell")));
+      shadebtn.addEventListener("click", cellShading);
     }
     const repeatheader = this.require<HTMLInputElement>("repeatheader");
     repeatheader.addEventListener("change", () =>
-      this.run("repeat header row", () => this.live!.setRepeatHeaderRow(repeatheader.checked)));
+      this.run("repeat header row", () => this.live!.setRepeatHeaderRow(repeatheader.checked), cmd("repeatHeaderRow", { on: repeatheader.checked })));
 
     // Comments: New/Insert open a draft bubble in the gutter (Word's flow); the rest act on the
     // active thread.
@@ -1331,7 +1388,8 @@ class RibbonSurface implements RibbonEditor {
     trackchanges.addEventListener("change", () => {
       if (!this.live) return;
       this.run(trackchanges.checked ? "track changes on" : "track changes off", () =>
-        this.live!.setTrackedChanges(trackchanges.checked ? TrackedChangeMode.RenderInline : TrackedChangeMode.Accept));
+        this.live!.setTrackedChanges(trackchanges.checked ? TrackedChangeMode.RenderInline : TrackedChangeMode.Accept),
+        cmd("trackChanges", { on: trackchanges.checked }));
       this.syncReviewState();
     });
     const markup = this.require<HTMLSelectElement>("markup");
@@ -1340,7 +1398,7 @@ class RibbonSurface implements RibbonEditor {
       // "No markup" shows the document as if every change were accepted; edits keep recording.
       const visible = markup.value !== "none";
       this.showRevisions = visible;
-      this.run(`markup ${markup.value}`, () => this.live!.showRevisions(visible));
+      this.run(`markup ${markup.value}`, () => this.live!.showRevisions(visible), cmd("showMarkup", { on: visible }));
     });
     const author = this.require<HTMLInputElement>("author");
     author.addEventListener("change", () => {
@@ -1377,11 +1435,11 @@ class RibbonSurface implements RibbonEditor {
   }
 
   /** A `<select>` that acts on change and snaps back to its placeholder. */
-  private wireSelect(name: string, label: string, apply: (value: string) => void): void {
+  private wireSelect(name: string, label: string, apply: (value: string) => void, command?: (value: string) => CommandOf): void {
     const select = this.require<HTMLSelectElement>(name);
     select.addEventListener("change", () => {
       const value = select.value;
-      if (this.live && value) this.run(label, () => apply(value));
+      if (this.live && value) this.run(label, () => apply(value), command?.(value));
       select.value = "";
     });
   }
@@ -1455,18 +1513,19 @@ class RibbonSurface implements RibbonEditor {
     const pgfmt = this.require<HTMLSelectElement>("pgfmt");
     pgfmt.addEventListener("change", () => {
       if (!this.live || !pgfmt.value) return;
-      this.run("page format", () => this.live!.setPageNumbering({ format: pgfmt.value as NumberFormat }));
+      this.run("page format", () => this.live!.setPageNumbering({ format: pgfmt.value as NumberFormat }),
+        cmd("pageNumbering", { format: pgfmt.value }));
       this.syncPageNumbering();
     });
     const pgstart = this.require<HTMLInputElement>("pgstart");
     pgstart.addEventListener("change", () => {
       const value = parseInt(pgstart.value, 10);
       if (!this.live || !(value > 0)) return;
-      this.run("page start", () => this.live!.setPageNumbering({ start: value }));
+      this.run("page start", () => this.live!.setPageNumbering({ start: value }), cmd("pageNumbering", { start: value }));
       this.syncPageNumbering();
     });
     this.control("pgclear")?.addEventListener("click", () => {
-      this.run("clear numbering", () => this.live!.clearPageNumbering());
+      this.run("clear numbering", () => this.live!.clearPageNumbering(), cmd("clearPageNumbering"));
       this.syncPageNumbering();
     });
 
@@ -1475,18 +1534,23 @@ class RibbonSurface implements RibbonEditor {
       if (!this.live!.setPageSetup(op)) this.setStatus("This engine build cannot change the page setup");
       this.syncLayoutState();
     };
-    this.wireSelect("margins", "margins", (v) => {
+    const margins = (v: string) => {
       const [top, bottom, left, right] = v.split(",").map((n) => parseInt(n, 10));
-      pageSetup({ marginTopTwips: top, marginBottomTwips: bottom, marginLeftTwips: left, marginRightTwips: right });
-    });
-    this.wireSelect("orientation", "orientation", (v) => pageSetup({ landscape: v === "landscape" }));
+      return { marginTopTwips: top, marginBottomTwips: bottom, marginLeftTwips: left, marginRightTwips: right };
+    };
+    this.wireSelect("margins", "margins", (v) => pageSetup(margins(v)), (v) => cmd("pageSetup", margins(v)));
+    this.wireSelect("orientation", "orientation", (v) => pageSetup({ landscape: v === "landscape" }),
+      (v) => cmd("pageSetup", { landscape: v === "landscape" }));
+    // (a size keeps the orientation the section had before it: worked out when the choice is made)
+    let size: EditorPageSetup = {};
     this.wireSelect("pagesize", "page size", (v) => {
       const [w, h] = v.split(",").map((n) => parseInt(n, 10));
       const landscape = !!this.live!.sectionInfo()?.landscape;
-      pageSetup(landscape
+      size = landscape
         ? { pageWidthTwips: h, pageHeightTwips: w, landscape: true }
-        : { pageWidthTwips: w, pageHeightTwips: h });
-    });
+        : { pageWidthTwips: w, pageHeightTwips: h };
+      pageSetup(size);
+    }, () => () => cmd("pageSetup", { ...size }));
 
     // Paragraph spacing / special indent.
     const before = this.require<HTMLInputElement>("spacebefore");
@@ -1495,7 +1559,8 @@ class RibbonSurface implements RibbonEditor {
       const pts = parseFloat(input.value);
       if (!this.live || !(pts >= 0)) return;
       this.run(`space ${which}`, () =>
-        this.live!.setParagraphSpacing(which === "before" ? { beforePt: pts } : { afterPt: pts }));
+        this.live!.setParagraphSpacing(which === "before" ? { beforePt: pts } : { afterPt: pts }),
+        cmd("paragraphSpacing", { [which]: pts }));
     };
     before.addEventListener("change", () => spacing("before", before));
     after.addEventListener("change", () => spacing("after", after));
@@ -1505,11 +1570,12 @@ class RibbonSurface implements RibbonEditor {
       if (!this.live || !special.value) return;
       const inches = parseFloat(specialVal.value);
       const twips = Math.round((inches >= 0 ? inches : 0.5) * 1440);
+      const kind = special.value;
       this.run("special indent", () => {
-        if (special.value === "firstLine") this.live!.setFirstLineIndent(twips);
-        else if (special.value === "hanging") this.live!.setHangingIndent(twips);
+        if (kind === "firstLine") this.live!.setFirstLineIndent(twips);
+        else if (kind === "hanging") this.live!.setHangingIndent(twips);
         else this.live!.setFirstLineIndent(0);
-      });
+      }, kind === "hanging" ? cmd("hangingIndent", { twips }) : cmd("firstLineIndent", { twips: kind === "firstLine" ? twips : 0 }));
     };
     special.addEventListener("change", applySpecial);
     specialVal.addEventListener("change", applySpecial);
@@ -1520,7 +1586,7 @@ class RibbonSurface implements RibbonEditor {
     paginated.checked = on;
     this.surface.dataset.view = on ? "paginated" : "continuous";
     if (!this.live) return;
-    this.run(on ? "page view" : "continuous view", () => this.live!.setPaginated(on));
+    this.run(on ? "page view" : "continuous view", () => this.live!.setPaginated(on), cmd("pageView", { on }));
     this.syncViewButtons();
   }
 
@@ -1575,7 +1641,7 @@ class RibbonSurface implements RibbonEditor {
       // No gutter on a phone: post directly on the selection with a prompt.
       const text = window.prompt("Comment");
       if (!text?.trim()) return;
-      this.run("comment", () => this.live!.addComment(text.trim(), this.author));
+      this.run("comment", () => this.live!.addComment(text.trim(), this.author), cmd("comment", { text: text.trim() }));
       return;
     }
     if (!this.live.beginComment()) this.setStatus("Click into a paragraph (or select text) to comment on it");
@@ -1668,7 +1734,8 @@ class RibbonSurface implements RibbonEditor {
           box.checked = !box.checked;
           this.setStatus("This engine build cannot change that option");
         }
-        this.run(`${kind === "first" ? "different first page" : "different odd & even"} ${box.checked ? "on" : "off"}`, () => {});
+        this.run(`${kind === "first" ? "different first page" : "different odd & even"} ${box.checked ? "on" : "off"}`, () => {},
+          ok ? cmd("headerFooterOption", { kind, on: box.checked }) : undefined);
         this.syncHeaderFooterState();
       });
     }
@@ -1721,21 +1788,21 @@ class RibbonSurface implements RibbonEditor {
 
   private setZoom(scale: number): void {
     if (!this.live || !(scale > 0)) return;
-    this.run(`zoom ${Math.round(scale * 100)}%`, () => this.live!.setZoom(scale));
+    this.run(`zoom ${Math.round(scale * 100)}%`, () => this.live!.setZoom(scale), cmd("zoom", { scale }));
     this.syncZoom();
   }
 
   /** Page width: the page as wide as the window, as Word's Page Width (kept as the window resizes). */
   private fitPageWidth(): void {
     if (!this.live) return;
-    this.run("page width", () => this.live!.fitPageWidth());
+    this.run("page width", () => this.live!.fitPageWidth(), cmd("pageWidth"));
     this.syncZoom();
   }
 
   /** One page: a whole page in view, as Word's One Page (kept as the window resizes). */
   private fitOnePage(): void {
     if (!this.live) return;
-    this.run("one page", () => this.live!.fitOnePage());
+    this.run("one page", () => this.live!.fitOnePage(), cmd("onePage"));
     this.syncZoom();
   }
 
@@ -1807,7 +1874,7 @@ class RibbonSurface implements RibbonEditor {
           matchCase: matchCase.checked,
           focus: false,
         });
-      });
+      }, cmd("replaceAll", { text: text.value, with: replace.value, matchCase: matchCase.checked }));
       this.setStatus(`Replaced ${count} occurrence${count === 1 ? "" : "s"}`);
       this.refreshFind(true);
     });
@@ -1910,7 +1977,9 @@ class RibbonSurface implements RibbonEditor {
     if (!this.live || !(event.ctrlKey || event.metaKey)) return;
     const key = event.key.toLowerCase();
     const target = event.target instanceof Element ? event.target : null;
-    const inDocument = this.surface.contains(event.target as Node);
+    // (by its path, not by where the target is now: the editor's own chords re-render the block they
+    // were pressed in, which has left the document by the time the key bubbles up here)
+    const inDocument = event.composedPath().includes(this.surface);
     // Ctrl+Alt+M is Word's New Comment; every other chord here is plain Ctrl.
     if (event.altKey) {
       if (key === "m" && inDocument) { event.preventDefault(); this.beginComment(); }
@@ -1919,6 +1988,13 @@ class RibbonSurface implements RibbonEditor {
     // The editor has already acted on its own chords (Undo, Redo, Bold, ...) by now: the key
     // reaches the block before it bubbles up here.
     this.scheduleDirtyCheck();
+    // ...and they are reported as the commands they are (onCommand), as the buttons' are: the same
+    // chords the editor takes (DocxEditor.onKeydown), in one of its blocks.
+    if (inDocument && target?.closest('[data-anchor][contenteditable="true"]')) {
+      const own = ({ b: "bold", i: "italic", u: "underline", y: "redo" } as Record<string, string>)[key]
+        ?? (key === "z" ? (event.shiftKey ? "redo" : "undo") : undefined);
+      if (own) this.options.onCommand?.(own, 0, cmd(own));
+    }
     // Save and Open, as in Word, while the surface shows them (fileActions).
     if (!event.shiftKey && key === "s" && this.control("save")) { event.preventDefault(); this.download(); return; }
     if (!event.shiftKey && key === "o" && this.control("file")) { event.preventDefault(); this.requestOpen(); return; }
@@ -1932,7 +2008,7 @@ class RibbonSurface implements RibbonEditor {
     if (target?.closest(".docx-comment-gutter, textarea, input")) return;
     const align = (alignment: EditorAlignment) => {
       event.preventDefault();
-      this.run(`align ${alignment}`, () => this.live!.setAlignment(alignment));
+      this.run(`align ${alignment}`, () => this.live!.setAlignment(alignment), cmd("align", { alignment }));
     };
     switch (key) {
       case "k": event.preventDefault(); this.openLinkPopover(); return;
@@ -1940,9 +2016,9 @@ class RibbonSurface implements RibbonEditor {
       case "l": align("left"); return;
       case "r": align("right"); return;
       case "j": align("justify"); return;
-      case "]": event.preventDefault(); this.run("grow font", () => this.live!.adjustFontSize(1)); return;
-      case "[": event.preventDefault(); this.run("shrink font", () => this.live!.adjustFontSize(-1)); return;
-      case "enter": event.preventDefault(); this.run("page break", () => this.live!.pageBreakBefore(true)); return;
+      case "]": event.preventDefault(); this.run("grow font", () => this.live!.adjustFontSize(1), cmd("growFont")); return;
+      case "[": event.preventDefault(); this.run("shrink font", () => this.live!.adjustFontSize(-1), cmd("shrinkFont")); return;
+      case "enter": event.preventDefault(); this.run("page break", () => this.live!.pageBreakBefore(true), cmd("pageBreakBefore", { on: true })); return;
       default: return;
     }
   }
@@ -1984,11 +2060,11 @@ class RibbonSurface implements RibbonEditor {
       const rows = Number(cell.dataset.r) + 1;
       const cols = Number(cell.dataset.c) + 1;
       this.closePopovers();
+      const borderless = this.require<HTMLInputElement>("gridborderless").checked;
+      const align = this.require<HTMLSelectElement>("gridalign").value as EditorAlignment;
       this.run(`table ${rows}×${cols}`, () =>
-        this.live!.insertTable(rows, cols, {
-          borderless: this.require<HTMLInputElement>("gridborderless").checked,
-          cellAlignment: this.require<HTMLSelectElement>("gridalign").value as EditorAlignment,
-        }));
+        this.live!.insertTable(rows, cols, { borderless, cellAlignment: align }),
+        cmd("table", { rows, columns: cols, align, borderless }));
     });
 
     this.keepSelection(button);
@@ -2022,7 +2098,7 @@ class RibbonSurface implements RibbonEditor {
       if (!target || !this.live) return;
       this.closePopovers();
       let ok = false;
-      this.run("link", () => { ok = this.live!.insertHyperlink(target); });
+      this.run("link", () => { ok = this.live!.insertHyperlink(target); }, () => (ok ? cmd("hyperlink", { target }) : undefined));
       if (!ok) this.setStatus("Select the text to link first");
     });
     url.addEventListener("keydown", (event) => {
@@ -2084,6 +2160,17 @@ class RibbonSurface implements RibbonEditor {
     } else if (name === "showComments") {
       this.require<HTMLInputElement>("showcomments").checked = on;
       this.surface.dataset.comments = on && this.options.comments !== false ? "on" : "off";
+    } else if (name === "showMarkup") {
+      this.showRevisions = on;
+      this.require<HTMLSelectElement>("markup").value = on ? "all" : "none";
+    } else if (name === "smallCaps") {
+      this.control("smallcaps")?.setAttribute("aria-pressed", String(on));
+    } else if (name === "pageSetup") {
+      this.syncLayoutState();
+    } else if (name === "pageNumbering" || name === "clearPageNumbering") {
+      this.syncPageNumbering();
+    } else if (name === "headerFooterOption" || name === "goToHeaderFooter" || name === "closeHeaderFooter") {
+      this.syncHeaderFooterState();
     }
     return result;
   }
