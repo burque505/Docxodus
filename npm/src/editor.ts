@@ -58,6 +58,8 @@ import type {
   TableOfContentsOptions,
 } from "./types.js";
 import { diffUnits, needsRemount, tokenOf, unidOf } from "./editor-reconcile.js";
+import { EditorCommandError, editorCommands, runEditorCommand } from "./editor-commands.js";
+import type { EditorCommandArgs, EditorCommandInfo } from "./editor-commands.js";
 import { imageOnlyDelta, patchImageAttributes } from "./editor-image-patch.js";
 import type { RenderPlan, RenderUnit, UnitDiff } from "./editor-reconcile.js";
 
@@ -1120,6 +1122,13 @@ function blockContentText(block: HTMLElement): string {
   };
   walk(block);
   return out;
+}
+
+/** A block's text as a reader sees it: no-break spaces as spaces, an empty paragraph's
+ *  placeholder as nothing. */
+function plainBlockText(block: HTMLElement): string {
+  const text = blockContentText(block).replace(/\u00a0/g, " ");
+  return trimSpaces(text).length === 0 ? "" : text;
 }
 
 /**
@@ -5381,6 +5390,146 @@ export class DocxEditor {
       superscript: selectionHasFormat("superscript", block),
       subscript: selectionHasFormat("subscript", block),
     };
+  }
+
+  // ─── Commands by name (editor-commands.ts) ───────────────────────────
+
+  /**
+   * Run an editing command by name, with its arguments as a plain object, e.g.
+   * `exec("fontSize", { pts: 14 })` or `exec("insertText", { text: "Dear Sir,\n" })`. Returns the
+   * command's result (a count, some text; null for most). For hosts that drive the editor from
+   * outside: a scripting bridge, a command palette, a macro recorder. Throws an
+   * `EditorCommandError` (`unknown_command`, `bad_arguments`, `closed`, `refused`).
+   */
+  exec(name: string, args: EditorCommandArgs = {}): unknown {
+    if (this.closed) throw new EditorCommandError("closed", name, `${name}: the editor is closed`);
+    return runEditorCommand(this, name, args);
+  }
+
+  /** The commands `exec` knows: name, group, description, arguments and result. */
+  static commands(): EditorCommandInfo[] {
+    return editorCommands();
+  }
+
+  /**
+   * Type `text` at the caret in the active block, replacing the selection there, through the
+   * engine (one undo step, not simulated keystrokes). Each line break ("\n", "\r\n") starts a
+   * new paragraph, as Enter does. With no caret in the active block the text goes at its end.
+   * False when there is no active block, the selection spans paragraphs, or the engine refused.
+   */
+  insertText(text: string): boolean {
+    if (this.closed || !this.activeBlock) return false;
+    const lines = text.replace(/\r\n?/g, "\n").split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      if (i > 0) {
+        const el: HTMLElement | null = this.activeBlock;
+        if (!el?.isConnected) return false;
+        if (caretOffsetIn(el) === null) placeCaretAtOffset(el, blockContentText(el).length);
+        this.splitAtCaret(el);
+        // (the split leaves the caret at the start of the new paragraph, which is now the active one)
+        const next = this.focusedBlock();
+        if (!next || next === el) return false;
+        this.activeBlock = next;
+      }
+      if (lines[i] !== "" && !this.insertInBlock(lines[i])) return false;
+    }
+    return true;
+  }
+
+  /** One line of insertText: replace the selection, or insert at the caret, in the active block. */
+  private insertInBlock(text: string): boolean {
+    const block = this.activeBlock;
+    if (!block?.isConnected || this.selectedBlocks().length > 1) return false;
+    const unid = block.getAttribute("data-anchor");
+    if (!unid) return false;
+    let fullId = this.anchorIdOf(block);
+    if (!fullId) return false;
+    // (measured before the sync, which commits pending typing; both in the committed text's offsets)
+    const caret = caretOffsetIn(block);
+    const span = selectionSpanIn(block)
+      ?? { start: trimmedSplitOffset(block, caret ?? blockContentText(block).length), length: 0 };
+    const { leading } = trimBounds(block);
+    const committed = blockContentText(block).slice(leading);
+    fullId = this.syncBlock(block, fullId);
+    if (!fullId) return false;
+    const bridge = this.exports.DocxSessionBridge;
+    let start = span.start;
+    let res = this.parseEdit(bridge.ReplaceTextAtSpan(this.handle, fullId, span.start, span.length, text),
+      span.length === 0 ? { expectRejection: true } : undefined);
+    if (!res.success && span.length === 0 && committed.length > 0) {
+      // The engine inserts only at a run boundary or inside a plain run (not inside a link or a
+      // field): replace a neighbouring character with itself plus the text, as typing does.
+      if (start > 0) {
+        start -= 1;
+        res = this.parseEdit(bridge.ReplaceTextAtSpan(this.handle, fullId, start, 1, committed[start] + text));
+        start += 1;
+      } else {
+        res = this.parseEdit(bridge.ReplaceTextAtSpan(this.handle, fullId, 0, 1, text + committed[0]));
+      }
+    } else if (!res.success && span.length === 0) {
+      this.reportEditFailure(res.error);
+    }
+    if (!res.success) return false;
+    const fresh = this.swapBlock(block, unid, res.modified?.[0]) ?? (block.isConnected ? block : null);
+    if (!fresh) return false;
+    this.activeBlock = fresh;
+    placeCaretAtOffset(fresh, start + text.length);
+    return true;
+  }
+
+  /** The editable block holding the focus, if any (after a command that moved it). */
+  private focusedBlock(): HTMLElement | null {
+    const active = this.container.ownerDocument.activeElement;
+    return active instanceof HTMLElement && active.isContentEditable && active.hasAttribute("data-anchor")
+      && this.container.contains(active) ? active : null;
+  }
+
+  /**
+   * The body's text: a line for each paragraph and table cell (in document order; notes, headers
+   * and footers left out). An empty paragraph is an empty line.
+   */
+  documentText(): string {
+    if (this.closed) return "";
+    return this.editableList()
+      .filter((b) => !b.closest('.footnotes, .endnotes, [class$="-footnotes"], [class$="-endnotes"]'))
+      .map((b) => plainBlockText(b))
+      .join("\n");
+  }
+
+  /** The text of the paragraph (or cell) at the caret; "" when there is none. */
+  paragraphText(): string {
+    return this.closed || !this.activeBlock ? "" : plainBlockText(this.activeBlock);
+  }
+
+  /** The selected text, a line for each paragraph it covers; "" when nothing is selected in the
+   *  document. */
+  selectedText(): string {
+    if (this.closed) return "";
+    const sel = typeof window !== "undefined" ? window.getSelection() : null;
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return "";
+    const range = sel.getRangeAt(0);
+    if (!this.container.contains(range.commonAncestorContainer)) return "";
+    return this.selectedBlocks().map((b) => {
+      const text = blockContentText(b);
+      const from = b.contains(range.startContainer) ? contentOffsetOf(b, range.startContainer, range.startOffset) : 0;
+      const to = b.contains(range.endContainer) ? contentOffsetOf(b, range.endContainer, range.endOffset) : text.length;
+      return text.slice(Math.min(from, to), Math.max(from, to)).replace(/\u00a0/g, " ");
+    }).join("\n");
+  }
+
+  /** Put the caret at the start or end of the body or of the active paragraph. False when there
+   *  is no paragraph to go to. */
+  moveCaret(to: "documentStart" | "documentEnd" | "paragraphStart" | "paragraphEnd"): boolean {
+    if (this.closed) return false;
+    const blocks = this.editableList();
+    const target = to === "documentStart" ? blocks[0]
+      : to === "documentEnd" ? blocks[blocks.length - 1]
+        : this.activeBlock;
+    if (!target?.isConnected) return false;
+    this.activeBlock = target;
+    const { leading } = trimBounds(target);
+    placeCaretAtOffset(target, to.endsWith("Start") ? leading : blockContentText(target).length);
+    return true;
   }
 
   /** Re-render one block from the live session by EditResult ref, swapping it in place. */

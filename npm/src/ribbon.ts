@@ -34,6 +34,8 @@ import type {
   FormatKey,
 } from "./editor.js";
 import { threadMembers } from "./editor-comments.js";
+import { EditorCommandError } from "./editor-commands.js";
+import type { EditorCommandArgs, EditorCommandInfo } from "./editor-commands.js";
 import { RibbonHistory } from './ribbon-history.js';
 import type { RibbonHistoryBinding } from './ribbon-history.js';
 export type { RibbonHistoryBinding, RibbonHistoryOptions } from './ribbon-history.js';
@@ -137,8 +139,12 @@ export interface RibbonOptions extends DocxEditorOptions {
   onOpen?: (editor: DocxEditor) => void;
   /** Called whenever the status line changes. */
   onStatus?: (text: string) => void;
-  /** Called after every ribbon command, with its label and measured duration. */
-  onCommand?: (label: string, ms: number) => void;
+  /**
+   * Called after every ribbon command, with its label and measured duration; for a command run
+   * by name (`exec`) that succeeded, also its name and arguments, as `exec` takes them again
+   * (what a macro recorder keeps).
+   */
+  onCommand?: (label: string, ms: number, command?: { name: string; args: EditorCommandArgs }) => void;
 }
 
 /** Drives the loading overlay. Safe to call when the loader is disabled — every method no-ops. */
@@ -154,6 +160,9 @@ export interface RibbonLoader {
   /** Show the failure state with a Retry button. */
   fail(error: unknown): void;
 }
+
+/** The commands that only read the document (DocxEditor.commands(), group "query"). */
+const QUERY_COMMANDS: ReadonlySet<string> = new Set(DocxEditor.commands().filter((c) => c.group === "query").map((c) => c.name));
 
 export interface RibbonEditor {
   readonly history: RibbonHistory | null;
@@ -181,6 +190,15 @@ export interface RibbonEditor {
   setStatus(text: string): void;
   /** Activate a ribbon tab by name ("home" | "insert" | "layout" | "references" | "review" | "view" | "table" | "headerfooter"). */
   selectTab(name: string): void;
+  /**
+   * Run an editor command by name (`DocxEditor.exec`) as a ribbon control runs it: the rail and
+   * `onCommand` report it, and the controls that show the state (view, zoom, Track Changes,
+   * comments) follow. Returns the command's result; throws `EditorCommandError`, also when no
+   * document is open.
+   */
+  exec(name: string, args?: EditorCommandArgs): unknown;
+  /** The commands `exec` knows (`DocxEditor.commands()`). */
+  commands(): EditorCommandInfo[];
   /** Force a density, or hand control back to measurement with "auto". */
   setChrome(mode: RibbonChromeMode): void;
   /** Look up a control by its `data-dxr` name. */
@@ -780,16 +798,18 @@ class RibbonSurface implements RibbonEditor {
    * Every control routes through here, which is what makes the rail's "last op"
    * an honest measurement rather than a label the surface makes up.
    */
-  private run(label: string, fn: () => void): void {
+  private run(label: string, fn: () => void, command?: { name: string; args: EditorCommandArgs }): void {
     if (!this.live) return;
     const started = performance.now();
+    let ok = false;
     try {
       fn();
+      ok = true;
     } finally {
       const ms = performance.now() - started;
       const el = this.control("railOp");
       if (el) el.textContent = `${label} ${ms >= 1000 ? `${(ms / 1000).toFixed(2)} s` : `${Math.round(ms)} ms`}`;
-      this.options.onCommand?.(label, ms);
+      this.options.onCommand?.(label, ms, ok ? command : undefined);
       this.history?.edited();
       this.refreshRailCounts();
       this.refreshRailAnchor();
@@ -1649,6 +1669,35 @@ class RibbonSurface implements RibbonEditor {
   }
 
   // ── tabs ────────────────────────────────────────────────────────────────────
+
+  exec(name: string, args: EditorCommandArgs = {}): unknown {
+    const live = this.live;
+    if (!live) throw new EditorCommandError("closed", name, `${name}: no document is open`);
+    // A query only reads: not a command for the rail, the history or a recorder.
+    if (QUERY_COMMANDS.has(name)) return live.exec(name, args);
+    let result: unknown = null;
+    this.run(name, () => { result = live.exec(name, args); }, { name, args: { ...args } });
+    // The controls that show what these commands changed (the commands checked their arguments).
+    const on = args.on === true || args.on === 1;
+    if (name === "pageView") {
+      this.require<HTMLInputElement>("paginated").checked = on;
+      this.surface.dataset.view = on ? "paginated" : "continuous";
+      this.syncViewButtons();
+    } else if (name === "zoom") {
+      this.syncZoom();
+    } else if (name === "trackChanges") {
+      this.require<HTMLInputElement>("trackchanges").checked = on;
+      this.syncReviewState();
+    } else if (name === "showComments") {
+      this.require<HTMLInputElement>("showcomments").checked = on;
+      this.surface.dataset.comments = on && this.options.comments !== false ? "on" : "off";
+    }
+    return result;
+  }
+
+  commands(): EditorCommandInfo[] {
+    return DocxEditor.commands();
+  }
 
   selectTab(name: string): void {
     for (const tab of Array.from(this.element.querySelectorAll<HTMLElement>(".dxr-tab"))) {
