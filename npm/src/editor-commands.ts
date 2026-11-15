@@ -11,8 +11,8 @@
  * last block the user or a command was in). Each editing command is one undo step, as the
  * matching ribbon control is.
  */
-import type { DocxEditor, EditorAlignment, FormatKey } from "./editor.js";
-import type { ListFormat, TableBorderSpec, TableOfContentsOptions } from "./types.js";
+import type { DocxEditor, EditorAlignment, EditorPageSetup, FormatKey } from "./editor.js";
+import type { ListFormat, NumberFormat, TableBorderSpec, TableOfContentsOptions } from "./types.js";
 import { TrackedChangeMode } from "./types.js";
 
 /** Why `exec` failed: no such command, an argument missing or of the wrong kind, no document
@@ -36,7 +36,8 @@ export interface EditorCommandInfo {
   /** The name `exec` takes, e.g. `"bold"`. */
   name: string;
   /** Where it belongs, as the ribbon groups its controls: `"font"`, `"paragraph"`, `"insert"`,
-   *  `"table"`, `"review"`, `"edit"`, `"view"`, `"query"`. A query only reads the document. */
+   *  `"layout"`, `"table"`, `"review"`, `"edit"`, `"view"`, `"query"`. A query only reads the
+   *  document. */
   group: string;
   /** What it does, in a sentence. */
   description: string;
@@ -133,6 +134,10 @@ const LIST_FORMATS: readonly ListFormat[] = [
   "decimalParenthesis", "lowerLetterParenthesis", "upperLetterParenthesis", "lowerRomanParenthesis",
   "upperRomanParenthesis",
 ];
+const PAGE_SETUP_TWIPS = [
+  "marginTopTwips", "marginBottomTwips", "marginLeftTwips", "marginRightTwips", "pageWidthTwips", "pageHeightTwips",
+] as const;
+const PAGE_NUMBER_FORMATS: readonly NumberFormat[] = ["decimal", "upperLetter", "lowerLetter", "upperRoman", "lowerRoman"];
 const FORMATS: ReadonlyArray<[FormatKey, string]> = [
   ["bold", "bold"], ["italic", "italic"], ["underline", "underlined"], ["strike", "struck through"],
   ["superscript", "superscript"], ["subscript", "subscript"], ["code", "code (monospace)"],
@@ -240,6 +245,18 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     run: (e, a) => must(e.insertHyperlink(a.string("target"), a.optOneOf("kind", ["external", "internal"] as const) ?? "external"), "hyperlink", "select the text to link first"),
   },
   removeHyperlink: { group: "insert", description: "Remove the link at the caret, keeping its text.", args: {}, run: (e) => { e.removeHyperlink(); } },
+  table: {
+    group: "insert", description: "Insert a table at the caret: rows by columns, optionally borderless, its cells aligned.",
+    args: { rows: "number", columns: "number", "align?": ALIGNMENTS.join("|"), "borderless?": "boolean" },
+    run: (e, a) => {
+      const rows = a.number("rows"), columns = a.number("columns");
+      if (!(rows >= 1 && columns >= 1)) throw new EditorCommandError("bad_arguments", "table", "table: \"rows\" and \"columns\" must be at least 1");
+      e.insertTable(Math.trunc(rows), Math.trunc(columns), {
+        borderless: a.optBool("borderless") ?? false,
+        cellAlignment: a.optOneOf("align", ALIGNMENTS),
+      });
+    },
+  },
   comment: {
     group: "insert", description: "Comment on the selection (or the paragraph).", args: { text: "string" }, returns: "the comment's id",
     run: (e, a) => {
@@ -247,6 +264,47 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
       must(!!entry, "comment", "there is no caret in the document");
       return entry!.anchorId;
     },
+  },
+
+  // ── layout ──
+  pageSetup: {
+    group: "layout",
+    description: "Set the section's page: margins and size in twips (1440 an inch), landscape or not; what is left out stays.",
+    args: {
+      "marginTopTwips?": "number", "marginBottomTwips?": "number", "marginLeftTwips?": "number", "marginRightTwips?": "number",
+      "pageWidthTwips?": "number", "pageHeightTwips?": "number", "landscape?": "boolean",
+    },
+    run: (e, a) => {
+      const op: Record<string, number | boolean> = {};
+      for (const key of PAGE_SETUP_TWIPS) {
+        const v = a.optNumber(key);
+        if (v !== undefined) op[key] = Math.round(v);
+      }
+      const landscape = a.optBool("landscape");
+      if (landscape !== undefined) op.landscape = landscape;
+      if (Object.keys(op).length === 0) throw new EditorCommandError("bad_arguments", "pageSetup", "pageSetup: give at least one setting");
+      must(e.setPageSetup(op as EditorPageSetup), "pageSetup", "this engine build cannot change the page setup");
+    },
+  },
+  pageNumbering: {
+    group: "layout", description: "Number the section's pages in a format, or restart them at a value.",
+    args: { "format?": PAGE_NUMBER_FORMATS.join("|"), "start?": "number" },
+    run: (e, a) => {
+      const format = a.optOneOf("format", PAGE_NUMBER_FORMATS), start = a.optNumber("start");
+      if (format === undefined && start === undefined) throw new EditorCommandError("bad_arguments", "pageNumbering", "pageNumbering: give a format or a start");
+      e.setPageNumbering({ ...(format ? { format } : {}), ...(start !== undefined ? { start: Math.trunc(start) } : {}) });
+    },
+  },
+  clearPageNumbering: { group: "layout", description: "Continue the previous section's page numbering.", args: {}, run: (e) => e.clearPageNumbering() },
+  goToHeaderFooter: {
+    group: "layout", description: "Put the caret in the section's header or footer.", args: { which: "header|footer" },
+    run: (e, a) => must(e.goToHeaderFooter(a.oneOf("which", ["header", "footer"] as const)), "goToHeaderFooter", "this view has no header or footer to go to"),
+  },
+  closeHeaderFooter: { group: "layout", description: "Leave the header or footer, back to the body.", args: {}, run: (e) => e.closeHeaderFooter() },
+  headerFooterOption: {
+    group: "layout", description: "A different header and footer on the first page, or on odd and even pages (or not).",
+    args: { kind: "first|even", on: "boolean" },
+    run: (e, a) => must(e.setHeaderFooterKindEnabled(a.oneOf("kind", ["first", "even"] as const), a.bool("on")), "headerFooterOption", "this engine build cannot change that option"),
   },
 
   // ── table ──
@@ -279,6 +337,10 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   acceptAllChanges: { group: "review", description: "Accept every tracked change.", args: {}, run: (e) => must(e.acceptAllRevisions(), "acceptAllChanges", "the engine refused it") },
   rejectAllChanges: { group: "review", description: "Reject every tracked change.", args: {}, run: (e) => must(e.rejectAllRevisions(), "rejectAllChanges", "the engine refused it") },
   showComments: { group: "review", description: "Show or hide the comments.", args: { on: "boolean" }, run: (e, a) => e.showComments(a.bool("on")) },
+  showMarkup: {
+    group: "review", description: "Show the tracked changes (or the document as if they were accepted; edits keep being tracked).",
+    args: { on: "boolean" }, run: (e, a) => e.showRevisions(a.bool("on")),
+  },
 
   // ── edit ──
   undo: { group: "edit", description: "Undo the last edit.", args: {}, run: (e) => e.undo() },
