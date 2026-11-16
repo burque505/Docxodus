@@ -5830,7 +5830,10 @@ export class DocxEditor {
     const selection = this.container.ownerDocument.defaultView?.getSelection();
     const block = (selection?.anchorNode ? this.editableBlockOf(selection.anchorNode) : null) ?? this.activeBlock;
     if (!block?.isConnected) return null;
-    if (this.selectedBlocks().length > 1) {
+    // (the live selection decides: the remembered cross-block one may be stale once the caret moved)
+    const crossBlock = !!selection && !selection.isCollapsed && selection.focusNode
+      && this.editableBlockOf(selection.focusNode) !== block;
+    if (crossBlock) {
       this.reportEditFailure({ message: "Pasting over a selection that spans paragraphs is not supported yet: select within one paragraph, or delete the selection first" } as EditResultLite["error"]);
       return null;
     }

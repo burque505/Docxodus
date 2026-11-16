@@ -78,6 +78,20 @@ export function cleanPastedHtml(html: string, chromeSelector = ""): CleanedPaste
     if (!e.matches("[data-list-marker]") && !e.closest("[data-list-marker]")) e.remove();
   });
 
+  // Word's comments: the reference marks ([R1]) and the comment list after the content go; the commented
+  // text stays. Its tracked changes paste as they read with the changes accepted: deletions go,
+  // insertions stay.
+  body.querySelectorAll('a.msocomanchor, .MsoCommentReference, .msocomoff, .msocomtxt, del, .msoDel')
+    .forEach((e) => e.remove());
+  body.querySelectorAll("div").forEach((d) => {
+    if (/mso-element:\s*(comment|footnote|endnote)-list/i.test(d.getAttribute("style") ?? "")) d.remove();
+  });
+  body.querySelectorAll("ins, .msoIns").forEach((e) => e.replaceWith(...Array.from(e.childNodes)));
+  // A link without a target is only a name (Word's bookmarks and comment ranges): its text stays.
+  body.querySelectorAll("a:not([href])").forEach((a) => a.replaceWith(...Array.from(a.childNodes)));
+  // Word's own links back to its comments and notes inside the copy lead nowhere here.
+  body.querySelectorAll('a[href^="#_msocom"], a[href^="#_ftn"], a[href^="#_edn"]').forEach((a) => a.remove());
+
   rebuildLists(body);
 
   // Office's own elements: VML shapes go (an <img> carries the same picture), others are unwrapped
@@ -105,6 +119,7 @@ export function cleanPastedHtml(html: string, chromeSelector = ""): CleanedPaste
     if (!p.querySelector("img, br, table") && !(p.textContent ?? "").replace(/[\s\u00a0]/g, "")) p.replaceChildren();
   });
 
+  dropLayoutWhitespace(body);
   wrapLooseInline(doc, body);
   cleanAttributes(body);
 
@@ -137,7 +152,13 @@ export function serializePaste(cleaned: CleanedPaste, images: ReadonlyMap<string
   }
   // Only <body> goes: text between <html> and <body> would become a paragraph of its own.
   for (const node of Array.from(doc.documentElement.childNodes)) if (node !== doc.body) node.remove();
-  return new XMLSerializer().serializeToString(doc.documentElement);
+  // A fresh <html> around the body: Word's carries namespace declarations, one of them a second xmlns, which
+  // XML does not allow.
+  const html = new DOMParser().parseFromString("<!doctype html><html><body></body></html>", "text/html");
+  const body = html.importNode(doc.body, true) as HTMLElement;
+  for (const attr of Array.from(body.attributes)) if (attr.name !== "style" && attr.name !== "lang") body.removeAttribute(attr.name);
+  html.body.replaceWith(body);
+  return new XMLSerializer().serializeToString(html.documentElement);
 }
 
 /** A style sheet's plain rules: comments, HTML comment marks and at-rules (@font-face, @page,
@@ -171,6 +192,34 @@ function wrapLooseInline(doc: Document, body: HTMLElement): void {
   body.querySelectorAll(":scope > p").forEach((p) => {
     if (p.childNodes.length === 1 && (p.firstChild as Element).tagName === "BR") p.replaceChildren();
   });
+}
+
+const CONTAINER_TAGS = new Set([
+  "body", "div", "td", "th", "li", "table", "tbody", "thead", "tfoot", "tr", "ul", "ol", "blockquote", "section",
+  "article", "header", "footer", "main", "nav", "aside", "figure", "dl", "center",
+]);
+
+/**
+ * The line breaks and indents between blocks (Word's HTML is laid out with them) are not text: a
+ * whitespace-only text node beside a block, or anywhere in a table's structure, would become a
+ * paragraph of its own. A <div> that only holds blocks (Word's section wrapper) is unwrapped.
+ */
+function dropLayoutWhitespace(body: HTMLElement): void {
+  const isBlock = (n: Node | null) => !!n && n.nodeType === 1 && BLOCK_TAGS.has((n as Element).tagName.toLowerCase());
+  const walker = body.ownerDocument.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+  const drop: Text[] = [];
+  while (walker.nextNode()) {
+    const t = walker.currentNode as Text;
+    if (/[^\s]/.test(t.data) || / /.test(t.data)) continue;  // (a no-break space is content; \s takes it too)
+    const parent = t.parentElement;
+    if (!parent || !CONTAINER_TAGS.has(parent.tagName.toLowerCase())) continue;
+    const tableish = /^(table|tbody|thead|tfoot|tr|ul|ol|dl)$/i.test(parent.tagName);
+    if (tableish || isBlock(t.previousSibling) || isBlock(t.nextSibling) || !t.previousSibling || !t.nextSibling) drop.push(t);
+  }
+  drop.forEach((t) => t.remove());
+  for (const div of Array.from(body.querySelectorAll("div")).reverse()) {
+    if (Array.from(div.childNodes).every((n) => isBlock(n))) div.replaceWith(...Array.from(div.childNodes));
+  }
 }
 
 /** Keep only attributes XML can carry and the converter reads; drop the rest. */
@@ -218,7 +267,7 @@ function takeListParagraph(el: Element): ListParagraph | null {
     while (markerEl?.parentElement && markerEl.parentElement !== el
       && markerEl.parentElement.textContent === markerEl.textContent) markerEl = markerEl.parentElement;
   } else {
-    markerEl = el.querySelector(":scope > [data-list-marker], :scope > * > [data-list-marker]");
+    markerEl = el.querySelector(":scope > [data-list-marker]");
     if (!markerEl) return null;
   }
   const marker = (markerEl?.textContent ?? "").replace(/[\u00a0\s]+/g, " ").trim();
@@ -270,9 +319,9 @@ function indentOf(el: Element): number {
  * this editor's are ranked by indent within the run.
  */
 function rebuildLists(body: HTMLElement): void {
-  const candidates = Array.from(body.querySelectorAll("p, h1, h2, h3, h4, h5, h6, div"))
+  const candidates = Array.from(body.querySelectorAll("p, h1, h2, h3, h4, h5, h6"))
     .filter((el) => /mso-list:\s*l\d+\s+level/i.test(el.getAttribute("style") ?? "")
-      || el.querySelector(":scope > [data-list-marker], :scope > * > [data-list-marker]"));
+      || el.querySelector(":scope > [data-list-marker]"));
   const items = candidates.map(takeListParagraph).filter((x): x is ListParagraph => !!x);
   if (!items.length) return;
 

@@ -222,6 +222,21 @@ public class DocxSessionPasteHtmlTests
     }
 
     [Fact]
+    public void PH013_BrowserCopyColors_RgbaAndFunctions_DoNotFailThePaste()
+    {
+        // A browser's copy writes computed styles on every element: transparent rgba() backgrounds, rgb() colors.
+        using var session = new DocxSession(Fixture());
+        var result = session.InsertHtml(Blocks(session)[1], 0, 0,
+            "<html><body><p style=\"color: rgb(0, 0, 0); background-color: rgba(0, 0, 0, 0)\">A <span style=\"color: rgba(255, 0, 0, 0.5); "
+            + "background-color: hsl(0, 0%, 50%)\">B</span></p><p>C</p></body></html>",
+            new HtmlInsertOptions { Formatting = HtmlPasteFormatting.Keep });
+        Assert.True(result.Success, result.Error?.Message);
+        Assert.Equal("A B", Text(Paragraphs(session)[1]));
+        var b = Paragraphs(session)[1].Descendants(W + "r").First(r => Text(r) == "B");
+        Assert.Equal("ff0000", (string?)b.Element(W + "rPr")?.Element(W + "color")?.Attribute(W + "val"), ignoreCase: true);
+    }
+
+    [Fact]
     public void PH010_NotXml_IsRefused_AndChangesNothing()
     {
         using var session = new DocxSession(Fixture());

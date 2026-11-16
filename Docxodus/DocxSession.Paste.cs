@@ -421,14 +421,15 @@ public sealed partial class DocxSession
                 bool hasTail = head is null || split;
                 XElement? tailJoin = null;
                 if (hasTail && middle.Count > 0 && middle[^1].Name == W.p && ParagraphText(tail).Length == 0
-                    && !tracked && tail.Elements().All(e => e.Name == W.pPr || (e.Name == W.r && !e.Elements().Any(c => c.Name != W.rPr))))
+                    && !tracked && tail.Elements().All(e => e.Name == W.pPr || IsEmptyPastedRun(e) || IsMarkOnly(e)))
                 {
                     // An empty paragraph where the paste lands becomes its last paragraph (no blank
-                    // line left behind), keeping the section break it may end.
+                    // line left behind), keeping the section break it may end and its bookmarks
+                    // (Word's _GoBack is in many an empty paragraph).
                     var last = middle[^1];
                     middle.RemoveAt(middle.Count - 1);
                     var sectPr = tail.Element(W.pPr)?.Element(W.sectPr);
-                    tail.Elements().Where(e => e.Name != W.pPr).Remove();
+                    tail.Elements().Where(IsEmptyPastedRun).Remove();
                     tail.Element(W.pPr)?.Remove();
                     if (last.Element(W.pPr) is { } lastPPr) tail.AddFirst(new XElement(lastPPr));
                     if (sectPr is not null)
@@ -505,6 +506,12 @@ public sealed partial class DocxSession
             return FailInternal(ex, anchorId);
         }
     }
+
+    private static bool IsEmptyPastedRun(XElement e) => e.Name == W.r && !e.Elements().Any(c => c.Name != W.rPr);
+
+    /// <summary>A marker that holds no text: a bookmark's ends, a proofing mark.</summary>
+    private static bool IsMarkOnly(XElement e) =>
+        e.Name == W.bookmarkStart || e.Name == W.bookmarkEnd || e.Name == W.proofErr;
 
     private void InsertInlineSequence(XElement paragraph, int offset, List<XElement> inlines)
     {

@@ -3016,8 +3016,21 @@ namespace Docxodus.HtmlToWml
                         return colorInHex;
                     }
                 }
-                // Type != Function here (handled above), so Value is non-null.
-                string value = term.Value!;
+                // rgba(r, g, b, a), as a browser's copy writes every color: fully transparent is no color
+                // ("auto"); otherwise the color itself (Word has no alpha).
+                if (term.Type == CssTermType.Function && term.Function!.Name.ToUpper() == "RGBA" && term.Function.Expression!.Terms.Count == 4)
+                {
+                    List<CssTerm> lt = term.Function.Expression.Terms;
+                    double Number(CssTerm t) => double.TryParse(t.Value, System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out var n) ? n : 0;
+                    int Channel(CssTerm t) => (int)Math.Round(Math.Clamp(t.Unit == CssUnit.Percent ? Number(t) / 100.0 * 255 : Number(t), 0, 255));
+                    if (Number(lt[3]) <= 0) return "auto";
+                    return String.Format("{0:x2}{1:x2}{2:x2}", Channel(lt[0]), Channel(lt[1]), Channel(lt[2]));
+                }
+                // Any other function (hsl(), var(), ...) names no color the converter can write.
+                if (term.Type == CssTermType.Function || term.Value is null)
+                    return "auto";
+                string value = term.Value;
                 if (value.Substring(0, 1) == "#" && value.Length == 4)
                 {
                     string e = ConvertSingleDigit(value.Substring(1, 1)) +
