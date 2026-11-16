@@ -2419,6 +2419,8 @@ export interface EditResult {
   hyperlinkId?: string;
   bookmarkName?: string;
   imageId?: string;
+  /** Where the caret belongs after the edit, for ops that say (InsertHtml, InsertPastedText). */
+  caret?: { anchorId: string; offset: number };
 }
 
 export type HyperlinkKind = "external" | "internal";

@@ -1295,6 +1295,9 @@ internal static class DocxSessionJson
             sb.Append(",\"bookmarkName\":").Append(JsonString(r.BookmarkName));
         if (r.ImageId is not null)
             sb.Append(",\"imageId\":").Append(JsonString(r.ImageId));
+        if (r.Caret is not null)
+            sb.Append(",\"caret\":{\"anchorId\":").Append(JsonString(r.Caret.AnchorId))
+              .Append(",\"offset\":").Append(r.Caret.Offset).Append('}');
         if (r.Patch is not null)
         {
             sb.Append(",\"patch\":{")

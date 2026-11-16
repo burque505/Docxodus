@@ -180,7 +180,10 @@ du -sh "$WASM_DIST"
 # the budget of their own branch, the three together measured 6,068,407 bytes on CI, 2,231
 # bytes over 5924 KiB; another 4 KiB covers it. Assembly roots, dependencies and the AOT
 # profile are unchanged.
-WIRE_BUDGET_BYTES=$((5928 * 1024))
+# Editor paste (dAHKxodus fork, DocxSession.InsertHtml) roots the HTML-to-Word converter and its
+# CSS parser, which no transport reached before: 6,130,507 bytes locally, 60 KiB over 5928 KiB;
+# 60 KiB more covers it. Assembly roots, dependencies and the AOT profile are unchanged.
+WIRE_BUDGET_BYTES=$((5988 * 1024))
 WIRE_BYTES=$(cat "$WASM_DIST/_framework/.wire-size")
 rm -f "$WASM_DIST/_framework/.wire-size"
 echo ""
