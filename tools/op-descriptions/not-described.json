@@ -29,6 +29,8 @@
     "RedoChecked": "Not separately exposed: the redo op switches to it when a call carries a mutation-preconditions envelope (described as redo).",
     "GetTrackedChanges": "Internal: only builds the response of MCP docxodus_track_changes set_mode; no transport exposes it.",
     "GetImageCapabilities": "Sessionless: takes no session handle; it reports what the build can decode, not a property of a document.",
-    "VerifyDeliverable": "Composite: runs the deliverable-verification policy over a checkpoint of the whole package, with an optional request object."
+    "VerifyDeliverable": "Composite: runs the deliverable-verification policy over a checkpoint of the whole package, with an optional request object.",
+    "InsertHtml": "Editor paste (dAHKxodus fork): takes the clipboard's HTML as the browser serializes it, for the editor's paste handler; not yet described for the agent transports.",
+    "InsertPastedText": "Editor paste (dAHKxodus fork): Paste as Plain Text for the editor's paste handler; not yet described for the agent transports."
   }
 }

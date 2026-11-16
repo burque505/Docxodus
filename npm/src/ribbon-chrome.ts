@@ -981,6 +981,15 @@ export const RIBBON_HTML = `
     <!-- HOME ──────────────────────────────────────────────────────────────── -->
     <div class="dxr-panel" data-panel="home" data-active>
       <div class="dxr-group">
+        <span class="dxr-glabel">Clipboard</span>
+        <div class="dxr-row">
+          <button type="button" class="dxr-btn" data-dxr="paste" title="Paste (Ctrl+V)">Paste</button>
+          <button type="button" class="dxr-icon" data-dxr="pastemore" aria-haspopup="menu" aria-expanded="false"
+                  title="Paste options">&#9662;</button>
+        </div>
+      </div>
+
+      <div class="dxr-group">
         <span class="dxr-glabel">Font</span>
         <div class="dxr-row">
           <select data-dxr="fontfamily" title="Font family — applies to the selection">
@@ -1493,6 +1502,13 @@ export const RIBBON_HTML = `
     <div data-dxr="filerecentitems"></div>
   </div>
   <div data-dxr="filehostitems"></div>
+</div>
+
+<!-- Paste options, anchored to the Home tab's Paste button: Word's three. -->
+<div class="dxr-pop dxr-filemenu" data-dxr="pastemenu" role="menu" aria-label="Paste options">
+  <button type="button" role="menuitem" data-paste="keep" title="The source's fonts, sizes and colors come along"><span>Keep Source Formatting</span><kbd aria-hidden="true"></kbd></button>
+  <button type="button" role="menuitem" data-paste="merge" title="Paragraphs, headings, lists, tables, links and emphasis come along; fonts, sizes and colors are the document's" aria-keyshortcuts="Control+V"><span>Merge Formatting</span><kbd aria-hidden="true">Ctrl+V</kbd></button>
+  <button type="button" role="menuitem" data-paste="text" title="The text only, taking the formatting where it lands" aria-keyshortcuts="Control+Shift+V"><span>Keep Text Only</span><kbd aria-hidden="true">Ctrl+Shift+V</kbd></button>
 </div>
 
 <!-- Table size picker, anchored to the Insert tab's Table button. -->

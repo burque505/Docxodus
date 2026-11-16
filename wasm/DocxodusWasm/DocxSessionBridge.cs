@@ -815,6 +815,15 @@ public static partial class DocxSessionBridge
         DocxSessionOps.InsertImage(h, anchor, characterOffset, imageBase64, optionsJson);
 
     [JSExport]
+    public static string InsertHtml(int h, string anchor, int characterOffset, int replaceLength,
+        string html, string optionsJson) =>
+        DocxSessionOps.InsertHtml(h, anchor, characterOffset, replaceLength, html, optionsJson);
+
+    [JSExport]
+    public static string InsertPastedText(int h, string anchor, int characterOffset, int replaceLength, string text) =>
+        DocxSessionOps.InsertPastedText(h, anchor, characterOffset, replaceLength, text);
+
+    [JSExport]
     public static string ReplaceImage(int h, string imageId, string imageBase64) =>
         DocxSessionOps.ReplaceImage(h, imageId, imageBase64);
 

@@ -61,6 +61,7 @@ import { diffUnits, needsRemount, tokenOf, unidOf } from "./editor-reconcile.js"
 import { EditorCommandError, editorCommands, runEditorCommand } from "./editor-commands.js";
 import type { EditorCommandArgs, EditorCommandInfo } from "./editor-commands.js";
 import { imageOnlyDelta, patchImageAttributes } from "./editor-image-patch.js";
+import { cleanPastedHtml, pastedPlainText, serializePaste } from "./paste-html.js";
 import type { RenderPlan, RenderUnit, UnitDiff } from "./editor-reconcile.js";
 
 /** The subset of WASM bridge exports the editor needs (as exposed on `window.Docxodus`). */
@@ -220,6 +221,16 @@ export interface DocxEditorExports {
       optionsJson: string,
     ) => string;
     InsertTableOfContents?: (handle: number, anchor: string, pos: string, optionsJson: string) => string;
+    /** Paste (optional): the clipboard's HTML as XHTML, or plain text, at a caret. */
+    InsertHtml?: (
+      handle: number,
+      anchor: string,
+      characterOffset: number,
+      replaceLength: number,
+      html: string,
+      optionsJson: string,
+    ) => string;
+    InsertPastedText?: (handle: number, anchor: string, characterOffset: number, replaceLength: number, text: string) => string;
     /** Table cell structure and appearance (optional). */
     MergeCells?: (handle: number, cellAnchor: string, rowSpan: number, colSpan: number, content: string) => string;
     UnmergeCells?: (handle: number, cellAnchor: string) => string;
@@ -335,6 +346,19 @@ export interface DocxEditorOptions {
    * handler is set, the editor logs the rejection with `console.warn` instead.
    */
   onEditFailed?: (info: EditFailure) => void;
+  /**
+   * What Ctrl+V does with the source's formatting: `"merge"` (the default, Word's Merge Formatting:
+   * paragraphs, headings, lists, tables, links and emphasis come along, fonts, sizes and colors are
+   * the document's), `"keep"` (Keep Source Formatting) or `"text"` (Keep Text Only).
+   * Ctrl+Shift+V always pastes the text only.
+   */
+  pasteFormatting?: PasteFormatting;
+  /**
+   * Find the bytes of a pasted picture the page cannot fetch itself, such as Word's
+   * `file:///…/clip_image001.png`: a `data:` URL, or null to leave the picture out. Pictures on
+   * the web are fetched by the page; without this, local ones are left out.
+   */
+  resolvePasteImage?: (src: string) => Promise<string | null>;
   /** Called after a successful block move. */
   onMove?: (info: { sourceAnchorId: string; destinationAnchorId: string }) => void;
   /** Called when the caret enters or leaves a header/footer story (`null` = back in the body). */
@@ -693,7 +717,7 @@ interface AnchorRef {
  * in both at compile time; the lists are optional because a malformed reply may omit them.
  */
 type EditResultLite = Pick<EditResult, "success">
-  & Partial<Pick<EditResult, "created" | "removed" | "modified" | "error">>;
+  & Partial<Pick<EditResult, "created" | "removed" | "modified" | "error" | "caret">>;
 
 /** What {@link DocxEditorOptions.onEditFailed} receives when the engine rejects an edit. */
 export interface EditFailure {
@@ -1329,6 +1353,36 @@ export type FormatKey = "bold" | "italic" | "underline" | "strike" | "code" | "s
 /** Paragraph alignment passed to DocxEditor.setAlignment. */
 export type EditorAlignment = "left" | "center" | "right" | "justify";
 
+/** What a paste does with the source's formatting: Word's Merge Formatting (`"merge"`), Keep
+ *  Source Formatting (`"keep"`) or Keep Text Only (`"text"`). */
+export type PasteFormatting = "merge" | "keep" | "text";
+
+/** What there is to paste: the clipboard's HTML, its plain text, and a picture it holds. */
+export interface PasteContent {
+  html?: string;
+  text?: string;
+  image?: Blob;
+}
+
+/** Where a paste lands, measured (and the block's typing committed) when it began. */
+interface PasteTarget {
+  block: HTMLElement;
+  unid: string;
+  fullId: string;
+  start: number;
+  length: number;
+  text: string;
+}
+
+async function blobToDataUrl(blob: Blob): Promise<string> {
+  return await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
 /** The selection's content-text {start,length} within `block` (excludes markers), or null. */
 function selectionSpanIn(block: HTMLElement): { start: number; length: number } | null {
   const sel = typeof window !== "undefined" ? window.getSelection() : null;
@@ -1509,9 +1563,9 @@ export class DocxEditor {
   private container: HTMLElement;
   private readonly handle: number;
   private readonly options: Required<
-    Omit<DocxEditorOptions, "onEdit" | "onEditFailed" | "onMove" | "onStoryChange" | "onCommentsChange" | "showRevisions">
+    Omit<DocxEditorOptions, "onEdit" | "onEditFailed" | "onMove" | "onStoryChange" | "onCommentsChange" | "showRevisions" | "resolvePasteImage">
   > &
-    Pick<DocxEditorOptions, "onEdit" | "onEditFailed" | "onMove" | "onStoryChange" | "onCommentsChange" | "showRevisions">;
+    Pick<DocxEditorOptions, "onEdit" | "onEditFailed" | "onMove" | "onStoryChange" | "onCommentsChange" | "showRevisions" | "resolvePasteImage">;
   /** Map a block's current bare unid → its full kind:scope:unid (DocxSession anchor). */
   private readonly unidToFullId = new Map<string, string>();
   /** The element whose [data-anchor] descendants are the editable blocks (container or page container). */
@@ -1614,6 +1668,7 @@ export class DocxEditor {
     this.options = options;
     this.editRoot = container;
     container.addEventListener("copy", this.onCopy);
+    container.addEventListener("paste", this.onPaste);
     this.viewport = new DocumentViewport(container, {
       columnWidth: options.columnWidth,
       fitToWidth: options.fitToWidth,
@@ -1686,6 +1741,25 @@ export class DocxEditor {
       ev.preventDefault();
     } finally { clone.remove(); }
   };
+
+  /** Ctrl+V, Shift+Insert, Ctrl+Shift+V (text only) in a block: the editor pastes through the
+   *  engine (`pasteContent`), never the browser's own insertion into the block. */
+  private readonly onPaste = (ev: ClipboardEvent): void => {
+    if (this.closed || ev.defaultPrevented || !ev.clipboardData) return;
+    const block = ev.target instanceof Node ? this.editableBlockOf(ev.target) : null;
+    if (!block) return; // a comment box or other field pastes as the browser does
+    ev.preventDefault();
+    const data = ev.clipboardData;
+    const plain = performance.now() - this.plainPasteAt < 1000;
+    this.plainPasteAt = -Infinity;
+    const image = Array.from(data.files).find((f) => f.type.startsWith("image/"));
+    this.activeBlock = block;
+    void this.pasteContent({ html: data.getData("text/html"), text: data.getData("text/plain"), image },
+      plain ? "text" : undefined);
+  };
+
+  /** When Ctrl+Shift+V was last pressed: the paste it starts takes the text only. */
+  private plainPasteAt = -Infinity;
 
   /** Track the last meaningful selection so focus-stealing toolbar controls can still target it. */
   private readonly onSelectionChange = (): void => {
@@ -1937,6 +2011,8 @@ export class DocxEditor {
       cssPrefix: options.cssPrefix ?? "docx-",
       fabricateClasses: options.fabricateClasses ?? false,
       editable: options.editable ?? true,
+      pasteFormatting: options.pasteFormatting ?? "merge",
+      resolvePasteImage: options.resolvePasteImage,
       paginated: options.paginated ?? false,
       scale: options.scale ?? 1,
       columnWidth: options.columnWidth ?? "section",
@@ -2153,6 +2229,7 @@ export class DocxEditor {
     this.closed = true;
     if (this.typingPause !== null) clearTimeout(this.typingPause);
     this.container.removeEventListener("copy", this.onCopy);
+    this.container.removeEventListener("paste", this.onPaste);
     if (typeof document !== "undefined") {
       document.removeEventListener("selectionchange", this.onSelectionChange);
       document.removeEventListener("mousedown", this.onMouseDown, true);
@@ -2199,9 +2276,11 @@ export class DocxEditor {
     this.gutter = null;
     const previous = this.container;
     previous.removeEventListener("copy", this.onCopy);
+    previous.removeEventListener("paste", this.onPaste);
     container.replaceChildren(...Array.from(previous.childNodes));
     this.container = container;
     container.addEventListener("copy", this.onCopy);
+    container.addEventListener("paste", this.onPaste);
     this.viewport.adoptHost(container);
     this.setupBlockDrag();
     if (this.options.comments) this.createGutter();
@@ -3290,6 +3369,7 @@ export class DocxEditor {
       if (fmt[k]) { ev.preventDefault(); this.format(fmt[k]); return; }
       if (k === "z") { ev.preventDefault(); ev.shiftKey ? this.redo() : this.undo(); return; }
       if (k === "y") { ev.preventDefault(); this.redo(); return; }
+      if (k === "v" && ev.shiftKey) this.plainPasteAt = performance.now(); // (the paste event follows)
     }
     // Inside a table cell, Backspace at the cell's start does not merge across the cell
     // boundary (mid-text Backspace still deletes normally). Enter splits the cell paragraph
@@ -5664,6 +5744,163 @@ export class DocxEditor {
       if (lines[i] !== "" && !this.insertInBlock(lines[i])) return false;
     }
     return true;
+  }
+
+  // ─── Paste ───────────────────────────────────────────────────────────
+
+  /**
+   * Paste `content` at the caret in the active block, replacing the selection there, as one undo
+   * step: its HTML through the engine (paragraphs, headings, lists, tables, links and pictures, as
+   * Word pastes them), else its text, else its picture. `formatting` defaults to
+   * `options.pasteFormatting` ("merge"); "text" pastes the text only. A selection across
+   * paragraphs is refused. Resolves false when nothing was pasted.
+   */
+  async pasteContent(content: PasteContent, formatting?: PasteFormatting): Promise<boolean> {
+    if (this.closed) return false;
+    const mode = formatting ?? this.options.pasteFormatting ?? "merge";
+    const bridge = this.exports.DocxSessionBridge;
+    const at = this.pasteTarget();
+    if (!at) return false;
+    const html = mode === "text" ? "" : content.html ?? "";
+    if (html && typeof bridge.InsertHtml === "function") {
+      const cleaned = cleanPastedHtml(html, GENERATED_CHROME_SELECTOR);
+      if (!cleaned.empty) {
+        const images = new Map<string, string | null>();
+        if (cleaned.pendingImages.length) {
+          // A picture copied from a page comes as its file as well: a lone picture takes those bytes.
+          const lone = content.image && cleaned.pendingImages.length === 1 && !(cleaned.doc.body.textContent ?? "").trim()
+            ? await blobToDataUrl(content.image) : null;
+          for (const src of cleaned.pendingImages) images.set(src, lone ?? await this.fetchPasteImage(src));
+          if (!this.stillAt(at)) return false;
+        }
+        const res = this.parseEdit(bridge.InsertHtml(this.handle, at.fullId, at.start, at.length, serializePaste(cleaned, images),
+          JSON.stringify({ formatting: mode === "keep" ? "keep" : "merge", css: cleaned.css })), { expectRejection: !!content.text });
+        if (res.success) return this.finishPaste(at, res, cleaned.hasImages);
+        // The engine could not take this HTML: its text still pastes.
+      }
+    }
+    if (content.text && typeof bridge.InsertPastedText === "function") {
+      const res = this.parseEdit(bridge.InsertPastedText(this.handle, at.fullId, at.start, at.length, pastedPlainText(content.text)));
+      return res.success && this.finishPaste(at, res, false);
+    }
+    if (content.image && at.length === 0) {
+      this.activeBlock = at.block;
+      return await this.insertImageFile(content.image);
+    }
+    return false;
+  }
+
+  /** Paste HTML at the caret (as `pasteContent`). */
+  pasteHtml(html: string, formatting?: PasteFormatting): Promise<boolean> {
+    return this.pasteContent({ html }, formatting);
+  }
+
+  /** Paste plain text at the caret, taking the formatting where it lands; each line a paragraph. */
+  pasteText(text: string): Promise<boolean> {
+    return this.pasteContent({ text }, "text");
+  }
+
+  /**
+   * Paste what the system clipboard holds (the ribbon's Paste): read with the async Clipboard
+   * API, which the page must be allowed to use (a WebView2 host grants "clipboard-read").
+   */
+  async pasteFromClipboard(formatting?: PasteFormatting): Promise<boolean> {
+    if (this.closed) return false;
+    const clip = typeof navigator !== "undefined" ? navigator.clipboard : undefined;
+    const content: PasteContent = {};
+    try {
+      if (clip && typeof clip.read === "function") {
+        for (const item of await clip.read()) {
+          if (content.html === undefined && item.types.includes("text/html")) content.html = await (await item.getType("text/html")).text();
+          if (content.text === undefined && item.types.includes("text/plain")) content.text = await (await item.getType("text/plain")).text();
+          const imageType = item.types.find((t) => t.startsWith("image/"));
+          if (!content.image && imageType) content.image = await item.getType(imageType);
+        }
+      } else if (clip) content.text = await clip.readText();
+    } catch (error) {
+      this.reportEditFailure({ message: `The clipboard could not be read: ${(error as Error)?.message ?? error}` } as EditResultLite["error"]);
+      return false;
+    }
+    return this.pasteContent(content, formatting);
+  }
+
+  /** Where a paste lands: the block holding the selection (else the active one), its typing
+   *  committed, the selection measured in the engine's offsets. */
+  private pasteTarget(): PasteTarget | null {
+    const selection = this.container.ownerDocument.defaultView?.getSelection();
+    const block = (selection?.anchorNode ? this.editableBlockOf(selection.anchorNode) : null) ?? this.activeBlock;
+    if (!block?.isConnected) return null;
+    if (this.selectedBlocks().length > 1) {
+      this.reportEditFailure({ message: "Pasting over a selection that spans paragraphs is not supported yet: select within one paragraph, or delete the selection first" } as EditResultLite["error"]);
+      return null;
+    }
+    const unid = block.getAttribute("data-anchor");
+    let fullId = unid ? this.anchorIdOf(block) : undefined;
+    if (!unid || !fullId) return null;
+    const caret = caretOffsetIn(block);
+    const span = selectionSpanIn(block)
+      ?? { start: trimmedSplitOffset(block, caret ?? blockContentText(block).length), length: 0 };
+    fullId = this.syncBlock(block, fullId);
+    if (!fullId) return null;
+    const live = block.isConnected ? block : this.blockForAnchorId(fullId);
+    if (!live) return null;
+    return { block: live, unid: live.getAttribute("data-anchor") ?? unid, fullId, start: span.start, length: span.length, text: blockContentText(live) };
+  }
+
+  /** True when the paste's block is as it was when the paste began (pictures took a while). */
+  private stillAt(at: PasteTarget): boolean {
+    return at.block.isConnected && blockContentText(at.block) === at.text;
+  }
+
+  /** Show the pasted content and put the caret at its end. */
+  private finishPaste(at: PasteTarget, res: EditResultLite, pictures: boolean): boolean {
+    const caret = res.caret;
+    if (!res.created?.length && !pictures) {
+      const fresh = this.swapBlock(at.block, at.unid, res.modified?.[0]) ?? (at.block.isConnected ? at.block : null);
+      if (fresh) {
+        this.activeBlock = fresh;
+        placeCaretAtOffset(fresh, caret?.offset ?? 0);
+      }
+    } else {
+      // Image parts are not in the block-render shell: only a full render shows pasted pictures.
+      this.refreshAfter(at.block, this.blockIndex(at.block), false, pictures);
+      const el = caret ? this.blockForAnchorId(caret.anchorId) : null;
+      if (el) {
+        this.activeBlock = el;
+        placeCaretAtOffset(el, caret!.offset);
+      }
+    }
+    const first = res.modified?.[0];
+    this.options.onEdit?.({ anchorId: first?.id ?? at.fullId, unid: first?.unid ?? at.unid });
+    return true;
+  }
+
+  /** The editable block an anchor id names, after a render. */
+  private blockForAnchorId(anchorId: string): HTMLElement | null {
+    const unid = anchorId.slice(anchorId.lastIndexOf(":") + 1);
+    return this.editableList().find((el) => el.getAttribute("data-anchor") === unid || this.anchorIdOf(el) === anchorId) ?? null;
+  }
+
+  /** A pasted picture's bytes as a `data:` URL: fetched from the web, else from the host. */
+  private async fetchPasteImage(src: string): Promise<string | null> {
+    if (/^https?:/i.test(src)) {
+      const abort = new AbortController();
+      const timer = setTimeout(() => abort.abort(), 5000);
+      try {
+        const response = await fetch(src, { signal: abort.signal });
+        const blob = response.ok ? await response.blob() : null;
+        if (blob?.type.startsWith("image/")) return await blobToDataUrl(blob);
+      } catch {
+        /* a page that does not allow it (CORS): the host may still fetch it */
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    try {
+      return (await this.options.resolvePasteImage?.(src)) ?? null;
+    } catch {
+      return null;
+    }
   }
 
   /** One line of insertText: replace the selection, or insert at the caret, in the active block. */

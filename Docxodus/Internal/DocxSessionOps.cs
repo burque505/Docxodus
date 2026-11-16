@@ -1082,6 +1082,44 @@ internal static class DocxSessionOps
         }
     }
 
+    /// <summary>Paste HTML at a caret (<see cref="DocxSession.InsertHtml"/>). <paramref name="optionsJson"/>:
+    /// <c>{"formatting":"merge"|"keep","css":"..."}</c>, both optional; empty for the defaults.</summary>
+    public static string InsertHtml(int handle, string anchorId, int characterOffset, int replaceLength,
+        string html, string optionsJson)
+    {
+        var options = new HtmlInsertOptions();
+        if (!string.IsNullOrWhiteSpace(optionsJson))
+        {
+            try
+            {
+                using var json = System.Text.Json.JsonDocument.Parse(optionsJson);
+                var root = json.RootElement;
+                if (root.TryGetProperty("formatting", out var f) && f.ValueKind == System.Text.Json.JsonValueKind.String)
+                    options = options with
+                    {
+                        Formatting = f.GetString() switch
+                        {
+                            "keep" => HtmlPasteFormatting.Keep,
+                            "merge" => HtmlPasteFormatting.Merge,
+                            var other => throw new System.ArgumentException($"formatting must be \"merge\" or \"keep\", not \"{other}\""),
+                        },
+                    };
+                if (root.TryGetProperty("css", out var c) && c.ValueKind == System.Text.Json.JsonValueKind.String)
+                    options = options with { Css = c.GetString() };
+            }
+            catch (System.Exception ex) when (ex is System.Text.Json.JsonException or System.ArgumentException)
+            {
+                return DocxSessionJson.Serialize(EditResult.Fail(EditErrorCode.MalformedMarkdown,
+                    $"invalid paste options JSON: {ex.Message}", anchorId));
+            }
+        }
+        return Mutate(handle, null, anchorId, s => s.InsertHtml(anchorId, characterOffset, replaceLength, html, options));
+    }
+
+    /// <summary>Paste plain text at a caret (<see cref="DocxSession.InsertPastedText"/>).</summary>
+    public static string InsertPastedText(int handle, string anchorId, int characterOffset, int replaceLength, string text) =>
+        Mutate(handle, null, anchorId, s => s.InsertPastedText(anchorId, characterOffset, replaceLength, text));
+
     public static string ReplaceImage(int handle, string imageId, string imageBase64)
     {
         if (!TryDecodeImageBase64(imageBase64, null, out var bytes, out var error)) return error!;

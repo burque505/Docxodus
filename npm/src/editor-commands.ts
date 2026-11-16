@@ -11,7 +11,7 @@
  * last block the user or a command was in). Each editing command is one undo step, as the
  * matching ribbon control is.
  */
-import type { DocxEditor, EditorAlignment, EditorPageSetup, FormatKey } from "./editor.js";
+import type { DocxEditor, EditorAlignment, EditorPageSetup, FormatKey, PasteFormatting } from "./editor.js";
 import type { ListFormat, NumberFormat, TableBorderSpec, TableOfContentsOptions } from "./types.js";
 import { TrackedChangeMode } from "./types.js";
 
@@ -129,6 +129,7 @@ function must(ok: boolean, command: string, why: string): void {
 }
 
 const ALIGNMENTS: readonly EditorAlignment[] = ["left", "center", "right", "justify"];
+const PASTE_FORMATTINGS: readonly PasteFormatting[] = ["merge", "keep", "text"];
 const LIST_FORMATS: readonly ListFormat[] = [
   "none", "bullet", "decimal", "lowerLetter", "upperLetter", "lowerRoman", "upperRoman",
   "decimalParenthesis", "lowerLetterParenthesis", "upperLetterParenthesis", "lowerRomanParenthesis",
@@ -345,6 +346,22 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   // ── edit ──
   undo: { group: "edit", description: "Undo the last edit.", args: {}, run: (e) => e.undo() },
   redo: { group: "edit", description: "Redo the last undone edit.", args: {}, run: (e) => e.redo() },
+  paste: {
+    group: "edit",
+    description: "Paste the clipboard at the caret, replacing the selection: \"merge\" (the default) takes the document's fonts, \"keep\" the source's, \"text\" the text only.",
+    args: { "formatting?": "merge|keep|text" }, returns: "Promise<boolean>",
+    run: (e, a) => e.pasteFromClipboard(a.optOneOf("formatting", PASTE_FORMATTINGS)),
+  },
+  pasteHtml: {
+    group: "edit", description: "Paste HTML at the caret, as pasting it from the clipboard would.",
+    args: { html: "string", "formatting?": "merge|keep|text" }, returns: "Promise<boolean>",
+    run: (e, a) => e.pasteHtml(a.string("html"), a.optOneOf("formatting", PASTE_FORMATTINGS)),
+  },
+  pasteText: {
+    group: "edit", description: "Paste plain text at the caret, taking the formatting where it lands; each line a paragraph.",
+    args: { text: "string" }, returns: "Promise<boolean>",
+    run: (e, a) => e.pasteText(a.string("text")),
+  },
   find: {
     group: "edit", description: "Find text and select one match (the first, or the one at \"index\").",
     args: { text: "string", "matchCase?": "boolean", "index?": "number" }, returns: "how many matches there are",

@@ -33,6 +33,7 @@ import type {
   EditorMatch,
   EditorPageSetup,
   FormatKey,
+  PasteFormatting,
 } from "./editor.js";
 import { threadMembers } from "./editor-comments.js";
 import { EditorCommandError } from "./editor-commands.js";
@@ -56,7 +57,7 @@ import {
 // Re-exported so the IIFE bundle built from this module (window.DocxodusEditor)
 // carries both the shell and the engine it wraps.
 export { DocxEditor } from "./editor.js";
-export type { DocxEditorExports, DocxEditorOptions } from "./editor.js";
+export type { DocxEditorExports, DocxEditorOptions, PasteContent, PasteFormatting } from "./editor.js";
 
 /** Which layout the chrome uses. "auto" measures the root and switches at `compactBreakpoint`. */
 export type RibbonChromeMode = "full" | "compact" | "auto";
@@ -818,6 +819,8 @@ class RibbonSurface implements RibbonEditor {
       scale: this.options.scale,
       columnWidth: this.options.columnWidth,
       fitToWidth: this.options.fitToWidth,
+      pasteFormatting: this.options.pasteFormatting,
+      resolvePasteImage: this.options.resolvePasteImage,
       onEdit: (info) => {
         this.history?.edited();
         this.scheduleDirtyCheck();
@@ -1038,6 +1041,47 @@ class RibbonSurface implements RibbonEditor {
       else if (event.key === "Escape") { event.preventDefault(); this.closePopovers(); button.focus(); return; }
       if (next >= 0 && items[next]) { event.preventDefault(); items[next].focus(); }
     });
+  }
+
+  /** Home > Clipboard: Paste (as Ctrl+V) and its menu of Word's three ways. */
+  private wirePaste(): void {
+    const button = this.control("paste"), more = this.control("pastemore"), menu = this.control("pastemenu");
+    if (!button) return;
+    this.keepSelection(button);
+    button.addEventListener("click", () => this.pasteClipboard());
+    if (!more || !menu) return;
+    this.keepSelection(more);
+    more.addEventListener("click", () => {
+      if (menu.hasAttribute("data-open")) { this.closePopovers(); return; }
+      this.closePopovers();
+      menu.setAttribute("data-open", "");
+      more.setAttribute("aria-expanded", "true");
+      this.positionPopover(menu, button);
+    });
+    // The document keeps its selection while the menu is used.
+    menu.addEventListener("mousedown", (event) => event.preventDefault());
+    menu.addEventListener("click", (event) => {
+      const chosen = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-paste]");
+      if (!chosen) return;
+      this.closePopovers();
+      this.pasteClipboard(chosen.dataset.paste as PasteFormatting);
+    });
+    menu.addEventListener("keydown", (event) => {
+      const items = Array.from(menu.querySelectorAll<HTMLButtonElement>("button"));
+      const at = items.indexOf(event.target as HTMLButtonElement);
+      let next = -1;
+      if (event.key === "ArrowDown") next = (at + 1) % items.length;
+      else if (event.key === "ArrowUp") next = (at - 1 + items.length) % items.length;
+      else if (event.key === "Escape") { event.preventDefault(); this.closePopovers(); more.focus(); return; }
+      if (next >= 0) { event.preventDefault(); items[next].focus(); }
+    });
+  }
+
+  /** Paste the system clipboard at the caret (the page must be allowed to read it). */
+  private pasteClipboard(formatting?: PasteFormatting): void {
+    const live = this.live;
+    if (!live) return;
+    this.run("paste", () => { void live.pasteFromClipboard(formatting); }, cmd("paste", formatting ? { formatting } : {}));
   }
 
   /** The session's committed version, or null when nothing is open or the engine can't tell. */
@@ -1414,6 +1458,7 @@ class RibbonSurface implements RibbonEditor {
     this.wireLayout();
     this.wirePicker();
     this.wireFileMenu();
+    this.wirePaste();
     this.wireLinkPopover();
     this.wireFindBar();
     this.wireHeaderFooterTab();
@@ -1994,6 +2039,7 @@ class RibbonSurface implements RibbonEditor {
       const own = ({ b: "bold", i: "italic", u: "underline", y: "redo" } as Record<string, string>)[key]
         ?? (key === "z" ? (event.shiftKey ? "redo" : "undo") : undefined);
       if (own) this.options.onCommand?.(own, 0, cmd(own));
+      if (key === "v") this.options.onCommand?.("paste", 0, cmd("paste", event.shiftKey ? { formatting: "text" } : {}));
     }
     // Save and Open, as in Word, while the surface shows them (fileActions).
     if (!event.shiftKey && key === "s" && this.control("save")) { event.preventDefault(); this.download(); return; }
@@ -2120,6 +2166,8 @@ class RibbonSurface implements RibbonEditor {
   }
 
   private closePopovers(): void {
+    this.control("pastemenu")?.removeAttribute("data-open");
+    this.control("pastemore")?.setAttribute("aria-expanded", "false");
     this.control("gridpicker")?.removeAttribute("data-open");
     this.control("linkpop")?.removeAttribute("data-open");
     this.control("filemenu")?.removeAttribute("data-open");
@@ -2128,12 +2176,13 @@ class RibbonSurface implements RibbonEditor {
 
   private maybeClosePopovers(event: MouseEvent): void {
     const target = event.target as Node;
-    for (const [popName, buttonName] of [["gridpicker", "table"], ["linkpop", "link"], ["filemenu", "filebutton"]] as const) {
+    for (const [popName, buttonName] of [["gridpicker", "table"], ["linkpop", "link"], ["filemenu", "filebutton"], ["pastemenu", "pastemore"]] as const) {
       const pop = this.control(popName);
       if (!pop?.hasAttribute("data-open")) continue;
       if (pop.contains(target) || this.control(buttonName)?.contains(target)) continue;
       pop.removeAttribute("data-open");
       if (popName === "filemenu") this.control("filebutton")?.setAttribute("aria-expanded", "false");
+      if (popName === "pastemenu") this.control("pastemore")?.setAttribute("aria-expanded", "false");
     }
   }
 

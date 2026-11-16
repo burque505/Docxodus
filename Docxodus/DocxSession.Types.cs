@@ -2170,6 +2170,9 @@ public sealed class EditResult
     /// <summary>The affected native image occurrence identity, when applicable.</summary>
     public string? ImageId { get; init; }
 
+    /// <summary>Where the caret belongs after the edit, for ops that say (<see cref="DocxSession.InsertHtml"/>).</summary>
+    public TextCaret? Caret { get; init; }
+
     internal static EditResult Fail(EditErrorCode code, string message, string? anchorId = null) =>
         new() { Success = false, Error = new EditError(code, message, anchorId) };
 
