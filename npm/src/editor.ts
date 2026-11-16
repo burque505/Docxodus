@@ -5776,7 +5776,8 @@ export class DocxEditor {
         const res = this.parseEdit(bridge.InsertHtml(this.handle, at.fullId, at.start, at.length, serializePaste(cleaned, images),
           JSON.stringify({ formatting: mode === "keep" ? "keep" : "merge", css: cleaned.css })), { expectRejection: !!content.text });
         if (res.success) return this.finishPaste(at, res, cleaned.hasImages);
-        // The engine could not take this HTML: its text still pastes.
+        // The engine could not take this HTML: its text still pastes, and the host hears why.
+        if (content.text) this.reportEditFailure(res.error);
       }
     }
     if (content.text && typeof bridge.InsertPastedText === "function") {

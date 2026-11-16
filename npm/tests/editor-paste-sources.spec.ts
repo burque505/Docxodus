@@ -105,8 +105,13 @@ test.describe('Paste from Word, a web page and the editor', () => {
     await context.grantPermissions(['clipboard-read', 'clipboard-write']);
     const source = await context.newPage();
     await source.setContent(`<!doctype html><html><head><style>
+      :root { --gap: 8px; }
       body { font-family: Georgia, serif; color: #333; } h2 { color: darkred; } .lead { font-size: 20px; }
+      img { border: 1px solid rgb(200, 204, 209); border-image: none 100% / 1 / 0 stretch; max-width: calc(100% - var(--gap));
+            --file-upright: 0.75; background-color: rgba(0, 0, 0, 0); margin: clamp(2px, 1vw, 6px); }
+      p { margin-block: 0.5em; padding-inline: max(0px, 1px); }
       </style></head><body>
+      <figure><img alt="dot" width="20" height="20" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="><figcaption>A caption</figcaption></figure>
       <h2>Web heading</h2>
       <p class="lead">A <b>bold</b> lead with <a href="https://example.com/page">a link</a>.</p>
       <ul><li>Alpha</li><li>Beta<ol><li>Beta one</li><li>Beta two</li></ol></li><li>Gamma</li></ul>
@@ -124,7 +129,10 @@ test.describe('Paste from Word, a web page and the editor', () => {
     expect(body.filter((b) => b.list).map((b) => b.text)).toEqual(['Alpha', 'Beta', 'Beta one', 'Beta two', 'Gamma']);
     expect(all.filter((b) => b.inTable).map((b) => b.text)).toEqual(['Name', 'Value', 'x', '1']);
     expect(await page.evaluate(() => document.querySelector('#ex-editor a[href="https://example.com/page"]')?.textContent)).toBe('a link');
-    expect(body.filter((b) => b.text === '').length).toBeLessThanOrEqual(1);
+    expect(body.filter((b) => b.text === '').length).toBeLessThanOrEqual(2);
+    // Today's CSS (custom properties, calc(), border-image) does not cost the picture or the caption
+    expect(await page.evaluate(() => document.querySelectorAll('#ex-editor img').length)).toBe(1);
+    expect(body.some((b) => b.text === 'A caption')).toBe(true);
     // Merge Formatting: the page's Georgia and its colors are not the document's
     const fonts = await page.evaluate(() => Array.from(document.querySelectorAll<HTMLElement>('#ex-editor [data-anchor] *, #ex-editor [data-anchor]'))
       .map((e) => getComputedStyle(e).fontFamily).filter((f) => /georgia/i.test(f)));

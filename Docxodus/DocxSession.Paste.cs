@@ -68,10 +68,19 @@ public sealed partial class DocxSession
         }
 
         PastedContent pasted;
-        try { pasted = ConvertPastedHtml(xhtml, options); }
-        catch (Exception ex)
+        try { pasted = ConvertPastedHtml(new XElement(xhtml), options); }
+        catch (Exception)
         {
-            return EditResult.Fail(EditErrorCode.MalformedMarkdown, $"the HTML could not be converted: {ex.Message}", anchorId);
+            // The converter's CSS parser refuses much of today's CSS (custom properties, calc(), ...): the
+            // content still pastes, its paragraphs, lists, tables, links and pictures, without the styles.
+            foreach (var e in xhtml.DescendantsAndSelf()) e.Attributes().Where(a => a.Name.LocalName is "style" or "class").Remove();
+            foreach (var style in xhtml.Descendants().Where(e => e.Name.LocalName.Equals("style", StringComparison.OrdinalIgnoreCase)).ToList())
+                style.Remove();
+            try { pasted = ConvertPastedHtml(xhtml, options with { Css = null }); }
+            catch (Exception ex)
+            {
+                return EditResult.Fail(EditErrorCode.MalformedMarkdown, $"the HTML could not be converted: {ex.Message}", anchorId);
+            }
         }
         if (pasted.Blocks.Count == 0)
             return EditResult.Fail(EditErrorCode.MalformedMarkdown, "the HTML holds nothing to paste", anchorId);
@@ -615,6 +624,7 @@ public sealed partial class DocxSession
     private const string PasteUserAgentCss = @"html, address, blockquote, body, dd, div, dl, dt, fieldset, form, frame, frameset,
 h1, h2, h3, h4, h5, h6, noframes, ol, p, ul, center, dir, hr, menu, pre { display: block; unicode-bidi: embed }
 li { display: list-item }
+article, aside, details, figcaption, figure, footer, header, main, nav, section, summary { display: block }
 head { display: none }
 table { display: table }
 tr { display: table-row }

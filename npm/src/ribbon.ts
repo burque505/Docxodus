@@ -821,6 +821,7 @@ class RibbonSurface implements RibbonEditor {
       fitToWidth: this.options.fitToWidth,
       pasteFormatting: this.options.pasteFormatting,
       resolvePasteImage: this.options.resolvePasteImage,
+      onEditFailed: this.options.onEditFailed,
       onEdit: (info) => {
         this.history?.edited();
         this.scheduleDirtyCheck();

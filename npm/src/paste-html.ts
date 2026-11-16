@@ -119,6 +119,12 @@ export function cleanPastedHtml(html: string, chromeSelector = ""): CleanedPaste
     if (!p.querySelector("img, br, table") && !(p.textContent ?? "").replace(/[\s\u00a0]/g, "")) p.replaceChildren();
   });
 
+  // HTML5's blocks the converter does not know (a link inside one lost its text): a caption is a
+  // paragraph, the rest plain divisions.
+  body.querySelectorAll("figcaption, summary").forEach((e) => renameElement(e, "p"));
+  body.querySelectorAll("figure, section, article, header, footer, nav, aside, main, details, address, hgroup")
+    .forEach((e) => renameElement(e, "div"));
+
   dropLayoutWhitespace(body);
   wrapLooseInline(doc, body);
   cleanAttributes(body);
@@ -170,18 +176,37 @@ function cleanCss(css: string): string {
   return s.replace(/@[a-z-]+[^{};]*;/gi, "").trim();
 }
 
-/** Put loose inline content at the top level of the body into paragraphs. */
+/** Replace an element with one of another name, keeping its attributes and content. */
+function renameElement(el: Element, tag: string): void {
+  const next = el.ownerDocument.createElement(tag);
+  for (const attr of Array.from(el.attributes)) next.setAttribute(attr.name, attr.value);
+  next.append(...Array.from(el.childNodes));
+  el.replaceWith(next);
+}
+
+/**
+ * Put loose inline content (text, links, pictures) beside blocks into paragraphs: at the top level of
+ * the body, and in a division, quotation or cell that also holds blocks. The converter drops inline
+ * content that stands beside a block (a figure's picture above its caption).
+ */
 function wrapLooseInline(doc: Document, body: HTMLElement): void {
+  wrapLooseInlineIn(doc, body);
+  for (const el of Array.from(body.querySelectorAll("div, blockquote, td, th, center"))) {
+    if (Array.from(el.children).some((c) => BLOCK_TAGS.has(c.tagName.toLowerCase()))) wrapLooseInlineIn(doc, el);
+  }
+}
+
+function wrapLooseInlineIn(doc: Document, container: Element): void {
   let run: Node[] = [];
   const flush = (before: Node | null) => {
     if (run.length && run.some((n) => n.nodeType === 1 || (n.textContent ?? "").trim())) {
       const p = doc.createElement("p");
-      body.insertBefore(p, before);
+      container.insertBefore(p, before);
       run.forEach((n) => p.append(n));
     } else run.forEach((n) => n.parentNode?.removeChild(n));
     run = [];
   };
-  for (const node of Array.from(body.childNodes)) {
+  for (const node of Array.from(container.childNodes)) {
     const block = node.nodeType === 1 && BLOCK_TAGS.has((node as Element).tagName.toLowerCase());
     if (block) flush(node);
     else if (node.nodeType === 1 || node.nodeType === 3) run.push(node);
@@ -189,7 +214,7 @@ function wrapLooseInline(doc: Document, body: HTMLElement): void {
   }
   flush(null);
   // A <br> between two blocks is a blank line; at the edge of a block it is only the copy's end.
-  body.querySelectorAll(":scope > p").forEach((p) => {
+  container.querySelectorAll(":scope > p").forEach((p) => {
     if (p.childNodes.length === 1 && (p.firstChild as Element).tagName === "BR") p.replaceChildren();
   });
 }
@@ -232,14 +257,50 @@ function cleanAttributes(root: HTMLElement): void {
         el.removeAttribute(name);
       }
     }
-    // Word's mso-* properties mean nothing to the converter.
-    const style = el.getAttribute("style");
-    if (style && /mso-/i.test(style)) {
-      const kept = style.split(";").filter((d) => d.trim() && !/^\s*mso-/i.test(d)).join(";");
-      if (kept.trim()) el.setAttribute("style", kept);
-      else el.removeAttribute("style");
-    }
+    cleanStyle(el);
   }
+}
+
+/** The CSS properties the converter knows. Anything else (Word's mso-*, custom properties, grid,
+ *  transforms, ...) is left out: one value its parser cannot read fails the whole paste. */
+const KEPT_CSS = new Set([
+  "color", "background-color", "font-family", "font-size", "font-weight", "font-style", "font-variant",
+  "text-decoration", "text-decoration-line", "text-align", "text-indent", "text-transform", "vertical-align",
+  "white-space", "direction", "list-style-type",
+  "margin-top", "margin-right", "margin-bottom", "margin-left",
+  "padding-top", "padding-right", "padding-bottom", "padding-left",
+  "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
+  "border-top-style", "border-right-style", "border-bottom-style", "border-left-style",
+  "border-top-color", "border-right-color", "border-bottom-color", "border-left-color",
+  "border-collapse", "width",
+]);
+
+/** A value the converter's CSS parser reads: no functions but rgb()/rgba(), no slashes, no !important. */
+function plainCssValue(value: string): boolean {
+  if (!value || /!important|\/|\bvar\(|\bcalc\(|\bclamp\(|\bmin\(|\bmax\(|\benv\(|\bcolor-mix\(|\blight-dark\(|\boklch\(|\blab\(|\bhsla?\(|\burl\(/i.test(value)) return false;
+  const functions = value.match(/[a-z-]+\(/gi) ?? [];
+  return functions.every((f) => /^rgba?\($/i.test(f));
+}
+
+/** Keep the style declarations the converter can read (the browser has parsed them already). */
+function cleanStyle(el: Element): void {
+  const style = (el as HTMLElement).style;
+  if (!style || !el.hasAttribute("style")) return;
+  const kept: string[] = [];
+  for (let i = 0; i < style.length; i++) {
+    const name = style.item(i);
+    const value = style.getPropertyValue(name).trim();
+    if (!KEPT_CSS.has(name) || !plainCssValue(value)) continue;
+    // (a width only on tables and cells, in units the converter takes)
+    if (name === "width" && (!/^(TABLE|TD|TH|COL|IMG)$/.test(el.tagName) || !/^[\d.]+(px|pt|in|cm|mm|%)$/.test(value))) continue;
+    // (vertical-align: only what is a run's raise or lower, or a cell's alignment)
+    if (name === "vertical-align" && !/^(sub|super|baseline|top|middle|bottom)$/.test(value)) continue;
+    // (transparent backgrounds are no background)
+    if (name === "background-color" && /^(transparent|rgba\([^)]*,\s*0\))$/.test(value)) continue;
+    kept.push(`${name}: ${value}`);
+  }
+  if (kept.length) el.setAttribute("style", kept.join("; "));
+  else el.removeAttribute("style");
 }
 
 // ─── Lists ─────────────────────────────────────────────────────────────
