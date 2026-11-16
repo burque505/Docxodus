@@ -1785,10 +1785,8 @@ namespace Docxodus
                 var pgSz = sectPr.Element(W.pgSz);
                 if (pgSz != null)
                 {
-                    if (int.TryParse((string?)pgSz.Attribute(W._w), out int w))
-                        pageWidthPt = w / 20.0;
-                    if (int.TryParse((string?)pgSz.Attribute(W.h), out int h))
-                        pageHeightPt = h / 20.0;
+                    pageWidthPt = PagePoints(pgSz, W._w) ?? pageWidthPt;
+                    pageHeightPt = PagePoints(pgSz, W.h) ?? pageHeightPt;
                 }
 
                 // Page margins accept twips or universal units (ECMA-376 §17.6.11).
@@ -1816,6 +1814,10 @@ namespace Docxodus
             var twips = WordprocessingMLUtil.AttributeToDecimalTwips(margins.Attribute(name));
             return twips.HasValue ? (double)(twips.Value / 20m) : fallback;
         }
+
+        // A page dimension in points, from twips or a universal measure; null when it cannot be read.
+        private static double? PagePoints(XElement pgSz, XName name) =>
+            WordprocessingMLUtil.TryStringToDecimalTwips((string?)pgSz.Attribute(name)) is { } twips ? (double)(twips / 20m) : null;
 
         /// <summary>
         /// Tracks the effective reference for each story type as sections are visited in document
@@ -6501,7 +6503,8 @@ namespace Docxodus
 
         // Parses an OOXML table/cell width value (w:w on w:tblW / w:tcW, schema type
         // ST_TblWidth / ST_MeasurementOrPercent). The value is normally a plain integer,
-        // but the spec (and authoring tools such as the `docx` JS library) also permit a
+        // but the spec also permits a universal measure such as "240pt" (a Strict save writes
+        // dxa widths that way) and, as authoring tools such as the `docx` JS library write, a
         // percent-suffixed form, e.g. "100%" or "50.5%". Returns null when the attribute is
         // missing or cannot be parsed. `isExplicitPercent` is true when the raw value carried
         // a trailing '%', meaning it is already a literal percentage (NOT fiftieths-of-a-percent).
@@ -6516,18 +6519,23 @@ namespace Docxodus
                 isExplicitPercent = true;
                 raw = raw.Substring(0, raw.Length - 1).Trim();
             }
-            if (decimal.TryParse(raw, NumberStyles.Number, NumberFormatInfo.InvariantInfo, out var value))
-                return value;
-            return null;
+            return WordprocessingMLUtil.TryStringToDecimalTwips(raw);
         }
 
-        private sealed record TableRenderingGrid(Dictionary<XElement, int> RowSpans, int LeadingColumns);
+        /// <summary>
+        /// The grid columns some row of the table reaches, <c>[LeadingColumns, ReachedColumns)</c>:
+        /// every row omits the ones before (<c>w:gridBefore</c>), and no row's cells reach the ones
+        /// after (<c>w:gridAfter</c>, or cells that simply stop).
+        /// </summary>
+        private sealed record TableRenderingGrid(Dictionary<XElement, int> RowSpans, int LeadingColumns, int ReachedColumns);
 
         private static object ProcessTable(WordprocessingDocument wordDoc, WmlToHtmlConverterSettings settings, XElement element, decimal currentMarginLeft)
         {
             element.RemoveAnnotations<TableRenderingGrid>();
+            var rows = WordprocessingMLUtil.TableRows(element).ToList();
             element.AddAnnotation(new TableRenderingGrid(Internal.TableGridModel.VerticalMergeSpans(element),
-                WordprocessingMLUtil.TableRows(element).Select(Internal.TableGridModel.GridBefore).DefaultIfEmpty(0).Min()));
+                rows.Select(Internal.TableGridModel.GridBefore).DefaultIfEmpty(0).Min(),
+                rows.Select(row => Internal.TableGridModel.RowGrid(row).LastOrDefault().End).DefaultIfEmpty(0).Max()));
             var style = new Dictionary<string, string>();
             style.AddIfMissing("border-collapse", "collapse");
             style.AddIfMissing("border", "none");
@@ -6820,15 +6828,19 @@ namespace Docxodus
             if (cols.Count == 0 || cols.Any(w => w == null || w <= 0m))
                 return null;
 
-            // HTML rows contain only the actual cells. A grid prefix omitted by every row
-            // must therefore be omitted here too, or CSS assigns its width to the first cell.
-            // Nested rows belong to their own grid; rows inside content controls still count.
-            var leadingColumns = tableElement.Annotation<TableRenderingGrid>()!.LeadingColumns;
-            if (leadingColumns >= cols.Count)
+            // HTML rows contain only the actual cells, so only the columns some row reaches stay.
+            // A prefix omitted by every row would otherwise give its width to the first cell. A
+            // suffix no row's cells reach is not part of the table: Word drops it and widens the
+            // remaining columns in proportion until the table spans its width (issue #1750), as
+            // CSS spreads a table's width over its columns. Nested rows belong to their own grid;
+            // rows inside content controls still count.
+            var grid = tableElement.Annotation<TableRenderingGrid>()!;
+            var used = Math.Min(grid.ReachedColumns, cols.Count) - grid.LeadingColumns;
+            if (used <= 0)
                 return null;
 
             return new XElement(Xhtml.colgroup,
-                cols.Skip(leadingColumns).Select(w => new XElement(Xhtml.col,
+                cols.Skip(grid.LeadingColumns).Take(used).Select(w => new XElement(Xhtml.col,
                     new XAttribute("style", string.Format(
                         NumberFormatInfo.InvariantInfo, "width: {0}pt;", w!.Value / 20m)))));
         }
@@ -11158,10 +11170,8 @@ namespace Docxodus
                 var pgSz = sectPr.Element(W.pgSz);
                 if (pgSz != null)
                 {
-                    if (int.TryParse((string?)pgSz.Attribute(W._w), out int w))
-                        dims.PageWidthPt = w / 20.0;
-                    if (int.TryParse((string?)pgSz.Attribute(W.h), out int h))
-                        dims.PageHeightPt = h / 20.0;
+                    dims.PageWidthPt = PagePoints(pgSz, W._w) ?? dims.PageWidthPt;
+                    dims.PageHeightPt = PagePoints(pgSz, W.h) ?? dims.PageHeightPt;
                 }
 
                 // Parse page margins (w:pgMar)

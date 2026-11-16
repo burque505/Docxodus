@@ -216,7 +216,8 @@ internal static class IrEditScriptBuilder
     }
 
     // Boundary carriers delimit physical review sections. Any retained content before a new
-    // boundary still belongs to its source section; a wholly inserted section has no left story.
+    // boundary still belongs to its source section; a review section that holds content from one
+    // side only (wholly inserted or wholly deleted) has no story from the other.
     private static List<(int Left, int Right)>? MatchSectionBoundaries(
         IrDocument left, IrDocument right, IrBlockAlignment alignment, IEnumerable<IrEditOp> bodyOps)
     {
@@ -244,7 +245,6 @@ internal static class IrEditScriptBuilder
             return null;
         var sections = new List<(int, int)>();
         int currentLeft = -1, currentRight = -1, seenLeft = 0, seenRight = 0;
-        bool insertedBoundary = false, deletedBoundary = false;
         foreach (var entry in RenderedGapOrder(alignment, bodyOps))
         {
             bool hasLeft = leftSections.TryGetValue(entry.Left?.Anchor.ToString() ?? "", out var l);
@@ -259,12 +259,9 @@ internal static class IrEditScriptBuilder
             }
             if (!l.Ends && !r.Ends)
                 continue;
-            insertedBoundary |= entry.Kind == IrAlignmentKind.Inserted;
-            deletedBoundary |= entry.Kind == IrAlignmentKind.Deleted;
-            // Mixed inserted/deleted boundaries, moved boundaries, and changed retained carriers
-            // still need the existing grid; the projection covers one-sided boundary changes.
-            if (insertedBoundary && deletedBoundary ||
-                entry.Kind is IrAlignmentKind.Moved or IrAlignmentKind.MovedModified ||
+            // Moved boundaries and changed retained carriers still need the existing grid; the
+            // projection covers inserted and deleted boundaries, alone or mixed.
+            if (entry.Kind is IrAlignmentKind.Moved or IrAlignmentKind.MovedModified ||
                 hasLeft && hasRight && l.Ends != r.Ends)
                 return null;
             sections.Add((currentLeft, currentRight));
@@ -365,6 +362,7 @@ internal static class IrEditScriptBuilder
         var plans = new List<HeaderFooterPairPlan>();
         var plansByPair = new Dictionary<(Uri? Left, Uri? Right), HeaderFooterPairPlan>();
         var plansByCell = new Dictionary<(int Section, IrHeaderFooterKind Kind), HeaderFooterPairPlan>();
+        var originalOnly = new List<(int Section, IrHeaderFooterKind Kind, IrHeaderFooter Story)>();
         for (int s = 0; s < sectionCount; s++)
         {
             foreach (var kind in HeaderFooterKinds)
@@ -373,6 +371,11 @@ internal static class IrEditScriptBuilder
                 rightGrid.TryGetValue((s, kind), out var rightStory);
                 if (leftStory is null && rightStory is null)
                     continue;
+                if (sections is not null && sections[s].Right < 0)
+                {
+                    originalOnly.Add((s, kind, leftStory!));
+                    continue;
+                }
 
                 var pair = (leftStory?.Scope.PartUri, rightStory?.Scope.PartUri);
                 if (!plansByPair.TryGetValue(pair, out var plan))
@@ -386,8 +389,24 @@ internal static class IrEditScriptBuilder
             }
         }
 
+        // A review section holding only original content disappears on accept, so its story need only reject to
+        // the original's, as the reference compare leaves it: it shares any output pairing that story, else keeps
+        // the original's part unchanged, instead of showing it deleted in a copy of a part another section uses.
+        foreach (var (s, kind, story) in originalOnly)
+        {
+            var plan = plans.FirstOrDefault(p => p.LeftPartUri == story.Scope.PartUri);
+            if (plan is null)
+                plans.Add(plan = new HeaderFooterPairPlan(story, null) { KeepsLeft = true });
+            plan.Cells.Add((s, kind));
+            plansByCell.Add((s, kind), plan);
+        }
+
         foreach (var plan in plans)
-            plan.Ops = BuildHeaderFooterStoryOps(leftDocument, rightDocument, plan.Left, plan.Right, settings);
+        {
+            plan.Cells.Sort();
+            plan.Ops = plan.KeepsLeft ? new List<IrEditOp>()
+                : BuildHeaderFooterStoryOps(leftDocument, rightDocument, plan.Left, plan.Right, settings);
+        }
 
         // One physical left part can safely be rewritten once. Prefer an unchanged pair as its primary output
         // (preserving the left part byte-for-byte), otherwise use the first effective cell deterministically;
@@ -408,7 +427,9 @@ internal static class IrEditScriptBuilder
         // right rId, and a right part may map to different left-derived outputs in different sections. Pure A/A
         // unchanged stories remain absent as before. We also bind at output-part transitions and when an explicit
         // left reference would override an inherited clone even though the desired output part stays the same.
-        // This produces the crucial clone→primary rejoin record with empty Ops when needed.
+        // This produces the crucial clone→primary rejoin record with empty Ops when needed. The plan is made against
+        // the original's references, which a section break both documents share keeps in the review document (the
+        // renderer restores them over the revision's); a changed story is bound where its timeline starts as well.
         bool changedSectionOwnership = sections is not null && sections.Any(pair => pair.Left != pair.Right);
         foreach (var kind in HeaderFooterKinds)
         {
@@ -436,7 +457,7 @@ internal static class IrEditScriptBuilder
                 bool needsBinding = changedSectionOwnership && sections![s].Right >= 0 && plan.Right is not null ||
                     rightExplicitNeedsBinding || (hasPreviousOutput
                     ? !Equals(previousOutput, desiredOutput) || explicitWouldOverrideDesired
-                    : !explicitAlreadySelectsDesired);
+                    : !explicitAlreadySelectsDesired || plan.Ops.Count > 0);
                 if (needsBinding)
                     plan.ReferenceBindings.Add(new IrHeaderFooterBinding(s, kind, sections is null ? -1 : sections[s].Right));
 
@@ -475,6 +496,7 @@ internal static class IrEditScriptBuilder
         public Uri? RightPartUri => Right?.Scope.PartUri;
         public List<(int SectionIndex, IrHeaderFooterKind Kind)> Cells { get; } = new();
         public List<IrEditOp> Ops { get; set; } = new();
+        public bool KeepsLeft { get; init; }
         public bool CloneLeftPart { get; set; }
         public List<IrHeaderFooterBinding> ReferenceBindings { get; } = new();
         public int FirstSectionIndex => Cells[0].SectionIndex;
@@ -2243,11 +2265,11 @@ internal static class IrEditScriptBuilder
         return null;
     }
 
-    /// <summary>Both paragraphs are plain, sliceable direct-text-run content — the precondition for the
-    /// lone-punctuation anchor rule (dropping an anchor inside a transparent field/hyperlink region
-    /// re-tiles it into del+ins and double-emits the container's zero-width plumbing).</summary>
+    /// <summary>Both paragraphs are plain text (<see cref="IrCrossParagraphSegmenter.IsPlainText"/>) — the
+    /// precondition for the lone-punctuation anchor rule (dropping an anchor inside a transparent field/hyperlink
+    /// region re-tiles it into del+ins and double-emits the container's zero-width plumbing).</summary>
     private static bool PlainTextPair(IrParagraph lp, IrParagraph rp) =>
-        IrCrossParagraphSegmenter.IsStreamable(lp) && IrCrossParagraphSegmenter.IsStreamable(rp);
+        IrCrossParagraphSegmenter.IsPlainText(lp) && IrCrossParagraphSegmenter.IsPlainText(rp);
 
     /// <summary>Decoded corpus boundary for the lone-word flush: every flushing reference instance
     /// retains a single word of at most 5 characters ("Red" 3, "font"/"text"/"bold" 4, "Green"/"Title" 5);

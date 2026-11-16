@@ -269,7 +269,7 @@ public class DocxDiffHeaderFooterReferenceTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void MixedBoundaryFallback_DoesNotInferVisibilityFromReviewOrdinals(bool legacyJson)
+    public void MixedBoundaries_DoNotInferVisibilityFromReviewOrdinals(bool legacyJson)
     {
         const string tail = "The permanent inventory continues in the final section after the revised boundary.";
         var original = HeaderFooterFixtures.Build(new[] { new Section(new[] { BoundaryText }), new Section(new[] { KeptText, tail }) });
@@ -298,6 +298,47 @@ public class DocxDiffHeaderFooterReferenceTests
             result = IrMarkupRenderer.Render(IrEditScriptJson.Read(json), original, revised, new IrDiffSettings());
         }
         AssertStoryEndpoints(original, revised, result, true, "default");
+    }
+
+    /// <summary>
+    /// Issue #1757: a comparison that both deletes original section breaks and inserts revised ones
+    /// pairs each review section's stories with the source sections its content came from, so reject
+    /// restores every original section's own story and accept every revised one's. <c>swap</c>
+    /// replaces a four-section body with an unrelated two-section one; <c>replace</c> swaps one
+    /// boundary between retained sections, with a story-less (linked) section after it.
+    /// </summary>
+    [Theory]
+    [InlineData("swap", true, "default", false)]
+    [InlineData("swap", true, "default", true)]
+    [InlineData("swap", false, "default", false)]
+    [InlineData("swap", true, "first", false)]
+    [InlineData("swap", false, "even", true)]
+    [InlineData("replace", true, "default", false)]
+    [InlineData("replace", false, "default", true)]
+    [InlineData("replace", true, "first", true)]
+    public void MixedInsertedAndDeletedBoundaries_KeepEachSectionsOwnStory(string scenario, bool header, string kind, bool reverse)
+    {
+        WmlDocument Document(params (string[] Paras, string? Story)[] sections)
+        {
+            var stories = sections.Where(s => s.Story is not null).ToDictionary(s => "s" + s.Story!.Replace(' ', '_'), s => new[] { s.Story! });
+            var refs = sections.Select(s => s.Story is null ? null : new[] { (kind, "s" + s.Story.Replace(' ', '_')) }).ToArray();
+            return HeaderFooterFixtures.Build(
+                sections.Select((s, i) => new Section(s.Paras, Headers: header ? refs[i] : null, Footers: header ? null : refs[i])).ToArray(),
+                header ? stories : null, header ? null : stories, titlePg: kind == "first", evenAndOddHeaders: kind == "even");
+        }
+        string[] Cellar(int n) => new[] { $"Cooper {n} seals every oak barrel in the cellar before the vintner arrives." };
+        string[] Glacier(int n) => new[] { $"Survey team {n} measured crevasse depth near the icefall at dawn." };
+        string[] Harbor = { "Harbor pilots log the tide charts before noon." };
+        string[] Pilot = { "Pilot boats return to the inner mooring after dusk." };
+        string[] Tide = { "The tide tables are posted on the quay every Monday." };
+        var (original, revised) = scenario == "swap"
+            ? (Document(Enumerable.Range(1, 4).Select(n => (Cellar(n), (string?)$"Ledger part {n}")).ToArray()),
+               Document(Enumerable.Range(1, 2).Select(n => (Glacier(n), (string?)$"Survey {n}")).ToArray()))
+            : (Document((Harbor, "Harbor"), (new[] { "Lighthouse keepers trim the lamp wicks at dusk." }, "Keeper"), (Pilot, null), (Tide, "Tide")),
+               Document((Harbor, "Harbor"), (new[] { "Orchard crews graft new rootstock each spring." }, "Orchard"), (Pilot, null), (Tide, "Tide")));
+        if (reverse)
+            (original, revised) = (revised, original);
+        AssertStoryEndpoints(original, revised, DocxCompare.Compare(original, revised), header, kind);
     }
 
     [Theory]
@@ -442,6 +483,85 @@ public class DocxDiffHeaderFooterReferenceTests
         var revised = Document("INSPECTION REVISED");
         AssertStoryEndpoints(original, revised, DocxCompare.Compare(original, revised), false, "default");
     }
+
+    /// <summary>
+    /// Issue #1763: the revision drops every section's story while the original's first and third
+    /// sections share one part. The unchanged section breaks take the revision's references, so the
+    /// first section must be bound back to its part explicitly; the control gives the third section a
+    /// part of its own.
+    /// </summary>
+    [Theory]
+    [InlineData(true, true, "default")]
+    [InlineData(false, true, "default")]
+    [InlineData(true, false, "default")]
+    [InlineData(true, true, "first")]
+    [InlineData(true, false, "even")]
+    [InlineData(false, false, "even")]
+    public void RevisionDroppingEveryStory_RejectRestoresSharedStory(bool shared, bool header, string kind)
+    {
+        string[] bodies = { "Harbor pilots log the tide charts before noon.",
+            "Pilot boats return to the inner mooring after dusk.", "The tide tables are posted on the quay every Monday." };
+        var parts = new Dictionary<string, string[]> { ["a"] = new[] { "North quay" }, ["b"] = new[] { "South quay" } };
+        if (!shared) parts["c"] = new[] { "East quay" };
+        string[] referenced = { "a", "b", shared ? "a" : "c" };
+        var stories = referenced.Select(id => new[] { (kind, id) }).ToArray();
+        var original = HeaderFooterFixtures.Build(
+            bodies.Select((text, i) => new Section(new[] { text },
+                Headers: header ? stories[i] : null, Footers: header ? null : stories[i])).ToArray(),
+            header ? parts : null, header ? null : parts, titlePg: kind == "first", evenAndOddHeaders: kind == "even");
+        var revised = HeaderFooterFixtures.Build(bodies.Select(text => new Section(new[] { text })).ToArray(),
+            titlePg: kind == "first", evenAndOddHeaders: kind == "even");
+        AssertStoryEndpoints(original, revised, DocxCompare.Compare(original, revised), header, kind);
+    }
+
+    /// <summary>
+    /// Issue #1771: the revision's section breaks name its header parts by its own relationship ids, which the
+    /// original may lack or give to a different story. The revision keeps the first section's story under id
+    /// <paramref name="first"/> and, unless <paramref name="second"/> names a part, lets later sections inherit
+    /// it, so one revision part pairs with two original stories: unchanged against the first section's,
+    /// changed against the second's. One section (the control) has no second pairing; with both ids swapped
+    /// (<c>b</c>, <c>a</c>) nothing changes at all.
+    /// </summary>
+    [Theory]
+    [InlineData(1, "z", null)]
+    [InlineData(2, "z", null)]
+    [InlineData(3, "z", null)]
+    [InlineData(2, "b", null)]
+    [InlineData(2, "b", "a")]
+    public void RevisionPartsUnderTheirOwnIds_RejectRestoresEachSection(int count, string first, string? second)
+    {
+        var original = HeaderFooterFixtures.Build(Bodies.Take(count).Select((text, i) =>
+                new Section(new[] { text }, Headers: new[] { ("default", i == 1 ? "b" : "a") })).ToArray(),
+            new Dictionary<string, string[]> { ["a"] = new[] { "North quay" }, ["b"] = new[] { "South quay" } });
+        var revisedParts = new Dictionary<string, string[]> { [first] = new[] { "North quay" } };
+        if (second is not null) revisedParts[second] = new[] { "South quay" };
+        string?[] revisedIds = { first, second, null };
+        var revised = HeaderFooterFixtures.Build(Bodies.Take(count).Select((text, i) =>
+                new Section(new[] { text }, Headers: revisedIds[i] is { } id ? new[] { ("default", id) } : null)).ToArray(),
+            revisedParts);
+        AssertStoryEndpoints(original, revised, DocxCompare.Compare(original, revised), true, "default");
+    }
+
+    /// <summary>
+    /// Issue #1771: every original section has a title page with its own first-page header; the revision
+    /// has neither. Rejecting must restore the flag on the inline section break as well as on the final
+    /// section (the one-section control).
+    /// </summary>
+    [Theory]
+    [InlineData(1, "first")]
+    [InlineData(2, "first")]
+    [InlineData(2, "default")]
+    public void TitlePageTurnedOff_RejectRestoresEverySection(int count, string kind)
+    {
+        var original = HeaderFooterFixtures.Build(Bodies.Take(count).Select(text => new Section(new[] { text },
+                Headers: new[] { ("first", "f"), ("default", "d") })).ToArray(),
+            new Dictionary<string, string[]> { ["f"] = new[] { "Cover" }, ["d"] = new[] { "Running" } }, titlePg: true);
+        var revised = HeaderFooterFixtures.Build(Bodies.Take(count).Select(text => new Section(new[] { text })).ToArray());
+        AssertStoryEndpoints(original, revised, DocxCompare.Compare(original, revised), true, kind);
+    }
+
+    private static readonly string[] Bodies = { "Harbor pilots log the tide charts before noon.",
+        "Pilot boats return to the inner mooring after dusk.", "The tide tables are posted on the quay every Monday." };
 
     [Theory]
     [InlineData("whole-paragraph-replace")]

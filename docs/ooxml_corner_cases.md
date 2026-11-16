@@ -3085,6 +3085,79 @@ Docxodus keeps paired so that reviewer edits of such labels still compose in `Co
 `RewrittenClauses_StayWhole_BesideAnEditedClauseOrNone`) and
 `Docxodus.Tests/DocxDiffWordShapeTests.cs` (`InteriorWeakPair_IsReplacedWhole`).
 
+## Compare: a tab or a break is whitespace to the word diff (#1759)
+
+### The corner case
+
+Word's Compare treats a tab (`w:tab`) or a break (`w:br` of any type, or `w:cr`) in a paragraph the way it
+treats a space. It never keeps one unmarked on its own between changed words, and it keeps one that both
+versions share at the edge of a changed span. Docxodus grouped tabs and breaks with note references and
+images, whose keys cannot tell one occurrence from another. Any paragraph holding a tab or break therefore
+took the diff in which spaces anchor too, so a replaced phrase came out as one-word deletions and insertions
+alternating around kept spaces. The rewrite test (#1739) also skipped such paragraphs, so a clause laid out as
+tab, label, tab, text stayed paired and was diffed word by word.
+
+### Minimal reproducer
+
+```xml
+<!-- original -->
+<w:p><w:r><w:tab/></w:r><w:r><w:t>Every harbor pilot logs tide charts before noon.</w:t></w:r></w:p>
+<!-- revised -->
+<w:p><w:r><w:tab/></w:r><w:r><w:t>Every harbor pilot checks wind gauges and buoy lamps before noon.</w:t></w:r></w:p>
+```
+
+Word deletes `logs tide charts` and inserts `checks wind gauges and buoy lamps`. Docxodus wrote six
+deletions and seven insertions, keeping the spaces between the changed words.
+
+### Behavior table
+
+Word 2024, Compare Documents at word level, one paragraph per document unless noted. A span is a run of
+inserted or deleted text as the redline shows it. LibreOffice was not measured.
+
+| Pair | Word | Docxodus before | Docxodus after |
+|---|---|---|---|
+| phrase replaced, no tab (control) | 1 deleted, 1 inserted span | same | same |
+| the same after a leading tab, before a trailing tab, or after a leading line break | 1 deleted, 1 inserted span | 6 deleted, 7 inserted one-word spans | 1 deleted, 1 inserted span |
+| four words replaced around a tab, line break, `w:cr`, page or column break | 1 deleted, 1 inserted span, the tab or break inside each | 2 deleted, 2 inserted spans, the tab or break kept between them | as Word |
+| tab, `(3)`, tab, clause text, rewritten between unchanged paragraphs | old paragraph deleted, new one inserted | one paragraph of 60 deletions and 61 insertions | as Word |
+| the same clause as `(3) ` and text in one run (control) | old paragraph deleted, new one inserted | same | same |
+| `Crate`, tab, middle column, tab, `12 kg`, middle column replaced | both tabs kept | both tabs kept | both tabs kept |
+| tab, then `Ropes, nets and hooks are stowed.` → `Sails, oars and cleats are stowed.` | `Ropes, nets` and `hooks` replaced, the comma with them | the comma kept between one-word spans | as Word, and as the same sentence without the tab |
+| a space replaced by a tab; a tab inserted before a space | space deleted, tab inserted; tab inserted | same | same |
+| a paragraph of two tabs cut to one | 1 tab deleted | same | same |
+
+### Analysis
+
+The token differ anchors a paragraph's diff on its words and punctuation, never on whitespace, because two
+unrelated phrases share many spaces and matching them threads one phrase through the other. A paragraph with
+a note reference, image, opaque inline or text box falls back to anchoring on every token, whitespace
+included, so that one of several identical objects is paired by its surroundings. Tabs and breaks fell into
+that fallback, although a tab, like a space, has no identity to mispair. They are now connective whitespace,
+like spaces, everywhere the comparison draws that line: the token differ's anchors and kept edges, and the
+split segmenter's re-pairing of whitespace at a segment boundary. The rewrite test measures a tabbed paragraph
+by its text, a tab or break counting as a space would. The rule that keeps a lone shared punctuation mark out
+of the unchanged text (decoded from the same compare) applies only to plain text, since dropping an anchor
+inside a field or hyperlink would split its plumbing between the two sides; a tab or break is a leaf of its
+run, so a paragraph holding one now counts as plain text there too (`IrCrossParagraphSegmenter.IsPlainText`).
+The cross-paragraph token stream still takes only paragraphs of text runs alone. Note references, images, text boxes and other objects
+keep the fallback and keep their pairing. `w:ptab` is read as an opaque inline and stays an object.
+
+### Relevant code
+
+- `Docxodus/Ir/Diff/IrDiffToken.cs` — `IsObject` and `IsConnective`, the one definition every pass reads.
+- `Docxodus/Ir/Diff/IrTokenDiffer.cs` — `AnchoredSpans` (all-token fallback only for objects), `EmitSegment`.
+- `Docxodus/Ir/Diff/IrBlockSimilarity.cs` — `HasOnlyTextTokens`, read by `IsRewrite`.
+- `Docxodus/Ir/Diff/IrCrossParagraphSegmenter.cs` — `IsPlainText`, the lone-punctuation precondition that
+  `IrEditScriptBuilder.PlainTextPair` and the split segmenter read; `IsStreamable` builds on it.
+
+### Tests
+
+`Docxodus.Tests/Ir/Diff/IrTokenDifferTests.cs` (`Tab_or_break_leaves_a_replaced_phrase_one_deletion_and_one_insertion`,
+`Tab_or_break_between_changed_words_does_not_anchor`, `Shared_tabs_at_the_edges_of_a_changed_column_are_kept`,
+`A_tab_that_is_the_edit_stays_visible`, `Note_reference_still_pairs_in_full_context`),
+`Docxodus.Tests/Ir/Diff/IrBlockAlignerTests.cs` (`Rewrite_with_a_tab_or_break_is_replaced_like_plain_text`) and
+`Docxodus.Tests/DocxDiffTabBreakTests.cs`.
+
 ## Compare: rejecting a moved and edited paragraph (#1716)
 
 ### The corner case
@@ -5340,6 +5413,7 @@ The input ends with a retained section. This schema-valid markup produces differ
 | Docxodus `RevisionProcessor.RejectRevisions` | Removes the inserted paragraph and its boundary; one section remains. |
 | LibreOffice 25.8.7.3 | Keeps an empty boundary paragraph and two sections, with extra running-story bindings. |
 | Word Online, Playwright UI Reject All Changes | Keeps an empty first section and blank first PDF page. The downloaded DOCX has two sections and no insertion/deletion markers. |
+| Word 2024 desktop (16.0.20326), `Revisions.RejectAll` on every story range by COM | On a Docxodus redline of the same shape (#1757: two inserted opening sections, then twelve deleted ones, 2026-11-14), removes both inserted boundaries; the twelve original sections remain, each under its own restored header, with no empty first section. |
 
 This is evidence about the authored markup, not native Word Compare output. An inserted
 paragraph mark is insufficient to claim native section-boundary reversibility. The #1534
@@ -5349,6 +5423,32 @@ paragraph on rejection. No native-boundary fix is claimed here. The independent 
 keeps exact package endpoints and review-story text mandatory, and explicitly excludes the
 two LibreOffice rejection measurements that fail authored calibration. See the
 [authored fixtures and native capture evidence](https://github.com/JSv4/docx-fidelity-bench/tree/main/docs/results/inserted-section-stories).
+
+### A deleted section keeps its own header unchanged in a comparison
+
+Issue #1757 (2026-11-14). The original has three sections, each with its own default header
+(`Quarry ledger 1`…`3`); the revision replaces the whole body with two sections of unrelated text,
+each with its own header (`Kiln register 1`, `2`), so the comparison deletes section breaks and
+inserts others:
+
+```xml
+<!-- original: three bodies like this, each sectPr naming its own header part -->
+<w:p><w:pPr><w:sectPr><w:headerReference w:type="default" r:id="rQuarry1"/>…</w:sectPr></w:pPr>
+  <w:r><w:t>Masons split granite blocks at the northern quarry face…</w:t></w:r></w:p>
+```
+
+| Engine | Header of a section that holds only deleted text | After Reject All |
+| --- | --- | --- |
+| Word 2024 desktop (16.0.20326), `Application.CompareDocuments`, headers compared | The original section's header, with no revision marks | Every original header in place |
+| Docxodus before the fix | The next original section's header, beside the revision's last header (fields included) | Sections 1–2 under the headers of sections 2–3 |
+| Docxodus after the fix | The original section's header, unchanged | Every original header in place |
+
+A section that holds only deleted text disappears on accept, so its header has nothing to change
+to: only reject reads it. `IrEditScriptBuilder.BuildOneHeaderFooterScope` therefore pairs such a
+review section with no revised story at all. It shares the output of any pair that already holds
+the same original story (whose rejected text is that story), or else keeps the original's part
+unchanged, rather than marking the story deleted. Marking it deleted would need a copy of the part
+whenever another section shares it.
 
 ## Contributing
 
@@ -7924,9 +8024,10 @@ file, so those keep the placeholder rather than getting an EMF+ player.
 | A zero-width pen outlining an arrowhead | PowerPoint WMF | One device pixel | One pixel | One CSS pixel, as EMF cosmetic pens (it was refused) |
 | The source EMF split across `META_ESCAPE_ENHANCED_METAFILE` comments ("WMFC") | `GetWinMetaFileBits`, LibreOffice WMF export | Plays the embedded EMF instead of the WMF records | αβ ≤ ± → (the EMF's text) | Plays the embedded EMF; when it cannot, plays the WMF records |
 | ANSI text records that lose characters ("αβ ≤ →" becomes "aß = ?"), and one-bit DIBs written without their colour table | `GetWinMetaFileBits` | Unused: the embedded EMF is played | The EMF's text | Unused for the same reason |
-| A gradient as abutting strips of solid polygons | Every Office gradient | Aliased, so the strips meet without a seam | The EMF+ gradient | Anti-aliased SVG shows faint lighter lines where strips meet (not fixed; already so for gradients drawn before) |
-| A semi-transparent fill as PATINVERT, a fill with `R2_MASKPEN` and a one-bit pattern, then PATINVERT again; or `R2_XORPEN` | SmartArt with transparency; PowerPoint WMF of a gradient area chart | A dithered approximation | The EMF+ alpha | Keeps the placeholder |
-| Equation text as glyph indices (Cambria Math) | Word EMF of an equation | The font's glyphs | Drawn | Keeps the placeholder: glyph indices need the font's own tables |
+| A gradient as abutting strips of solid polygons | Every Office gradient | Aliased, so the strips meet without a seam | The EMF+ gradient | Draws fills that share an edge with the fill before them crisp, so the strips meet without a seam (#1748; before, faint lighter lines showed where strips met) |
+| A semi-transparent fill as PATINVERT, a fill with `R2_MASKPEN` and a one-bit pattern, then PATINVERT again | SmartArt with transparency | A dither: the brush where the pattern is black, the destination elsewhere | The alpha, also for a WMF without EMF+ (see below) | The brush through an SVG mask at the pattern's black share (#1748; kept the placeholder) |
+| A gradient clipped to an area: its strips under `R2_XORPEN`, the area filled black, the strips again | PowerPoint WMF of a gradient area chart | The strips inside the area, the destination outside | The clipped gradient | The strips through an SVG mask of the area (#1748; kept the placeholder) |
+| Equation text as glyph indices (Cambria Math) | Word EMF of an equation | The font's glyphs | Drawn | Keeps the placeholder (see below) |
 
 ```text
 EMR_STRETCHDIBITS  dest (4925,92) 1151×817  src 576×409  BI_RGB 1 bpp   rop 0x00EE0086 (SRCPAINT)
@@ -7942,6 +8043,45 @@ pixel whose result does not read the destination is drawn or left transparent, a
 does is exact only where the bitmap drawn just before, to the same rectangle, left the destination
 known. The fixtures under `TestFiles/Metafiles/office-*` are corpus files; their README records how
 each was written.
+
+### Inversions, palette brushes and glyph indices (#1748)
+
+The semi-transparent fill and the clipped gradient are one GDI idiom: content XORed onto the
+destination (`R2_XORPEN`, or a PATINVERT blit with a solid brush), a mask painted black, and the
+same content XORed again. Where the mask is black the result is the content; elsewhere the passes
+cancel, whatever lay beneath:
+
+```text
+EMR_BITBLT              (167,167) 3334×938  rop 0x005A0049 (PATINVERT), solid brush #ccd2d8
+EMR_SETROP2             R2_MASKPEN
+EMR_CREATEDIBPATTERNBRUSHPT  8×8, 1 bpp, colour table black, white   (58 of 64 pixels black)
+EMR_FILLPATH            the rounded rectangle
+EMR_SETROP2             R2_COPYPEN
+EMR_BITBLT              (167,167) 3334×938  rop 0x005A0049 (PATINVERT)
+```
+
+The pattern's black share is the alpha the dither stands for. Across the corpus it matched the EMF+
+fill of the same shape: 58/64 = 0.906 against EMF+ alpha 0xE6 (0.902), and 32/64 against 0x80.
+Word 2024's PDF export of the corpus document shows it renders the idiom the same way: it fills
+the EMF version with `ca 0.90196` (the EMF+ alpha) and the WMF version, which has no EMF+, with
+`ca 0.90588`, which is 231/255, the dither's 58/64. Its filtered-HTML PNGs looked greyer only
+because they blend translucent pixels with a grey matte before storing their alpha. Docxodus draws
+the content once through an SVG `mask` whose coverage is that share. Chromium draws nothing through
+a mask whose region is ±10⁹ units, so the region is the drawing's bounds.
+
+Pattern brushes that are not in RGB colours, checked by having GDI record and play its own
+metafiles: a monochrome brush (`CreatePatternBrush` with a one-bit bitmap, recorded as
+`EMR_CREATEMONOBRUSH` with `DIB_PAL_INDICES` and no colour table, or in a WMF as
+`META_DIBCREATEPATTERNBRUSH` with `BS_PATTERN` and a black and white table) paints 0 bits in the
+text colour and 1 bits in the background colour. A `DIB_PAL_COLORS` brush keeps its WORD palette
+indexes, packed in an EMF and in four-byte slots in a WMF, and plays through the default palette
+(index 1 #800000, 4 #000080). Docxodus does the same, and refuses palette indexes once the
+metafile selects its own palette.
+
+The equation preview's only glyph-index run is one glyph, 958 in Cambria Math, which that font's
+`cmap` on the test machine maps to U+221A (√). The file does not carry the character, the
+glyph-to-character map is in the font build alone, and a browser cannot draw a glyph by its index,
+so the picture keeps its placeholder.
 
 ## Missing-font classes differ from native font selection (#1574)
 
@@ -8104,8 +8244,8 @@ mode 14 lays out every row below the same way. LibreOffice was not available on 
 | --- | --- | --- | --- | --- |
 | five paragraphs (the issue) | p1: 23 lines, notes 1–4; p2: the citing line, the last line, note 5 | same | export fails: "A footnote continuation is clipped" | as Word |
 | six paragraphs | p1: 23 lines, notes 1–4; p2: 7 lines, notes 5–6 | not run | fails | as Word |
-| paragraph 1 cites two notes, paragraph 5 none | 1 page: 25 lines, notes 1–5 | p1: 23 lines, notes 1–5; p2: 2 lines | fails | as mode 14 |
-| widow control off | 1 page: 25 lines, notes 1–5 | p1: 24 lines, notes 1–5; p2: 1 line | fails | as mode 14 |
+| paragraph 1 cites two notes, paragraph 5 none | 1 page: 25 lines, notes 1–5 | p1: 23 lines, notes 1–5; p2: 2 lines | fails | as mode 14 (as Word in mode 15 since #1751) |
+| widow control off | 1 page: 25 lines, notes 1–5 | p1: 24 lines, notes 1–5; p2: 1 line | fails | as mode 14 (as Word in mode 15 since #1751) |
 | widow control off, note 5 four lines long | p1: 24 lines, notes 1–4, two lines of note 5; p2: 1 line, the rest of note 5 | not run | fails | p1 holds three lines of note 5 |
 | widow control on, note 5 four lines long | p1: 23 lines, notes 1–4; p2: 2 lines, note 5 | not run | as Word | as Word |
 | four paragraphs (control) | 1 page | not run | 1 page | 1 page |
@@ -8143,10 +8283,41 @@ at its text height (`droppedLeadingPt`), the cap gives that leading to the band.
 expands beside is cloned after its notes are packed, so it too ends at its text height when they
 take its leading.
 
-Not modelled: the mode 15 rule, in which the last line above a band keeps its leading whether or
-not it cites (Docxodus lays such pages out as mode 14 does, one line more than Word); the band's own
-last-line leading before mode 15; and a paragraph without widow control whose last line on the page
-is its citing line (the four-line note above). Test: `export-footnote-page-bottom.spec.ts`.
+Not modelled: the band's own last-line leading before mode 15; and a paragraph without widow control
+whose last line on the page is its citing line (the four-line note above). Test:
+`export-footnote-page-bottom.spec.ts`.
+
+### Compatibility mode 15 (#1751)
+
+Until #1751 Docxodus laid out mode 15 pages as mode 14 does, so a page with notes held one more line
+than Word. The fit height (`PaginationEngine.fitHeightPt`) now takes whether notes sit below the
+block: the page's band already holds some, or the block brings some. From mode 15 such a block needs
+its full line box, so the last line above a band keeps its leading, while on a page without notes it
+still runs past the foot. A paragraph head is held to the same rule against the notes already on its
+page; a head that cites a note was already measured at full height beside it. The converter already
+stated the mode on the staging element (`data-docx-compatibility-mode`); an unstated mode reads as
+before mode 15.
+
+The export's text fitter needed one more change. When it split a paragraph, `createParagraphFragment`
+trimmed the head's last line to its text height on the assumption that a head always ends its page
+with its leading past the edge (#1375). In mode 15 that let the head of the uncited fifth paragraph
+end 11.5pt early, the 2-line tail then fitted on page 1 after it, 11.5pt too close to the head's last
+line, and the page held all 25 lines. The trimmed head also still reported that leading through
+`lastLineTrailingLeadingPt`, so before mode 15 its fit height subtracted it twice. The splitter now
+leaves the leading the paginator measures to `fitHeightPt` and `droppedLeadingPt`, and trims
+only the leading the paginator does not measure, as before.
+
+The test fixtures, re-measured in Word 2024 (16.0.20326) through `Range.Information` (page and
+vertical position of every word, and each note's first character). They state Liberation Serif,
+which Word substitutes with Times New Roman, the same metrics; without `w:compat` Word opens them in
+mode 12.
+
+| Fixture | Word 2024, mode 12 | Word 2024, mode 15 | Docxodus before #1751, mode 15 | Fixed |
+| --- | --- | --- | --- | --- |
+| paragraph 1 cites two notes, paragraph 5 none | 1 page: 25 lines, notes 1–5 | p1: 23 lines, notes 1–5; p2: 2 lines | as mode 12 | as Word |
+| widow control off | 1 page: 25 lines, notes 1–5 | p1: 24 lines, notes 1–5; p2: 1 line | as mode 12 | as Word |
+| the issue's five paragraphs (control) | p1: 23 lines, notes 1–4; p2: 2 lines, note 5 | same | as Word | as Word |
+| one double-spaced test line at the page foot, no notes (control, `pagination-last-line-leading.spec.ts`) | its text height fits (the sweep above) | the same | as Word | as Word |
 
 ## Fractional whole-number measures truncate in Word (#1622)
 
@@ -9186,3 +9357,238 @@ completeness, as does an element with no box.
 
 **Tests.** `pagination-table-clipping.spec.ts`, `page-map-source-textbox-clip.spec.ts`,
 `export-wide-body-table.spec.ts`, `export-story-table-width.spec.ts`, `export-linked-textboxes.spec.ts`.
+
+## Grid columns no row reaches (#1750)
+
+A fixed-layout table whose rows all leave the last grid columns unused. The issue's case is #1733's
+reproducer with `--fit`, on A4 with 1418-twip margins:
+
+```xml
+<w:tblPr><w:tblW w:w="14700" w:type="dxa"/><w:tblLayout w:type="fixed"/></w:tblPr>
+<w:tblGrid><w:gridCol w:w="1800"/><w:gridCol w:w="2200"/><w:gridCol w:w="1500"/><w:gridCol w:w="1500"/>
+  <w:gridCol w:w="1500"/><w:gridCol w:w="3000"/><w:gridCol w:w="3200"/></w:tblGrid>
+<w:tr><w:trPr><w:gridAfter w:val="2"/></w:trPr>   <!-- every row: five of the seven columns -->
+  <w:tc><w:tcPr><w:tcW w:w="1800" w:type="dxa"/></w:tcPr>…</w:tc>
+  <w:tc><w:tcPr><w:tcW w:w="2200" w:type="dxa"/></w:tcPr>…</w:tc>
+  <w:tc><w:tcPr><w:tcW w:w="4500" w:type="dxa"/><w:gridSpan w:val="3"/></w:tcPr>…</w:tc></w:tr>
+```
+
+The other probes use a 1000/2500/1500/2000/2000-twip grid (9000 twips), `w:tblW` 9000 dxa and rows
+of 1000/2500/1500-twip cells with `w:gridAfter w:val="2"`, varied one property at a time. Desktop Word
+2024 (16.0 build 20326) opened each by COM; the table gives Word's cell widths (`Cell.Width`, in
+points) and the grid it holds after opening (`Document.WordOpenXML`), and its PDFs
+(`ExportAsFixedFormat`) confirm the positions: in the issue's table the second and third cells' text
+starts at 227.1pt and 417.3pt from the paper's left edge (the issue measured 226 and 417), and in the
+9000-twip table at 161.4pt and 386.5pt, the cumulative widths. Docxodus is the converter's HTML laid
+out in Chromium. LibreOffice was not measured.
+
+| Probe | Word 2024 cell widths | Grid Word holds | Docxodus 16.0.0 | Fixed |
+| --- | --- | --- | --- | --- |
+| the issue | 155.65, 190.25, 389.1 | 3113, 3805, 7782 | 90, 110, 225 | 155.5, 190.0, 388.8 |
+| 9000-twip grid | 90, 225, 135 | 1800, 4500, 2700 | 50, 125, 75 | 89.8, 224.6, 134.8 |
+| the same in mode 15; with `w:wAfter` 4000 or 1000; with no `w:gridAfter` (the cells stop) | 90, 225, 135 | 1800, 4500, 2700 | 50, 125, 75 | 89.8, 224.6, 134.8 |
+| `w:tblLayout` autofit, or absent | 90, 225, 135 | 1800, 4500, 2700 | 50.4, 124.9, 75.3 (autofit) | 90.4, 224.0, 134.9 (autofit) |
+| `w:tblW` 5000 pct | 90.9, 227.25, 136.35: 100% of the text width | 1818, 4545, 2727 | unused columns kept | widened in proportion |
+| `w:tblW` auto or absent | 50, 125, 75; the table 250pt wide | 1000, 2500, 1500 | 50, 125, 75 in a 450pt table | 50, 125, 75 in a 250pt table |
+| `w:tblW` 5000 dxa | 50, 125, 75 | 1000, 2500, 1500 | in a 450pt table | in a 250pt table |
+| rows reach 3, 4 and 3 columns | 64.3, 160.7, 96.45 (+128.55 in the second row) | 1286, 3214, 1929, 2571 | 50, 125, 75 (+100) | 64.2, 160.4, 96.3 (+128.4) |
+| one row fills the grid (control) | 50, 125, 75 (+100, 100) | unchanged | same | same |
+
+Word's rule, from the grids it holds: grid columns that no row's cells reach are not part of the
+table. Word removes them, with the `w:gridAfter` and `w:wAfter` that covered them, and lays the remaining
+columns out across the table's width in proportion to their widths. A `w:wAfter` does not keep the
+columns, and a column any one row reaches stays, at the same proportional width. With no table
+width (`auto` or absent) nothing widens, and the table ends where its rows do.
+
+Docxodus wrote every `w:gridCol` to the HTML `colgroup`. CSS gave the unreached columns their width,
+so the rows ended short of the table and every cell boundary sat at its grid offset. `CreateColGroup`
+(`WmlToHtmlConverter.cs`) already left out a `w:gridBefore` prefix every row omits; it now keeps
+only the columns from there to the furthest any row's cells reach (`TableRenderingGrid.ReachedColumns`).
+CSS then spreads a fixed table's width over the columns that remain in proportion, as Word does.
+
+**Not modelled**, found with the same probes:
+
+- Word sizes the columns by the cells' `w:tcW` where they disagree with `w:tblGrid`. Full rows of
+  2000, 2000, 1000, 2000 and 2000-twip cells on the 1000/2500/… grid lay out at 100, 100, 50, 100
+  and 100pt in Word; Docxodus keeps the grid's 50, 125, 75, 100 and 100.
+- A fixed table whose `w:tblW` (6000) is narrower than its grid (9000) shrinks in proportion in Word
+  (33.65, 83.05, 50.1, 66.6, 66.6); CSS keeps the grid's widths.
+- A prefix every row omits (`w:gridBefore w:val="2"` on every row of the 9000-twip grid, cells of
+  1500, 2000 and 2000 twips) is also widened to the table width (122.7, 163.65, 163.65), but Word keeps
+  the prefix's own 175pt before the cells: their text starts at 246.4pt. Docxodus already left that
+  prefix out of the `colgroup` and lays out the same widths, starting at the table's edge.
+
+**Tests.** `TableHorizontalPlacementTests` (`Columns_no_own_row_reaches_leave_the_grid`,
+`A_trailing_column_another_own_row_reaches_stays_in_the_grid`) and
+`npm/tests/export-table-unused-columns.spec.ts`.
+
+## Strict and Transitional write some values differently (#1758)
+
+A Strict package is not a Transitional package with other namespace URIs. Two kinds of value are
+spelled differently in the two conformance classes, and `StrictOoxmlNormalizer` used to rewrite only
+the URIs:
+
+```xml
+<!-- Strict, as the Strict save writes it -->
+<w:cnfStyle w:firstRow="1" w:lastRow="0" w:firstColumn="0" w:lastColumn="0" w:oddVBand="0"
+            w:evenVBand="0" w:oddHBand="0" w:evenHBand="0" w:firstRowFirstColumn="0"
+            w:firstRowLastColumn="0" w:lastRowFirstColumn="0" w:lastRowLastColumn="0"/>
+<a:schemeClr val="accent1"><a:lumMod val="50%"/></a:schemeClr>
+<wp14:pctWidth>40%</wp14:pctWidth>
+
+<!-- Transitional, as the Transitional save writes the same content -->
+<w:cnfStyle w:val="100000000000" w:firstRow="1" … w:lastRowLastColumn="0"/>
+<a:schemeClr val="accent1"><a:lumMod val="50000"/></a:schemeClr>
+<wp14:pctWidth>40000</wp14:pctWidth>
+```
+
+Word 2024 (16.0.20326, Windows) saved the same documents both ways (`SaveAs2` with formats 24 and 12):
+a styled table, two charts, a gradient-filled shape with shadow, glow and reflection, a shape sized
+and placed relative to the margin, text with glow, shadow and reflection, and a picture with
+brightness, contrast, saturation and sharpen corrections. LibreOffice was not available for this check.
+
+| Value | Strict | Transitional | Docxodus before the fix |
+| --- | --- | --- | --- |
+| DrawingML percentages in `a:` (colour transforms, `a:gs/@pos`, `a:miter/@lim`, `a:defRPr/@baseline`, `a:scrgbClr`, `a:reflection`, `a:lum` brightness and contrast) | `50%`, `-38%`, `12.5%` | `50000`, `-38000`, `12500` | Strict form copied through |
+| The same types in Office 2010 extensions: `a14:sharpenSoften/@amount`, `wp14:pctWidth` and its siblings, `cs:defRPr/@baseline` | `100%`, `40%` | `100000`, `40000` | copied through |
+| `w14` text effects (`w14:alpha`, `w14:gs/@w14:pos`, `w14:reflection`) | `35000` | `35000` | unchanged, correctly |
+| Chart values (`c:gapWidth`, `c:overlap`, `c:holeSize`) | `219`, `-27`, `75` | the same | unchanged, correctly |
+| `w:cnfStyle` | the twelve flags | `w:val` and the twelve flags | no `w:val` |
+| `w:zoom/@w:percent` | `100%` | `100` | copied through; valid in both |
+| Twips measures (`w:pgSz`, `w:pgMar`, `w:tcW`, `w:tblInd`, `w:defaultTabStop`, …) | `612pt`, `5.40pt` | `12240`, `108` | copied through; **not fixed**, see below |
+
+The Open XML SDK validator (`FileFormatVersions.Microsoft365`) types the DrawingML percentages as
+integers and requires `w:cnfStyle/@w:val`, so a redline of two valid Strict documents failed
+validation: the issue's pair gave six errors, and a Strict document with a theme, two charts and a
+table gave 276, nearly all percentages. Word opens such a redline and reads `50%` where it expects
+`50000`, but Docxodus's own shape renderer did not: `WmlToHtmlConverter.Shapes` parses `a:lumMod`
+as a number and dropped `50%`, so a darkened Strict shape was drawn at full brightness.
+
+**`w:val` order.** The twelve `w:val` digits do not follow the order the corner attributes are
+declared in. A table style that shades each corner cell differently, saved as Transitional, writes
+the top-left cell as `001000000100` and the top-right as `000100001000`: digits 9 to 12 are the
+top-right, top-left, bottom-right and bottom-left cells (`firstRowLastColumn`, `firstRowFirstColumn`,
+`lastRowLastColumn`, `lastRowFirstColumn`), the cell-mask order of ST_Cnf. `FormattingAssembler`
+already read `w:val` in that order.
+
+**Fix.** `StrictOoxmlNormalizer.RewriteTree` parses each Strict part once, after the URI
+substitution, and runs both tree rewrites on it: the existing shape-namespace unfold and
+`ConvertStrictValues`. `PercentageAttributes` lists, by element, every attribute whose type is one of
+DrawingML's percentage types (ST_Percentage, ST_PositivePercentage, ST_FixedPercentage,
+ST_PositiveFixedPercentage, and the text spacing, font scale and bullet size types built on them).
+It is drawn from the ISO/IEC 29500-4 DrawingML schema and from the Open XML SDK's ranges for the a14
+picture effects. Each value ending in `%` becomes thousandths, rounded half away from zero. A value
+with no `%` is already Transitional and is left alone, and so is free text that reads like a
+percentage (`descr`, `tooltip`, `c:numFmt/@formatCode="0%"`), because only the listed attributes are
+read. The `wp14` relative size and position elements get the same conversion to their text. A
+`w:cnfStyle` without `w:val` gains one, spelled from its flags in `W.CnfStyleValFlags` order, which
+`FormattingAssembler` now uses too.
+
+**Not fixed: universal measures.** The Strict save writes every twips measure as a universal measure
+(`w:pgSz w:w="612pt"`, `w:tcW w:w="156pt"`, `w:tblInd w:w="5.40pt"`), and the validator rejects these
+in Transitional: 33 errors remain on the Strict document above once the percentages are converted.
+Readers that go through `AttributeToTwips` (`PtOpenXmlUtil`) accept the units, but several parse
+an integer and fall back to Letter or fail (page size in HTML, `GetSectionInfo`, `SetPageSetup`,
+the column operations under a spanning cell). These read units now; see #1764 below. The SmartArt diagram attributes (`dgm:prSet/@custScaleX` and its siblings, `ST_PrSetCustVal`)
+are typed as integers by the SDK, but the Strict save of a resized SmartArt node could not be captured
+by COM, so they are not converted. A Strict part inside a Transitional package (the chart of #1702)
+was not converted either, because the normalizer ran only on packages whose main part is Strict; it
+is now (#1764 below).
+
+Tests: `StrictOoxmlNormalizerValueTests`.
+
+## Universal measures, and a Strict part inside a transitional package (#1764)
+
+ECMA-376's twips types (`ST_TwipsMeasure`, `ST_SignedTwipsMeasure`, and the measure form of
+`ST_MeasurementOrPercent`) admit a universal measure (a number and one of `cm`, `mm`, `in`, `pt`,
+`pc`, `pi`) in Transitional as well as Strict, and a Strict save writes every twips measure that way.
+A desktop word processor (build 16.0.20326, Windows) saved one document as Strict:
+
+```xml
+<w:pgSz w:w="595.30pt" w:h="841.90pt"/>
+<w:pgMar w:top="56.70pt" w:right="56.70pt" w:bottom="56.70pt" w:left="56.70pt" w:header="35.40pt" w:footer="35.40pt" w:gutter="0pt"/>
+<w:tblW w:w="481.90pt" w:type="dxa"/>  <w:tcW w:w="240.95pt" w:type="dxa"/>
+<!-- styles.xml: a paragraph style, a table style, and the document defaults -->
+<w:spacing w:before="18pt"/><w:ind w:start="36pt"/>
+<w:tblInd w:w="5.40pt" w:type="dxa"/>
+<w:spacing w:after="8pt" w:line="13.90pt" w:lineRule="auto"/>
+<!-- numbering.xml and settings.xml -->
+<w:ind w:start="36pt" w:hanging="18pt"/>  <w:defaultTabStop w:val="36pt"/>
+```
+
+`w:gridCol` stays in twips (`4819`) and `w:sz` in half-points (`24`). An auto line spacing is written
+as points too: `13.90pt` is 278 twips, the same number Transitional writes as 240ths of a line
+(`w:line="278"`), so reading it as a twips measure gives the right value.
+
+| Reader | Strict copy (units), before the fix | Transitional copy (twips) | Desktop word processor, either copy |
+| --- | --- | --- | --- |
+| `GetSectionInfo` | 12240 × 15840, margins 1440 (Letter fallback) | 11906 × 16838, margins 1134 | A4, 56.7pt margins |
+| `SetPageSetup(MarginTopTwips = 720)` | other margins rewritten to 1440, header/footer to 720 | others kept | top 36pt, others 56.7pt |
+| `SetPageSetup(Landscape = true)` | rotated Letter: 15840 × 12240 | 16838 × 11906 | 841.9 × 595.3pt |
+| `InsertTableColumn`/`DeleteTableColumn` under a spanning cell | "The input string '240pt' was not in a correct format." | succeed | (fixed outputs open, laid out alike) |
+| `GetFormatting`, `ListStyles`, `GetListMembership` indents and spacing | null | 720, 360 | 36pt, 18pt |
+| Paginated HTML page; table and cell widths | 612 × 792pt; no widths | 595.3 × 841.9pt; 240pt, 120pt | A4; cells 240pt and 120pt |
+
+LibreOffice was not available for this check. The readers that already went through
+`WordprocessingMLUtil.AttributeToTwips` (margins, indents, spacing, tab stops in the HTML render)
+read the Strict copy correctly; the ones above parsed an integer. They now read through
+`WordprocessingMLUtil.TryAttributeToTwips` and `TryStringToDecimalTwips`, the same unit conversion
+for readers that fall back on a value they cannot read rather than throw. The conversion to
+Transitional still copies the units through: they are valid ECMA-376 Transitional, and reading them
+also covers a Transitional document that writes them, though the Open XML SDK validator flags them
+(see #1758 above).
+
+**A Strict part in a transitional package.** `StrictOoxmlNormalizer` converted a package only when
+its main document part was Strict, so a chart part written in the Strict namespaces inside a
+Transitional package (the shape of #1702) kept its Strict names, and the chart renderer, looking for
+`c:chart` under the Transitional name, drew an empty frame. The word processor opens either copy with the chart's
+values (41, 36, 29). The normalizer now decides per part: in a Transitional package, each XML part
+whose own root element is in a Strict namespace is converted, URIs and values alike (`a:lumMod
+val="75%"` becomes `75000`), and every other part is left byte for byte, so Transitional text that
+merely mentions a Strict URI is untouched. A Strict package still converts as a whole.
+
+Tests: `UniversalMeasureReadingTests`, `TwipMeasureParsingTests`,
+`StrictOoxmlNormalizerValueTests.A_strict_part_in_a_transitional_package_is_converted_alone`.
+
+## A title page turned off on a section break inside the body (#1771)
+
+Original: two sections, each with `w:titlePg` and a first-page and a default header. Revision: the same
+body with neither.
+
+```xml
+<!-- original: the first section's break; the final section's w:sectPr is the same -->
+<w:p><w:pPr><w:sectPr>
+  <w:headerReference w:type="first" r:id="f"/><w:headerReference w:type="default" r:id="d"/>
+  <w:pgSz w:w="12240" w:h="15840"/><w:titlePg/>
+</w:sectPr></w:pPr>…</w:p>
+<!-- revision -->
+<w:p><w:pPr><w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr></w:pPr>…</w:p>
+```
+
+Title page per section (Docxodus columns resolved with `RevisionProcessor`):
+
+| | Redline | After reject | After accept |
+| --- | --- | --- | --- |
+| Desktop word processor (build 16.0.20326), its own compare | on, on; no section revision | on, on | on, on |
+| Docxodus `54eb5836` | off, off; `w:sectPrChange` on the final section only | **off**, on | off, off |
+| Docxodus with the fix | off, off; `w:sectPrChange` on both | on, on | off, off |
+
+LibreOffice was not available for this check.
+
+The reference compare does not compare `w:titlePg`: it keeps the original's value in every section and
+records no revision, so its accept does not give the revision. Docxodus archives the change, so both
+round trips hold, but before the fix only the final section did. An inline break's paragraph counted
+as changed under `ModeledOnly` only for page size, margins, orientation or section type
+(`IrModeledFormat.SectionKey`), and an unchanged paragraph is emitted as the revision's copy, section
+properties included. `IrMarkupRenderer.ReconcileSectionBreaks` now archives any property that differs on
+a section break both documents share, as the final section always has; the revisions list still reports
+modeled section properties only. The reference application reads that inline archive correctly. It
+mishandles a final-section archive that leaves a default out; see #1775.
+
+The same copy also carried the revision's `w:headerReference`/`w:footerReference` ids, which name parts
+of the revision's package; it now keeps the original's references, which the header/footer planner
+binds against.
+
+Tests: `BlockFormatChangeTests.MidDoc_inline_sectPr_change_outside_the_modeled_fields_is_tracked_under_either_policy`,
+`DocxDiffHeaderFooterReferenceTests.TitlePageTurnedOff_RejectRestoresEverySection`,
+`DocxDiffHeaderFooterReferenceTests.RevisionPartsUnderTheirOwnIds_RejectRestoresEachSection`.
