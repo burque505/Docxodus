@@ -1114,6 +1114,11 @@ public static partial class DocxSessionBridge
     public static string ContinueNumbering(int h, string anchor) =>
         DocxSessionOps.ContinueNumbering(h, anchor);
 
+    /// <summary>Bridge for <see cref="DocxSession.SetListMembership"/>.</summary>
+    [JSExport]
+    public static string SetListMembership(int h, string anchor, int numId, int level) =>
+        DocxSessionOps.SetListMembership(h, anchor, numId, level);
+
     [JSExport]
     public static string ReplaceCellContent(int h, string anchor, string md) =>
         DocxSessionOps.ReplaceCellContent(h, anchor, md);
