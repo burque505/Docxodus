@@ -53,6 +53,9 @@ import {
   RIBBON_STYLE_ATTR,
   RIBBON_STYLE_VERSION,
 } from "./ribbon-chrome.js";
+import { PARAGRAPH_DIALOG_CSS, PARAGRAPH_DIALOG_HTML, ParagraphDialog } from "./ribbon-paragraph-dialog.js";
+import type { MeasurementUnit } from "./ribbon-paragraph-dialog.js";
+export type { MeasurementUnit } from "./ribbon-paragraph-dialog.js";
 
 // Re-exported so the IIFE bundle built from this module (window.DocxodusEditor)
 // carries both the shell and the engine it wraps.
@@ -179,6 +182,9 @@ export interface RibbonOptions extends DocxEditorOptions {
    * without an entry stays English; the document is never touched. `setLabels` changes it later.
    */
   labels?: Record<string, string>;
+  /** How the Paragraph dialog shows indents: inches (`"in"`, the default) or centimetres
+   *  (`"cm"`). Any unit can be typed either way. `setMeasurementUnit` changes it later. */
+  measurementUnit?: MeasurementUnit;
   /** Called after any document opens, with the live editor. */
   onOpen?: (editor: DocxEditor) => void;
   /** Called whenever the status line changes. */
@@ -284,6 +290,11 @@ export interface RibbonEditor {
   setFileMenu(items: RibbonFileMenuItem[]): void;
   /** Open the File menu (as its tab's click, or Alt+F, does). */
   openFileMenu(): void;
+  /** Open the Paragraph dialog on the selected paragraphs (as the Paragraph group's launcher
+   *  does); false when no document is open or no paragraph is active. */
+  openParagraphDialog(): boolean;
+  /** Show the Paragraph dialog's indents in inches or centimetres (the `measurementUnit` option). */
+  setMeasurementUnit(unit: MeasurementUnit): void;
   /** Set the status line. */
   setStatus(text: string): void;
   /** Activate a ribbon tab by name ("home" | "insert" | "layout" | "references" | "review" | "view" | "table" | "headerfooter"). */
@@ -380,7 +391,7 @@ function ensureStyles(doc: Document): void {
   existing?.remove();
   const style = doc.createElement("style");
   style.setAttribute(RIBBON_STYLE_ATTR, RIBBON_STYLE_VERSION);
-  style.textContent = RIBBON_CSS;
+  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS;
   (doc.head ?? doc.documentElement).appendChild(style);
 }
 
@@ -474,6 +485,7 @@ class RibbonSurface implements RibbonEditor {
   private dirtyCheckQueued = false;
   private recentEntries: RibbonRecentEntry[] = [];
   private fileMenuItems: RibbonFileMenuItem[] = [];
+  private paragraphDialog!: ParagraphDialog;
   // The chrome's text in the host's language (setLabels), and the English each text had.
   private labels: Record<string, string> = {};
   private readonly englishText = new WeakMap<Text, { english: string; written: string }>();
@@ -513,7 +525,7 @@ class RibbonSurface implements RibbonEditor {
     root.className = "dxr";
     root.dataset.state = "idle";
     root.dataset.frame = this.options.frame ?? "flush";
-    root.innerHTML = RIBBON_HTML;
+    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML;
     for (const el of Array.from(root.querySelectorAll<HTMLElement>("[data-dxr]"))) {
       el.id = this.idPrefix + el.dataset.dxr;
     }
@@ -1210,7 +1222,32 @@ class RibbonSurface implements RibbonEditor {
     el.addEventListener("mousedown", (event) => event.preventDefault());
   }
 
+  /** The Paragraph dialog and its launchers (Home and Layout). Its OK is one `paragraphFormat`. */
+  private wireParagraphDialog(): void {
+    this.paragraphDialog = new ParagraphDialog(this.require<HTMLDialogElement>("paradialog"), {
+      read: () => this.live?.paragraphFormats() ?? [],
+      apply: (op) => this.run("paragraph", () => this.live!.setParagraphFormat(op), cmd("paragraphFormat", { ...op })),
+    }, this.options.measurementUnit ?? "in");
+    for (const name of ["paralaunch", "paralaunchlayout"]) {
+      const launcher = this.control(name);
+      if (!launcher) continue;
+      this.keepSelection(launcher);
+      launcher.addEventListener("click", () => this.openParagraphDialog());
+    }
+  }
+
+  openParagraphDialog(): boolean {
+    if (!this.live || this.paragraphDialog.open) return false;
+    this.closePopovers();
+    return this.paragraphDialog.show();
+  }
+
+  setMeasurementUnit(unit: MeasurementUnit): void {
+    this.paragraphDialog.setUnit(unit);
+  }
+
   private wire(): void {
+    this.wireParagraphDialog();
     const ribbon = this.require("ribbon");
 
     // (the File tab opens a menu instead: wireFileMenu)
@@ -2014,6 +2051,8 @@ class RibbonSurface implements RibbonEditor {
   // ── keyboard shortcuts the engine does not own ──────────────────────────────
 
   private handleShortcut(event: KeyboardEvent): void {
+    // A dialog owns its keys while it is open.
+    if (this.paragraphDialog?.open) return;
     // Alt+F opens the File menu, as in Word.
     if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key.toLowerCase() === "f") {
       event.preventDefault();

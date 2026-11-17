@@ -49,6 +49,7 @@ import type {
   ListFormat,
   NumberFormat,
   PageSetupOp,
+  ParagraphFormatting,
   RevisionListEntry,
   RevisionIdentity,
   RevisionAuthorNameInfo,
@@ -104,6 +105,8 @@ export interface DocxEditorExports {
     ApplyFormat: (handle: number, anchor: string, spanJson: string, opJson: string) => string;
     SetParagraphStyle: (handle: number, anchor: string, styleId: string) => string;
     SetParagraphFormat: (handle: number, anchor: string, opJson: string) => string;
+    BeginTransaction?: (handle: number) => number;
+    CommitTransaction?: (transactionHandle: number) => void;
     ApplyListFormat: (handle: number, anchor: string, kind: string) => string;
     SetListLevel: (handle: number, anchor: string, delta: number) => string;
     GetListMembership: (handle: number, anchor: string) => string;
@@ -1352,6 +1355,57 @@ export type FormatKey = "bold" | "italic" | "underline" | "strike" | "code" | "s
 
 /** Paragraph alignment passed to DocxEditor.setAlignment. */
 export type EditorAlignment = "left" | "center" | "right" | "justify";
+
+/**
+ * What {@link DocxEditor.setParagraphFormat} sets — Word's Paragraph dialog. Every field is
+ * optional (left out = unchanged). Lengths are twips: 1440 an inch, 567 a centimetre, 20 a point.
+ */
+export interface EditorParagraphFormat {
+  alignment?: EditorAlignment;
+  /** Left indent, absolute; may be negative (into the margin). */
+  leftIndent?: number;
+  /** Right indent, absolute; may be negative. */
+  rightIndent?: number;
+  /** First-line indent (0 = none); removes a hanging indent. Not with `hangingIndent`. */
+  firstLineIndent?: number;
+  /** Hanging indent; removes a first-line indent. Not with `firstLineIndent`. */
+  hangingIndent?: number;
+  spacingBefore?: number;
+  spacingAfter?: number;
+  /** Under `"auto"` (the default) 240ths of a line (240 single, 360 one and a half, 480
+   *  double); under `"exact"` and `"atLeast"` twips. */
+  lineSpacing?: number;
+  lineSpacingRule?: "auto" | "exact" | "atLeast";
+  /** Don't add space between paragraphs of the same style. */
+  contextualSpacing?: boolean;
+  widowControl?: boolean;
+  keepNext?: boolean;
+  keepLines?: boolean;
+  pageBreakBefore?: boolean;
+}
+
+/** An engine paragraph snapshot in {@link EditorParagraphFormat}'s names (what the dialog and
+ *  `paragraphFormat` take), so a read can be handed straight back. */
+function asEditorParagraphFormat(f: ParagraphFormatting): EditorParagraphFormat {
+  const out: EditorParagraphFormat = {
+    alignment: f.alignment,
+    leftIndent: f.leftIndentTwips,
+    rightIndent: f.rightIndentTwips,
+    spacingBefore: f.spacingBeforeTwips,
+    spacingAfter: f.spacingAfterTwips,
+    lineSpacing: f.lineSpacing,
+    lineSpacingRule: f.lineSpacingRule,
+    contextualSpacing: f.contextualSpacing,
+    widowControl: f.widowControl,
+    keepNext: f.keepNext,
+    keepLines: f.keepLines,
+    pageBreakBefore: f.pageBreakBefore,
+  };
+  // w:ind holds one of the two; a hanging indent wins when a document has both, as in Word.
+  if (f.hangingIndentTwips) out.hangingIndent = f.hangingIndentTwips;
+  else out.firstLineIndent = f.firstLineIndentTwips ?? 0;
+  return out;
+}
 
 /** What a paste does with the source's formatting: Word's Merge Formatting (`"merge"`), Keep
  *  Source Formatting (`"keep"`) or Keep Text Only (`"text"`). */
@@ -4636,16 +4690,53 @@ export class DocxEditor {
     return this.parseEdit(bridge.SetCommentResolved(this.handle, commentAnchorId, resolved)).success;
   }
 
-  private applyParagraphFormat(op: {
-    alignment?: EditorAlignment;
+  /**
+   * Word's Paragraph dialog in one call: every field given is set on the active paragraph, or on
+   * every paragraph of a multi-paragraph selection, as ONE undo step; fields left out stay as
+   * they are. Indents and spacing are twips (1440 an inch, 20 a point); see
+   * {@link EditorParagraphFormat}. Returns false when there is no paragraph to format.
+   */
+  setParagraphFormat(op: EditorParagraphFormat): boolean {
+    if (this.closed || !this.activeBlock) return false;
+    const clean: EditorParagraphFormat = {};
+    for (const [key, value] of Object.entries(op) as Array<[keyof EditorParagraphFormat, unknown]>) {
+      if (value !== undefined && value !== null) (clean as Record<string, unknown>)[key] = value;
+    }
+    if (Object.keys(clean).length === 0) return true;
+    const bridge = this.exports.DocxSessionBridge;
+    // Several paragraphs are several engine ops: one transaction makes them one undo step.
+    const tx = this.selectedBlocks().length > 1 && typeof bridge.BeginTransaction === "function"
+      ? bridge.BeginTransaction(this.handle) : 0;
+    try {
+      this.applyParagraphFormat(clean);
+    } finally {
+      if (tx) bridge.CommitTransaction!(tx);
+    }
+    return true;
+  }
+
+  /** The effective paragraph formatting of each paragraph the selection covers (the caret's
+   *  paragraph when nothing is selected) — what a Paragraph dialog shows; it leaves a field
+   *  blank where they differ. Empty when there is no paragraph. */
+  paragraphFormats(): EditorParagraphFormat[] {
+    const bridge = this.exports.DocxSessionBridge;
+    if (this.closed || !this.activeBlock || typeof bridge.GetFormatting !== "function") return [];
+    const out: EditorParagraphFormat[] = [];
+    for (const block of this.selectedBlocks()) {
+      const fullId = this.anchorIdOf(block);
+      if (!fullId) continue;
+      try {
+        const parsed = JSON.parse(bridge.GetFormatting(this.handle, fullId)) as FormattingInspection | null;
+        if (parsed && typeof parsed === "object" && parsed.effectiveParagraph) out.push(asEditorParagraphFormat(parsed.effectiveParagraph));
+      } catch {
+        // A block the engine cannot inspect (a table, a field result) has no paragraph format.
+      }
+    }
+    return out;
+  }
+
+  private applyParagraphFormat(op: EditorParagraphFormat & {
     indentDelta?: number;
-    firstLineIndent?: number;
-    hangingIndent?: number;
-    spacingBefore?: number;
-    spacingAfter?: number;
-    lineSpacing?: number;
-    lineSpacingRule?: "auto" | "exact" | "atLeast";
-    pageBreakBefore?: boolean;
     clearBorders?: boolean;
   }): void {
     const block = this.activeBlock;

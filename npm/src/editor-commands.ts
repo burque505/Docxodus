@@ -11,7 +11,7 @@
  * last block the user or a command was in). Each editing command is one undo step, as the
  * matching ribbon control is.
  */
-import type { DocxEditor, EditorAlignment, EditorPageSetup, FormatKey, PasteFormatting } from "./editor.js";
+import type { DocxEditor, EditorAlignment, EditorPageSetup, EditorParagraphFormat, FormatKey, PasteFormatting } from "./editor.js";
 import type { ListFormat, NumberFormat, TableBorderSpec, TableOfContentsOptions } from "./types.js";
 import { TrackedChangeMode } from "./types.js";
 
@@ -138,6 +138,10 @@ const LIST_FORMATS: readonly ListFormat[] = [
 const PAGE_SETUP_TWIPS = [
   "marginTopTwips", "marginBottomTwips", "marginLeftTwips", "marginRightTwips", "pageWidthTwips", "pageHeightTwips",
 ] as const;
+const PARAGRAPH_TWIPS = [
+  "leftIndent", "rightIndent", "firstLineIndent", "hangingIndent", "spacingBefore", "spacingAfter", "lineSpacing",
+] as const;
+const PARAGRAPH_TOGGLES = ["contextualSpacing", "widowControl", "keepNext", "keepLines", "pageBreakBefore"] as const;
 const PAGE_NUMBER_FORMATS: readonly NumberFormat[] = ["decimal", "upperLetter", "lowerLetter", "upperRoman", "lowerRoman"];
 const FORMATS: ReadonlyArray<[FormatKey, string]> = [
   ["bold", "bold"], ["italic", "italic"], ["underline", "underlined"], ["strike", "struck through"],
@@ -198,6 +202,40 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     group: "paragraph", description: "Set the space before and after the paragraph, in points.",
     args: { "before?": "number", "after?": "number" },
     run: (e, a) => e.setParagraphSpacing({ beforePt: a.optNumber("before"), afterPt: a.optNumber("after") }),
+  },
+  paragraphFormat: {
+    group: "paragraph",
+    description: "Word's Paragraph dialog: set any of these on the paragraph or the selected paragraphs, in twips (1440 an inch, 20 a point); what is left out stays. lineSpacing is 240ths of a line under \"auto\", twips under \"exact\" and \"atLeast\".",
+    args: {
+      "alignment?": "left|center|right|justify",
+      "leftIndent?": "number", "rightIndent?": "number", "firstLineIndent?": "number", "hangingIndent?": "number",
+      "spacingBefore?": "number", "spacingAfter?": "number", "lineSpacing?": "number", "lineSpacingRule?": "auto|exact|atLeast",
+      "contextualSpacing?": "boolean", "widowControl?": "boolean", "keepNext?": "boolean", "keepLines?": "boolean",
+      "pageBreakBefore?": "boolean",
+    },
+    run: (e, a) => {
+      const op: Record<string, unknown> = {};
+      const alignment = a.optOneOf("alignment", ["left", "center", "right", "justify"] as const);
+      if (alignment !== undefined) op.alignment = alignment;
+      for (const key of PARAGRAPH_TWIPS) {
+        const v = a.optNumber(key);
+        if (v !== undefined) op[key] = Math.round(v);
+      }
+      const rule = a.optOneOf("lineSpacingRule", ["auto", "exact", "atLeast"] as const);
+      if (rule !== undefined) {
+        if (op.lineSpacing === undefined) throw new EditorCommandError("bad_arguments", "paragraphFormat", "paragraphFormat: lineSpacingRule needs lineSpacing");
+        op.lineSpacingRule = rule;
+      }
+      if (op.firstLineIndent !== undefined && op.hangingIndent !== undefined) {
+        throw new EditorCommandError("bad_arguments", "paragraphFormat", "paragraphFormat: give firstLineIndent or hangingIndent, not both");
+      }
+      for (const key of PARAGRAPH_TOGGLES) {
+        const v = a.optBool(key);
+        if (v !== undefined) op[key] = v;
+      }
+      if (Object.keys(op).length === 0) throw new EditorCommandError("bad_arguments", "paragraphFormat", "paragraphFormat: give at least one setting");
+      must(e.setParagraphFormat(op as EditorParagraphFormat), "paragraphFormat", "there is no paragraph to format");
+    },
   },
   pageBreakBefore: {
     group: "paragraph", description: "Start the paragraph on a new page (or not).", args: { "on?": "boolean" },
@@ -395,6 +433,11 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   selectedText: { group: "query", description: "The selected text (lines between paragraphs); \"\" with no selection.", args: {}, returns: "string", run: (e) => e.selectedText() },
   paragraphText: { group: "query", description: "The text of the paragraph at the caret.", args: {}, returns: "string", run: (e) => e.paragraphText() },
   wordCount: { group: "query", description: "How many words the body has.", args: {}, returns: "number", run: (e) => e.wordCount() },
+  paragraphFormats: {
+    group: "query",
+    description: "The effective paragraph formatting of each selected paragraph (the caret's when nothing is selected): the paragraphFormat fields, in twips.",
+    args: {}, returns: "array of objects", run: (e) => e.paragraphFormats(),
+  },
   styleAtCaret: { group: "query", description: "The paragraph style at the caret.", args: {}, returns: "style id, or null", run: (e) => e.styleAtCaret() },
   fontSizeAtCaret: { group: "query", description: "The font size at the caret, in points.", args: {}, returns: "number, or null", run: (e) => e.fontSizeAtCaret() },
   formatState: {

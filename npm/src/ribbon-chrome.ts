@@ -29,7 +29,7 @@
  */
 
 /** Bumped whenever RIBBON_CSS changes, so a stale injected stylesheet is replaced. */
-export const RIBBON_STYLE_VERSION = "11";
+export const RIBBON_STYLE_VERSION = "12";
 export const RIBBON_STYLE_ATTR = "data-docxodus-ribbon-styles";
 
 /** Width of the comment gutter the surface reserves beside the sheet, in px. */
@@ -908,6 +908,10 @@ export const RIBBON_CSS = `
 }
 `;
 
+/** Word's dialog launcher: the small corner arrow beside a group's name. */
+const ICON_LAUNCH =
+  '<svg width="9" height="9" viewBox="0 0 9 9" aria-hidden="true"><path d="M1 4V1h3M2 2l6 6M8 4v4H4" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>';
+
 const ICON_ALIGN = (bars: string) =>
   `<svg width="15" height="13" viewBox="0 0 15 13" aria-hidden="true">${bars}</svg>`;
 
@@ -1032,7 +1036,7 @@ export const RIBBON_HTML = `
       </div>
 
       <div class="dxr-group">
-        <span class="dxr-glabel">Paragraph</span>
+        <span class="dxr-glabel">Paragraph<button type="button" class="dxr-launch" data-dxr="paralaunch" title="Paragraph settings" aria-label="Paragraph settings">${ICON_LAUNCH}</button></span>
         <div class="dxr-row">
           <button type="button" class="dxr-icon" data-list="bullet" title="Bullets">&#8226;&#8801;</button>
           <button type="button" class="dxr-icon" data-list="decimal" title="Numbering">1.&#8801;</button>
@@ -1203,7 +1207,7 @@ export const RIBBON_HTML = `
       </div>
 
       <div class="dxr-group">
-        <span class="dxr-glabel">Paragraph</span>
+        <span class="dxr-glabel">Paragraph<button type="button" class="dxr-launch" data-dxr="paralaunchlayout" title="Paragraph settings" aria-label="Paragraph settings">${ICON_LAUNCH}</button></span>
         <div class="dxr-row">
           <label class="dxr-toggle">Before <input data-dxr="spacebefore" type="number" min="0" step="1" placeholder="pt" title="Space before the paragraph, in points" /></label>
           <label class="dxr-toggle">After <input data-dxr="spaceafter" type="number" min="0" step="1" placeholder="pt" title="Space after the paragraph, in points" /></label>
