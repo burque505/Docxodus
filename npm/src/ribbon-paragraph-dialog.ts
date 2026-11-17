@@ -71,7 +71,7 @@ export const PARAGRAPH_DIALOG_CSS = `
 }
 .dxr-dialog::backdrop { background: rgba(15, 23, 42, .18); }
 .dxr-dialog form { display: flex; flex-direction: column; }
-.dxr-dialog h2 { margin: 0; padding: 12px 16px 0; font-size: 14px; font-weight: 600; }
+.dxr-dialog h2 { margin: 0; padding: 12px 16px 0; font-size: 14px; font-weight: 600; touch-action: none; }
 .dxr-dialog [role="tablist"] { display: flex; gap: 2px; padding: 8px 12px 0; border-bottom: 1px solid var(--dxr-rule); }
 .dxr-dialog [role="tab"] {
   min-height: 30px; padding: 4px 10px; border: none; border-bottom: 2px solid transparent;
@@ -234,6 +234,7 @@ export class ParagraphDialog {
       field.id = `${base}-${field.dataset.pd}`;
       label.htmlFor = field.id;
     }
+    this.makeMovable(dialog.querySelector<HTMLElement>("[data-pd-title]")!);
     this.field("special").addEventListener("change", () => this.specialChanged());
     this.field("line").addEventListener("change", () => this.lineChanged());
     form.addEventListener("input", (event) => {
@@ -307,6 +308,8 @@ export class ParagraphDialog {
     this.preview();
     this.dialog.returnValue = "";
     this.dialog.showModal();
+    // Where the user left it, still on screen if the window has shrunk since.
+    if (this.dialog.style.left) this.placeAt(parseFloat(this.dialog.style.left), parseFloat(this.dialog.style.top));
     this.field("alignment").focus();
     return true;
   }
@@ -382,6 +385,41 @@ export class ParagraphDialog {
   }
 
   // ── internals ──
+
+  /** Drag the dialog by its title, off the paragraphs it is changing; it opens where it was left (kept on screen). */
+  private makeMovable(handle: HTMLElement): void {
+    const dialog = this.dialog;
+    handle.style.cursor = "move";
+    handle.style.userSelect = "none";
+    handle.addEventListener("pointerdown", (down) => {
+      if (down.button !== 0) return;
+      const box = dialog.getBoundingClientRect();
+      const dx = down.clientX - box.left, dy = down.clientY - box.top;
+      handle.setPointerCapture(down.pointerId);
+      const move = (e: PointerEvent) => this.placeAt(e.clientX - dx, e.clientY - dy);
+      const up = () => {
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", up);
+        handle.removeEventListener("pointercancel", up);
+      };
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", up);
+      handle.addEventListener("pointercancel", up);
+      down.preventDefault();
+    });
+  }
+
+  private placeAt(left: number, top: number): void {
+    const dialog = this.dialog;
+    const view = dialog.ownerDocument.defaultView ?? window;
+    const box = dialog.getBoundingClientRect();
+    // (at least the title stays reachable)
+    const x = Math.min(Math.max(left, 40 - box.width), view.innerWidth - 40);
+    const y = Math.min(Math.max(top, 0), view.innerHeight - 40);
+    dialog.style.margin = "0";
+    dialog.style.left = `${x}px`;
+    dialog.style.top = `${y}px`;
+  }
 
   private finish(op: EditorParagraphFormat | null): void {
     this.dialog.close(op ? "ok" : "cancel");

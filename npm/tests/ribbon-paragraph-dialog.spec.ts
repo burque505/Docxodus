@@ -137,3 +137,24 @@ test('centimetres, a decimal comma, and a bad entry keeps the dialog open', asyn
   await expect(dialog(page)).toBeHidden();
   expect((await formats(page))[0]).toMatchObject({ leftIndent: 850, firstLineIndent: 709 });
 });
+
+test('the dialog moves by its title and opens where it was left', async ({ page }) => {
+  await mount(page);
+  await page.keyboard.type('A paragraph under the dialog.');
+  await page.locator('#pd-host [data-dxr="paralaunch"]').click();
+  const before = (await dialog(page).boundingBox())!;
+  const title = dialog(page).locator('[data-pd-title]');
+  const t = (await title.boundingBox())!;
+  await page.mouse.move(t.x + 20, t.y + 8);
+  await page.mouse.down();
+  await page.mouse.move(t.x + 20 - 150, t.y + 8 + 120, { steps: 5 });
+  await page.mouse.up();
+  const moved = (await dialog(page).boundingBox())!;
+  expect(Math.round(moved.x - before.x)).toBe(-150);
+  expect(Math.round(moved.y - before.y)).toBe(120);
+  await page.keyboard.press('Escape');
+  await page.locator('#pd-host [data-dxr="paralaunch"]').click();
+  const again = (await dialog(page).boundingBox())!;
+  expect(Math.round(again.x)).toBe(Math.round(moved.x));
+  expect(Math.round(again.y)).toBe(Math.round(moved.y));
+});
