@@ -3439,7 +3439,7 @@ export class DocxEditor {
     moveAcrossTab(el, ev);
     // Common formatting / history shortcuts.
     if ((ev.ctrlKey || ev.metaKey) && !ev.altKey) {
-      const k = ev.key.toLowerCase();
+      const k = (ev.key ?? "").toLowerCase();
       const fmt: Record<string, FormatKey> = { b: "bold", i: "italic", u: "underline" };
       if (fmt[k]) { ev.preventDefault(); this.format(fmt[k]); return; }
       if (k === "z") { ev.preventDefault(); ev.shiftKey ? this.redo() : this.undo(); return; }

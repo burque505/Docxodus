@@ -143,7 +143,7 @@ export const PARAGRAPH_DIALOG_HTML = `
       <fieldset>
         <legend>Indentation</legend>
         <div class="dxr-dgrid">
-          <label>Left</label><input type="text" data-pd="left" />
+          <label>Left</label><input type="text" autocomplete="off" data-pd="left" />
           <label>Special</label>
           <select data-pd="special">
             <option value="" hidden></option>
@@ -151,14 +151,14 @@ export const PARAGRAPH_DIALOG_HTML = `
             <option value="firstLine">First line</option>
             <option value="hanging">Hanging</option>
           </select>
-          <label>Right</label><input type="text" data-pd="right" />
-          <label>By</label><input type="text" data-pd="by" />
+          <label>Right</label><input type="text" autocomplete="off" data-pd="right" />
+          <label>By</label><input type="text" autocomplete="off" data-pd="by" />
         </div>
       </fieldset>
       <fieldset>
         <legend>Spacing</legend>
         <div class="dxr-dgrid">
-          <label>Before</label><input type="text" data-pd="before" />
+          <label>Before</label><input type="text" autocomplete="off" data-pd="before" />
           <label>Line spacing</label>
           <select data-pd="line">
             <option value="" hidden></option>
@@ -169,8 +169,8 @@ export const PARAGRAPH_DIALOG_HTML = `
             <option value="exact">Exactly</option>
             <option value="multiple">Multiple</option>
           </select>
-          <label>After</label><input type="text" data-pd="after" />
-          <label>At</label><input type="text" data-pd="at" />
+          <label>After</label><input type="text" autocomplete="off" data-pd="after" />
+          <label>At</label><input type="text" autocomplete="off" data-pd="at" />
         </div>
         <label class="dxr-dcheck"><input type="checkbox" data-pd="contextualSpacing" /> Don't add space between paragraphs of the same style</label>
       </fieldset>

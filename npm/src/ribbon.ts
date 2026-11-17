@@ -2054,13 +2054,13 @@ class RibbonSurface implements RibbonEditor {
     // A dialog owns its keys while it is open.
     if (this.paragraphDialog?.open) return;
     // Alt+F opens the File menu, as in Word.
-    if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key.toLowerCase() === "f") {
+    if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && (event.key ?? "").toLowerCase() === "f") {
       event.preventDefault();
       this.openFileMenu();
       return;
     }
     if (!this.live || !(event.ctrlKey || event.metaKey)) return;
-    const key = event.key.toLowerCase();
+    const key = (event.key ?? "").toLowerCase();    // (no key: an autofill pick in a text box)
     const target = event.target instanceof Element ? event.target : null;
     // (by its path, not by where the target is now: the editor's own chords re-render the block they
     // were pressed in, which has left the document by the time the key bubbles up here)
