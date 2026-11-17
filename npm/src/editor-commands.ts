@@ -202,6 +202,23 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   allCaps: { group: "font", description: "Show the selection in capitals (or not).", args: { on: "boolean" }, run: (e, a) => e.setAllCaps(a.bool("on")) },
   smallCaps: { group: "font", description: "Show the selection in small capitals (or not).", args: { on: "boolean" }, run: (e, a) => e.setSmallCaps(a.bool("on")) },
   clearFormatting: { group: "font", description: "Remove the selection's direct formatting.", args: {}, run: (e) => e.clearFormatting() },
+  copyFormatting: {
+    group: "font", description: "Copy the formatting at the caret or of the selection (Word's Ctrl+Shift+C); with a caret, or the paragraph's end selected, the paragraph's too.",
+    args: {}, returns: "boolean", run: (e) => e.copyFormatting(),
+  },
+  pasteFormatting: {
+    group: "font", description: "Give the selection (with a caret, the word there) the copied formatting (Word's Ctrl+Shift+V).",
+    args: {}, returns: "boolean", run: (e) => e.pasteFormatting(),
+  },
+  formatPainter: {
+    group: "font", description: "Format Painter: copy the formatting here and paint it on the next click or selection; \"sticky\" keeps painting until Esc. \"off\" turns it off.",
+    args: { "mode?": "once|sticky|off" }, returns: "boolean",
+    run: (e, a) => {
+      const mode = a.optOneOf("mode", ["once", "sticky", "off"] as const) ?? "once";
+      if (mode === "off") { e.stopFormatPainter(); return true; }
+      return e.formatPainter(mode === "sticky");
+    },
+  },
 
   // ── paragraph ──
   align: {

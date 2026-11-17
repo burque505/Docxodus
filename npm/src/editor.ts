@@ -65,6 +65,7 @@ import { EditorCommandError, editorCommands, runEditorCommand } from "./editor-c
 import type { EditorCommandArgs, EditorCommandInfo } from "./editor-commands.js";
 import { imageOnlyDelta, patchImageAttributes } from "./editor-image-patch.js";
 import { cleanPastedHtml, pastedPlainText, serializePaste } from "./paste-html.js";
+import { FORMAT_PAINTER_CSS, pickRunFormat, runOpFromDirect, wordSpanAt } from "./format-painter.js";
 import type { RenderPlan, RenderUnit, UnitDiff } from "./editor-reconcile.js";
 
 /** The subset of WASM bridge exports the editor needs (as exposed on `window.Docxodus`). */
@@ -118,6 +119,7 @@ export interface DocxEditorExports {
     GetListLevels?: (handle: number, anchor: string) => string;
     SetListLevels?: (handle: number, anchor: string, levelsJson: string) => string;
     ContinueNumbering?: (handle: number, anchor: string) => string;
+    SetListMembership?: (handle: number, anchor: string, numId: number, level: number) => string;
     SetListStartOverride?: (handle: number, anchor: string, value: number) => string;
     RenderBlockHtml: (
       handle: number,
@@ -370,9 +372,11 @@ export interface DocxEditorOptions {
    * What Ctrl+V does with the source's formatting: `"merge"` (the default, Word's Merge Formatting:
    * paragraphs, headings, lists, tables, links and emphasis come along, fonts, sizes and colors are
    * the document's), `"keep"` (Keep Source Formatting) or `"text"` (Keep Text Only).
-   * Ctrl+Shift+V always pastes the text only.
+   * Ctrl+Alt+Shift+V always pastes the text only (Ctrl+Shift+V pastes copied formatting, as in Word).
    */
   pasteFormatting?: PasteFormatting;
+  /** Called when Format Painter turns on (`"once"`, `"sticky"`) or off, so a button can show it. */
+  onFormatPainterChange?: (state: FormatPainterState) => void;
   /**
    * Find the bytes of a pasted picture the page cannot fetch itself, such as Word's
    * `file:///…/clip_image001.png`: a `data:` URL, or null to leave the picture out. Pictures on
@@ -1467,6 +1471,30 @@ function asEditorParagraphFormat(f: ParagraphFormatting): EditorParagraphFormat 
  *  Source Formatting (`"keep"`) or Keep Text Only (`"text"`). */
 export type PasteFormatting = "merge" | "keep" | "text";
 
+/** Format Painter: off, on for one paint (`"once"`), or on until turned off (`"sticky"`). */
+export type FormatPainterState = "off" | "once" | "sticky";
+
+/** What Format Painter copied: the run formatting, and the paragraph's when the copy took it. */
+interface CopiedFormatting {
+  run: Record<string, unknown>;
+  paragraph: {
+    styleId: string | null;
+    format: EditorParagraphFormat;
+    list: { numId: number; level: number } | null;
+  } | null;
+}
+
+const formatPainterStyledDocuments = new WeakSet<Document>();
+
+function ensureFormatPainterStyles(doc: Document): void {
+  if (formatPainterStyledDocuments.has(doc)) return;
+  formatPainterStyledDocuments.add(doc);
+  const style = doc.createElement("style");
+  style.dataset.docxodusFormatPainter = "true";
+  style.textContent = FORMAT_PAINTER_CSS;
+  (doc.head ?? doc.documentElement).appendChild(style);
+}
+
 /** What there is to paste: the clipboard's HTML, its plain text, and a picture it holds. */
 export interface PasteContent {
   html?: string;
@@ -1694,9 +1722,9 @@ export class DocxEditor {
   private container: HTMLElement;
   private readonly handle: number;
   private readonly options: Required<
-    Omit<DocxEditorOptions, "onEdit" | "onEditFailed" | "onMove" | "onStoryChange" | "onCommentsChange" | "showRevisions" | "resolvePasteImage" | "listDefaults">
+    Omit<DocxEditorOptions, "onEdit" | "onEditFailed" | "onMove" | "onStoryChange" | "onCommentsChange" | "showRevisions" | "resolvePasteImage" | "listDefaults" | "onFormatPainterChange">
   > &
-    Pick<DocxEditorOptions, "onEdit" | "onEditFailed" | "onMove" | "onStoryChange" | "onCommentsChange" | "showRevisions" | "resolvePasteImage" | "listDefaults">;
+    Pick<DocxEditorOptions, "onEdit" | "onEditFailed" | "onMove" | "onStoryChange" | "onCommentsChange" | "showRevisions" | "resolvePasteImage" | "listDefaults" | "onFormatPainterChange">;
   /** Map a block's current bare unid → its full kind:scope:unid (DocxSession anchor). */
   private readonly unidToFullId = new Map<string, string>();
   /** The element whose [data-anchor] descendants are the editable blocks (container or page container). */
@@ -1882,8 +1910,9 @@ export class DocxEditor {
     } finally { clone.remove(); }
   };
 
-  /** Ctrl+V, Shift+Insert, Ctrl+Shift+V (text only) in a block: the editor pastes through the
-   *  engine (`pasteContent`), never the browser's own insertion into the block. */
+  /** Ctrl+V and Shift+Insert in a block: the editor pastes through the engine (`pasteContent`),
+   *  never the browser's own insertion into the block. (Ctrl+Shift+V is Paste Formatting, and
+   *  Ctrl+Alt+Shift+V the text only: see onKeydown.) */
   private readonly onPaste = (ev: ClipboardEvent): void => {
     if (this.closed || ev.defaultPrevented || !ev.clipboardData) return;
     const block = ev.target instanceof Node ? this.editableBlockOf(ev.target) : null;
@@ -1897,16 +1926,10 @@ export class DocxEditor {
       target = this.activeBlock;
       if (!target) return;
     }
-    const plain = performance.now() - this.plainPasteAt < 1000;
-    this.plainPasteAt = -Infinity;
     const image = Array.from(data.files).find((f) => f.type.startsWith("image/"));
     this.activeBlock = target;
-    void this.pasteContent({ html: data.getData("text/html"), text: data.getData("text/plain"), image },
-      plain ? "text" : undefined);
+    void this.pasteContent({ html: data.getData("text/html"), text: data.getData("text/plain"), image });
   };
-
-  /** When Ctrl+Shift+V was last pressed: the paste it starts takes the text only. */
-  private plainPasteAt = -Infinity;
 
   /** Track the last meaningful selection so focus-stealing toolbar controls can still target it. */
   private readonly onSelectionChange = (): void => {
@@ -2022,6 +2045,11 @@ export class DocxEditor {
 
   /** Commit the final cross-block endpoint before releasing the gesture state. */
   private readonly onMouseUp = (event: MouseEvent): void => {
+    // Format Painter paints where the click or drag ends, once the selection has settled.
+    if (this.painter !== "off" && event.button === 0
+      && this.editableBlockOf(event.target instanceof Node ? event.target : null)) {
+      setTimeout(() => this.paintAtSelection(), 0);
+    }
     const drag = this.dragSelection;
     if (!drag) return;
     if (drag.crossedBlockBoundary) {
@@ -2182,6 +2210,7 @@ export class DocxEditor {
       onMove: options.onMove,
       onStoryChange: options.onStoryChange,
       onCommentsChange: options.onCommentsChange,
+      onFormatPainterChange: options.onFormatPainterChange,
     };
   }
 
@@ -2376,6 +2405,7 @@ export class DocxEditor {
   /** Release the underlying WASM session. The editor is unusable afterward. */
   close(): void {
     if (this.closed) return;
+    this.setPainter("off");
     this.closed = true;
     if (this.typingPause !== null) clearTimeout(this.typingPause);
     this.container.removeEventListener("copy", this.onCopy);
@@ -3523,7 +3553,15 @@ export class DocxEditor {
       if (fmt[k]) { ev.preventDefault(); this.format(fmt[k]); return; }
       if (k === "z") { ev.preventDefault(); ev.shiftKey ? this.redo() : this.undo(); return; }
       if (k === "y") { ev.preventDefault(); this.redo(); return; }
-      if (k === "v" && ev.shiftKey) this.plainPasteAt = performance.now(); // (the paste event follows)
+      // Word's Copy Formatting / Paste Formatting (Format Painter from the keyboard).
+      if (k === "c" && ev.shiftKey) { ev.preventDefault(); this.copyFormatting(); return; }
+      if (k === "v" && ev.shiftKey) { ev.preventDefault(); this.pasteFormatting(); return; }
+    }
+    // Ctrl+Alt+Shift+V: paste the text only.
+    if ((ev.ctrlKey || ev.metaKey) && ev.altKey && ev.shiftKey && (ev.key ?? "").toLowerCase() === "v") {
+      ev.preventDefault();
+      void this.pasteFromClipboard("text");
+      return;
     }
     // Inside a table cell, Backspace at the cell's start does not merge across the cell
     // boundary (mid-text Backspace still deletes normally). Enter splits the cell paragraph
@@ -5468,6 +5506,190 @@ export class DocxEditor {
       highlight: "", vertAlign: "", fontSizePts: 0, fontFamily: "", runStyle: "",
       caps: false, smallCaps: false,
     });
+  }
+
+  // ─── Format Painter ──────────────────────────────────────────────────
+
+  /** What Copy Formatting took, for Paste Formatting and the painter. */
+  private copiedFormat: CopiedFormatting | null = null;
+  /** Format Painter's state: off, one paint, or until turned off. */
+  private painter: FormatPainterState = "off";
+
+  /**
+   * Word's Copy Formatting (Ctrl+Shift+C): remember the formatting at the caret or of the
+   * selection. With a caret it takes the paragraph's formatting (style, alignment, indents,
+   * spacing, list) and the character formatting there; with a selection, the character
+   * formatting most of it has, and the paragraph's only when the selection takes in the
+   * paragraph's end. False when there is nothing to copy from.
+   */
+  copyFormatting(): boolean {
+    const bridge = this.exports.DocxSessionBridge;
+    if (this.closed || !this.activeBlock || typeof bridge.GetFormatting !== "function") return false;
+    const blocks = this.selectedBlocks();
+    const block = blocks[0] ?? this.activeBlock;
+    let fullId = this.anchorIdOf(block);
+    if (!fullId) return false;
+    const unid = block.getAttribute("data-anchor");
+    const cross = blocks.length > 1;
+    let span = cross ? this.blockSpanForSelection(block) : selectionSpanIn(block);
+    if (!span && !cross && this.lastSelection && this.lastSelection.unid === unid) span = this.lastSelection.span;
+    const caret = span ? null : caretOffsetIn(block) ?? 0;
+    fullId = this.syncBlock(block, fullId);
+    if (!fullId) return false;
+    let inspection: FormattingInspection | null;
+    try {
+      inspection = JSON.parse(bridge.GetFormatting(this.handle, fullId)) as FormattingInspection | null;
+    } catch {
+      inspection = null;
+    }
+    if (!inspection) return false;
+    const run = runOpFromDirect(pickRunFormat(inspection.runs ?? [], span, caret));
+    const length = trimBounds(block).trimmedLen;
+    const withParagraph = !span || cross || span.start + span.length >= length;
+    let paragraph: CopiedFormatting["paragraph"] = null;
+    if (withParagraph && inspection.effectiveParagraph) {
+      let list: { numId: number; level: number } | null = null;
+      try {
+        const m = JSON.parse(bridge.GetListMembership(this.handle, fullId)) as { numId?: number; level?: number } | null;
+        if (m && typeof m.numId === "number" && m.numId > 0) list = { numId: m.numId, level: m.level ?? 0 };
+      } catch {
+        list = null;
+      }
+      paragraph = {
+        styleId: inspection.effectiveParagraph.styleId ?? inspection.directParagraph?.styleId ?? null,
+        format: asEditorParagraphFormat(inspection.effectiveParagraph),
+        list,
+      };
+    }
+    this.copiedFormat = { run, paragraph };
+    return true;
+  }
+
+  /**
+   * Word's Paste Formatting (Ctrl+Shift+V): give the selection what {@link copyFormatting} took —
+   * with a caret, the word around it — and, when the copy took the paragraph's formatting, every
+   * paragraph the selection touches. One undo step. False when nothing was copied or there is
+   * nowhere to paint.
+   */
+  pasteFormatting(): boolean {
+    const copied = this.copiedFormat;
+    const bridge = this.exports.DocxSessionBridge;
+    if (this.closed || !copied || !this.activeBlock) return false;
+    const blocks = this.selectedBlocks();
+    const first = blocks[0] ?? this.activeBlock;
+    // What to paint in each block, read before any edit: a span, the whole block (null), or no
+    // characters at all (a caret between words: the paragraph only).
+    let caret: number | null = null;
+    let restore: { start: number; length: number } | null = null;
+    let targets: Array<{ block: HTMLElement; fullId: string | undefined; span: { start: number; length: number } | null; chars: boolean }>;
+    if (blocks.length > 1) {
+      targets = this.multiBlockTargets(blocks).map((t) => ({ block: t.block, fullId: t.fullId, span: t.span, chars: true }));
+    } else {
+      const block = this.activeBlock;
+      const unid = block.getAttribute("data-anchor");
+      let span = selectionSpanIn(block);
+      if (!span && this.lastSelection && this.lastSelection.unid === unid) span = this.lastSelection.span;
+      restore = span;
+      let chars = true;
+      if (!span) {
+        caret = caretOffsetIn(block) ?? 0;
+        const word = wordSpanAt(blockContentText(block), caret);
+        span = word ? trimmedSpan(block, word) : null;
+        chars = !!span && span.length > 0;
+      }
+      targets = [{ block, fullId: this.anchorIdOf(block), span, chars }];
+    }
+    if (!copied.paragraph && !targets.some((t) => t.chars)) return false;
+    const index = this.blockIndex(first);
+    const tx = this.beginListTransaction();
+    let edited: { anchorId: string; unid: string } | null = null;
+    try {
+      for (const t of targets) {
+        if (!t.fullId) continue;
+        let id = this.syncBlock(t.block, t.fullId);
+        if (!id) continue;
+        const step = (json: string): void => {
+          const res = this.parseEdit(json);
+          if (!res.success) return;
+          id = res.modified?.[0]?.id ?? id;
+          edited = { anchorId: id!, unid: t.block.getAttribute("data-anchor") ?? "" };
+        };
+        if (t.chars) {
+          step(bridge.ApplyFormat(this.handle, id, t.span ? JSON.stringify(t.span) : "", JSON.stringify(copied.run)));
+        }
+        const para = copied.paragraph;
+        if (!para) continue;
+        if (para.styleId) step(bridge.SetParagraphStyle(this.handle, id!, para.styleId));
+        if (para.list && typeof bridge.SetListMembership === "function") {
+          step(bridge.SetListMembership(this.handle, id!, para.list.numId, para.list.level));
+        } else if (!para.list && isListBlock(t.block)) {
+          step(bridge.ApplyListFormat(this.handle, id!, "none"));
+        }
+        step(bridge.SetParagraphFormat(this.handle, id!, JSON.stringify(para.format)));
+      }
+    } finally {
+      this.endListTransaction(tx);
+    }
+    if (!edited) return false;
+    this.refreshAfter(first, index, false, true);
+    const block = this.editableList()[index];
+    if (block && blocks.length <= 1) {
+      this.activeBlock = block;
+      if (restore) selectRange(block, restore.start, restore.length);
+      else placeCaretAtOffset(block, caret ?? 0);
+    }
+    this.options.onEdit?.(edited);
+    return true;
+  }
+
+  /**
+   * Turn Format Painter on: copy the formatting here ({@link copyFormatting}), then paint it on
+   * the next click or selection in the document — once, or with `sticky` (Word's double-click on
+   * the brush) every time until {@link stopFormatPainter} or Esc. False when there is nothing to
+   * copy from.
+   */
+  formatPainter(sticky = false): boolean {
+    if (this.closed || !this.copyFormatting()) return false;
+    this.setPainter(sticky ? "sticky" : "once");
+    return true;
+  }
+
+  /** Turn Format Painter off (Esc, or a second click on its button). */
+  stopFormatPainter(): void {
+    this.setPainter("off");
+  }
+
+  /** Whether Format Painter is on, and for how long. */
+  get formatPainterState(): FormatPainterState {
+    return this.painter;
+  }
+
+  private setPainter(state: FormatPainterState): void {
+    if (state === this.painter) return;
+    const doc = this.container.ownerDocument;
+    if (state !== "off") {
+      ensureFormatPainterStyles(doc);
+      doc.addEventListener("keydown", this.onPainterKey, true);
+    } else {
+      doc.removeEventListener("keydown", this.onPainterKey, true);
+    }
+    this.container.classList.toggle("docx-format-painting", state !== "off");
+    this.painter = state;
+    this.options.onFormatPainterChange?.(state);
+  }
+
+  private readonly onPainterKey = (ev: KeyboardEvent): void => {
+    if (ev.key !== "Escape" || this.painter === "off") return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    this.stopFormatPainter();
+  };
+
+  /** A click or drag ended in the document while Format Painter is on. */
+  private paintAtSelection(): void {
+    if (this.closed || this.painter === "off") return;
+    this.pasteFormatting();
+    if (this.painter === "once") this.stopFormatPainter();
   }
 
   /** The caret's rendered font size in points (from computed style), or null. */

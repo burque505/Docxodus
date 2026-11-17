@@ -97,11 +97,14 @@ test.describe('Paste', () => {
     expect(await page.evaluate(() => !!document.querySelector('#ex-editor h2'))).toBe(true);
   });
 
-  test('Ctrl+Shift+V and exec pasteText paste the text only', async ({ page }) => {
+  test('Ctrl+Alt+Shift+V and exec pasteText paste the text only', async ({ page, context }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
     await openHello(page);
-    // (the chord's keydown marks the paste that follows as text only)
-    await page.evaluate(() => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'V', ctrlKey: true, shiftKey: true, bubbles: true })));
-    await firePaste(page, { 'text/html': '<h1>Big</h1>', 'text/plain': 'plain' });
+    await page.evaluate(() => navigator.clipboard.write([new ClipboardItem({
+      'text/html': new Blob(['<h1>Big</h1>'], { type: 'text/html' }),
+      'text/plain': new Blob(['plain'], { type: 'text/plain' }),
+    })]));
+    await page.keyboard.press('Control+Alt+Shift+V');
     await expect.poll(() => text(page)).toBe('Hello plainworld');
     expect(await page.evaluate(() => !!document.querySelector('#ex-editor h1'))).toBe(false);
     expect(await page.evaluate(() => (window as any).__ed.exec('pasteText', { text: 'a\tb\nc' }))).toBe(true);

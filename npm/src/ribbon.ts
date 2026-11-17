@@ -61,7 +61,7 @@ export type { MeasurementUnit } from "./ribbon-paragraph-dialog.js";
 // Re-exported so the IIFE bundle built from this module (window.DocxodusEditor)
 // carries both the shell and the engine it wraps.
 export { DocxEditor } from "./editor.js";
-export type { DocxEditorExports, DocxEditorOptions, PasteContent, PasteFormatting } from "./editor.js";
+export type { DocxEditorExports, DocxEditorOptions, FormatPainterState, PasteContent, PasteFormatting } from "./editor.js";
 
 /** Which layout the chrome uses. "auto" measures the root and switches at `compactBreakpoint`. */
 export type RibbonChromeMode = "full" | "compact" | "auto";
@@ -859,6 +859,7 @@ class RibbonSurface implements RibbonEditor {
       onMove: info => { this.history?.edited(); this.scheduleDirtyCheck(); this.options.onMove?.(info); },
       onStoryChange: (which) => this.onStoryChange(which),
       onCommentsChange: (info) => { this.scheduleDirtyCheck(); this.onCommentsChange(info); },
+      onFormatPainterChange: (state) => { this.control("formatpainter")?.setAttribute("aria-pressed", String(state !== "off")); },
       paginated,
       headerFooter: this.headerFooter,
       blockDrag: this.options.blockDrag ?? true,
@@ -1104,6 +1105,25 @@ class RibbonSurface implements RibbonEditor {
       else if (event.key === "ArrowUp") next = (at - 1 + items.length) % items.length;
       else if (event.key === "Escape") { event.preventDefault(); this.closePopovers(); more.focus(); return; }
       if (next >= 0) { event.preventDefault(); items[next].focus(); }
+    });
+  }
+
+  /** Home > Clipboard > Format Painter: a click paints once (a second click turns it off), a
+   *  double-click keeps painting until Esc or another click. */
+  private wireFormatPainter(): void {
+    const button = this.control("formatpainter");
+    if (!button) return;
+    this.keepSelection(button);
+    button.addEventListener("click", () => {
+      const live = this.live;
+      if (!live) return;
+      if (live.formatPainterState !== "off") { live.stopFormatPainter(); return; }
+      this.run("format painter", () => { live.formatPainter(false); }, cmd("formatPainter"));
+    });
+    button.addEventListener("dblclick", () => {
+      const live = this.live;
+      if (!live) return;
+      this.run("format painter", () => { live.formatPainter(true); }, cmd("formatPainter", { mode: "sticky" }));
     });
   }
 
@@ -1558,6 +1578,7 @@ class RibbonSurface implements RibbonEditor {
     this.wirePicker();
     this.wireFileMenu();
     this.wirePaste();
+    this.wireFormatPainter();
     this.wireLinkPopover();
     this.wireFindBar();
     this.wireHeaderFooterTab();
@@ -2129,6 +2150,11 @@ class RibbonSurface implements RibbonEditor {
     // Ctrl+Alt+M is Word's New Comment; every other chord here is plain Ctrl.
     if (event.altKey) {
       if (key === "m" && inDocument) { event.preventDefault(); this.beginComment(); }
+      // Ctrl+Alt+Shift+V: the editor pastes the text only.
+      if (key === "v" && event.shiftKey && inDocument && target?.closest('[data-anchor][contenteditable="true"]')) {
+        this.scheduleDirtyCheck();
+        this.options.onCommand?.("paste", 0, cmd("paste", { formatting: "text" }));
+      }
       return;
     }
     // The editor has already acted on its own chords (Undo, Redo, Bold, ...) by now: the key
@@ -2140,7 +2166,11 @@ class RibbonSurface implements RibbonEditor {
       const own = ({ b: "bold", i: "italic", u: "underline", y: "redo" } as Record<string, string>)[key]
         ?? (key === "z" ? (event.shiftKey ? "redo" : "undo") : undefined);
       if (own) this.options.onCommand?.(own, 0, cmd(own));
-      if (key === "v") this.options.onCommand?.("paste", 0, cmd("paste", event.shiftKey ? { formatting: "text" } : {}));
+      if (key === "v") {
+        if (event.shiftKey) this.options.onCommand?.("paste formatting", 0, cmd("pasteFormatting"));
+        else this.options.onCommand?.("paste", 0, cmd("paste"));
+      }
+      if (key === "c" && event.shiftKey) this.options.onCommand?.("copy formatting", 0, cmd("copyFormatting"));
     }
     // Save and Open, as in Word, while the surface shows them (fileActions).
     if (!event.shiftKey && key === "s" && this.control("save")) { event.preventDefault(); this.download(); return; }

@@ -909,6 +909,9 @@ export const RIBBON_CSS = `
 `;
 
 /** Word's dialog launcher: the small corner arrow beside a group's name. */
+const ICON_BRUSH =
+  '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3 1h9v4H3z" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M3 3H1.5v4h6v2" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M6.3 9h2.4v4.5H6.3z" fill="currentColor"/></svg>';
+
 const ICON_LAUNCH =
   '<svg width="9" height="9" viewBox="0 0 9 9" aria-hidden="true"><path d="M1 4V1h3M2 2l6 6M8 4v4H4" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>';
 
@@ -990,6 +993,8 @@ export const RIBBON_HTML = `
           <button type="button" class="dxr-btn" data-dxr="paste" title="Paste (Ctrl+V)">Paste</button>
           <button type="button" class="dxr-icon" data-dxr="pastemore" aria-haspopup="menu" aria-expanded="false"
                   title="Paste options">&#9662;</button>
+          <button type="button" class="dxr-icon" data-dxr="formatpainter" aria-pressed="false"
+                  title="Format Painter: click to copy the formatting here and paint it once, double-click to keep painting (Esc stops)">${ICON_BRUSH}</button>
         </div>
       </div>
 
@@ -1517,7 +1522,7 @@ export const RIBBON_HTML = `
 <div class="dxr-pop dxr-filemenu" data-dxr="pastemenu" role="menu" aria-label="Paste options">
   <button type="button" role="menuitem" data-paste="keep" title="The source's fonts, sizes and colors come along"><span>Keep Source Formatting</span><kbd aria-hidden="true"></kbd></button>
   <button type="button" role="menuitem" data-paste="merge" title="Paragraphs, headings, lists, tables, links and emphasis come along; fonts, sizes and colors are the document's" aria-keyshortcuts="Control+V"><span>Merge Formatting</span><kbd aria-hidden="true">Ctrl+V</kbd></button>
-  <button type="button" role="menuitem" data-paste="text" title="The text only, taking the formatting where it lands" aria-keyshortcuts="Control+Shift+V"><span>Keep Text Only</span><kbd aria-hidden="true">Ctrl+Shift+V</kbd></button>
+  <button type="button" role="menuitem" data-paste="text" title="The text only, taking the formatting where it lands" aria-keyshortcuts="Control+Alt+Shift+V"><span>Keep Text Only</span><kbd aria-hidden="true">Ctrl+Alt+Shift+V</kbd></button>
 </div>
 
 <!-- Table size picker, anchored to the Insert tab's Table button. -->
