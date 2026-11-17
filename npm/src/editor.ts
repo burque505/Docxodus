@@ -47,6 +47,8 @@ import type {
   HyperlinkInfo,
   ImageInsertOptions,
   ListFormat,
+  ListLevelInfo,
+  ListLevelSpec,
   NumberFormat,
   PageSetupOp,
   ParagraphFormatting,
@@ -113,6 +115,10 @@ export interface DocxEditorExports {
     ApplyListFormat: (handle: number, anchor: string, kind: string) => string;
     SetListLevel: (handle: number, anchor: string, delta: number) => string;
     GetListMembership: (handle: number, anchor: string) => string;
+    GetListLevels?: (handle: number, anchor: string) => string;
+    SetListLevels?: (handle: number, anchor: string, levelsJson: string) => string;
+    ContinueNumbering?: (handle: number, anchor: string) => string;
+    SetListStartOverride?: (handle: number, anchor: string, value: number) => string;
     RenderBlockHtml: (
       handle: number,
       anchorId: string,
@@ -339,6 +345,14 @@ export interface DocxEditorOptions {
    * edit, so `"word"` suits an engine that answers in a few milliseconds.
    */
   typingUndo?: "block" | "word";
+  /**
+   * The levels every NEW list starts from (Word's "set as default" for a multilevel list): when
+   * the Numbering button or a numbering format makes paragraphs a list, these are written into
+   * it. A numbered list (`decimal`) takes them whole; any other format (bullets, letters) takes
+   * only their positions. Unset, a new list has the engine's own levels. `setListDefaults`
+   * changes them later.
+   */
+  listDefaults?: ListLevelSpec[];
   /**
    * Initials stamped on `commentAuthor`'s comments and replies (`w:initials`, shown in Word's
    * balloons). Defaults to the first letter of each word of the author's name, as Word makes them.
@@ -1376,6 +1390,23 @@ function placeCaretAtOffset(el: HTMLElement, offset: number): void {
 
 // ─── M5: formatting controls ────────────────────────────────────────────────
 
+/** The nine levels of legal numbering (1., 1.1, 1.1.1 …): decimal at every level, each level's
+ *  number the levels above it and its own, joined by periods; `periods` says where a trailing
+ *  period goes (`"top"`: the top level only, `"all"`: every level, `"none"`: none). The
+ *  positions are Word's own legal list's: the number room grows with the number (1. to 1.1.1.1). */
+export function legalLevels(periods: "top" | "all" | "none" = "top"): ListLevelSpec[] {
+  const textAt = [360, 792, 1224, 1728, 2232, 2736, 3240, 3744, 4320];
+  const hanging = [360, 432, 504, 648, 792, 936, 1080, 1224, 1440];
+  return Array.from({ length: 9 }, (_, level) => {
+    const number = Array.from({ length: level + 1 }, (_, i) => `%${i + 1}`).join(".");
+    const trail = periods === "all" || (periods === "top" && level === 0) ? "." : "";
+    return {
+      level, format: "decimal", text: number + trail, legal: level > 0,
+      numberPositionTwips: textAt[level] - hanging[level], textPositionTwips: textAt[level],
+    };
+  });
+}
+
 export type FormatKey = "bold" | "italic" | "underline" | "strike" | "code" | "superscript" | "subscript";
 
 /** Paragraph alignment passed to DocxEditor.setAlignment. */
@@ -1663,9 +1694,9 @@ export class DocxEditor {
   private container: HTMLElement;
   private readonly handle: number;
   private readonly options: Required<
-    Omit<DocxEditorOptions, "onEdit" | "onEditFailed" | "onMove" | "onStoryChange" | "onCommentsChange" | "showRevisions" | "resolvePasteImage">
+    Omit<DocxEditorOptions, "onEdit" | "onEditFailed" | "onMove" | "onStoryChange" | "onCommentsChange" | "showRevisions" | "resolvePasteImage" | "listDefaults">
   > &
-    Pick<DocxEditorOptions, "onEdit" | "onEditFailed" | "onMove" | "onStoryChange" | "onCommentsChange" | "showRevisions" | "resolvePasteImage">;
+    Pick<DocxEditorOptions, "onEdit" | "onEditFailed" | "onMove" | "onStoryChange" | "onCommentsChange" | "showRevisions" | "resolvePasteImage" | "listDefaults">;
   /** Map a block's current bare unid → its full kind:scope:unid (DocxSession anchor). */
   private readonly unidToFullId = new Map<string, string>();
   /** The element whose [data-anchor] descendants are the editable blocks (container or page container). */
@@ -2144,6 +2175,7 @@ export class DocxEditor {
       comments: options.comments ?? true,
       commentAuthor: options.commentAuthor ?? options.revisionAuthor ?? "Reviewer",
       typingUndo: options.typingUndo ?? "block",
+      listDefaults: options.listDefaults?.map((l) => ({ ...l })),
       commentInitials: options.commentInitials ?? "",
       onEdit: options.onEdit,
       onEditFailed: options.onEditFailed,
@@ -4067,8 +4099,29 @@ export class DocxEditor {
     return { anchor: { node: sel.anchorNode, offset: sel.anchorOffset }, focus: { node: sel.focusNode, offset: sel.focusOffset } };
   }
 
-  /** Select from `anchor` to `focus` (in either order, across blocks) and remember which is which. */
+  /**
+   * Select from `anchor` to `focus` (in either order, across blocks) and remember which is which.
+   * Chromium trims a range that starts outside the focused block back to that block's edge, so
+   * the block holding the range's start takes the focus first. Leaving the old block commits its
+   * typing and may render it afresh, so both points are held as (block, text offset) across it.
+   */
   private selectBetween(anchor: DomSelectionPoint, focus: DomSelectionPoint): void {
+    const aBlock = this.editableBlockOf(anchor.node);
+    const fBlock = this.editableBlockOf(focus.node);
+    if (aBlock && fBlock && aBlock !== fBlock && typeof document !== "undefined") {
+      const story = this.storyBlocks(aBlock);
+      const mark = (p: DomSelectionPoint, b: HTMLElement) => ({ index: story.indexOf(b), offset: contentOffsetOf(b, p.node, p.offset) });
+      const am = mark(anchor, aBlock), fm = mark(focus, fBlock);
+      const start = story[Math.min(am.index, fm.index)];
+      if (am.index >= 0 && fm.index >= 0 && start && document.activeElement !== start) {
+        start.focus({ preventScroll: true });
+        const fresh = this.storyBlocks(start);
+        if (fresh[am.index] && fresh[fm.index]) {
+          anchor = contentPositionIn(fresh[am.index], am.offset);
+          focus = contentPositionIn(fresh[fm.index], fm.offset);
+        }
+      }
+    }
     if (setSelectionBetween(anchor, focus)) this.extendedSelection = { anchor, focus };
   }
 
@@ -4789,9 +4842,12 @@ export class DocxEditor {
     const idx = this.blockIndex(block); // capture before the op
     fullId = this.syncBlock(block, fullId);
     if (!fullId) return;
+    const tx = this.beginListTransaction();
     const res = this.parseEdit(
       this.exports.DocxSessionBridge.ApplyListFormat(this.handle, fullId, isThisKind ? "none" : kind),
     );
+    if (res.success && !membership && !isThisKind) this.applyListDefaults(res.modified?.[0]?.id ?? fullId, kind);
+    this.endListTransaction(tx);
     if (!res.success) return;
     // Numbering continuation across the list needs whole-document context — re-render fully
     // (sibling numbers shift without sibling XML changing).
@@ -5184,6 +5240,10 @@ export class DocxEditor {
     if (!step(this.handle)) return;
     this.invalidateBlockMoveTargets();
     this.reconcile();
+    // A list's levels live in the numbering part, not in any paragraph, so the paragraph diff
+    // cannot see an undone or redone level change: when the numbers shown no longer match the
+    // document's, the whole flow renders again.
+    if (this.listNumbersStale()) this.remount();
     // The header and footer stories sit outside the body's diff, so repaint them from the session
     // too (two small renders); otherwise an undone header edit stays on screen.
     this.region?.refreshAll();
@@ -5465,25 +5525,192 @@ export class DocxEditor {
     const block = this.activeBlock;
     if (this.closed || !block) return;
     const blocks = this.selectedBlocks();
-    if (
-      blocks.length > 1 &&
-      this.applyParagraphOpAcrossBlocks(
-        blocks,
-        (id) => this.exports.DocxSessionBridge.ApplyListFormat(this.handle, id, kind),
-        true,
-      )
-    )
-      return;
-    const unid = block.getAttribute("data-anchor");
-    if (!unid) return;
+    const wasList = isListBlock(block);
+    const tx = this.beginListTransaction();
+    try {
+      let firstId: string | undefined;
+      if (
+        blocks.length > 1 &&
+        this.applyParagraphOpAcrossBlocks(
+          blocks,
+          (id) => {
+            const json = this.exports.DocxSessionBridge.ApplyListFormat(this.handle, id, kind);
+            try { firstId ??= (JSON.parse(json) as EditResultLite).modified?.[0]?.id ?? id; } catch { /* the op's own error */ }
+            return json;
+          },
+          true,
+        )
+      ) {
+        if (!wasList && firstId && kind !== "none") this.applyListDefaults(firstId, kind, true);
+        return;
+      }
+      const unid = block.getAttribute("data-anchor");
+      if (!unid) return;
+      let fullId = this.anchorIdOf(block);
+      if (!fullId) return;
+      const idx = this.blockIndex(block);
+      fullId = this.syncBlock(block, fullId);
+      if (!fullId) return;
+      const res = this.parseEdit(this.exports.DocxSessionBridge.ApplyListFormat(this.handle, fullId, kind));
+      if (!res.success) return;
+      if (!wasList && kind !== "none") this.applyListDefaults(res.modified?.[0]?.id ?? fullId, kind);
+      this.refreshAfter(block, idx, false, /* forceRemount */ true);
+    } finally {
+      this.endListTransaction(tx);
+    }
+  }
+
+  // ─── List levels (Word's Define New Multilevel List), restart and continue ──────────────
+
+  /** True when a list item's number on the page differs from the number the document gives it
+   *  (bullets, whose glyph the engine does not report, are not compared). */
+  private listNumbersStale(): boolean {
+    const bridge = this.exports.DocxSessionBridge;
+    for (const block of this.editableList()) {
+      if (!isListBlock(block)) continue;
+      const fullId = this.anchorIdOf(block);
+      if (!fullId) continue;
+      let label: string | null | undefined;
+      try {
+        label = (JSON.parse(bridge.GetListMembership(this.handle, fullId)) as { generatedLabel?: string } | null)?.generatedLabel;
+      } catch {
+        continue;
+      }
+      if (!label) continue;
+      const shown = Array.from(block.querySelectorAll(":scope > [data-list-marker]"))
+        .map((m) => m.textContent ?? "").join("").replace(/\s+/g, " ").trim();
+      if (shown !== label.trim()) return true;
+    }
+    return false;
+  }
+
+  /** Several list ops as one undo step (0 when the engine has no transactions). */
+  private beginListTransaction(): number {
+    const bridge = this.exports.DocxSessionBridge;
+    return typeof bridge.BeginTransaction === "function" ? bridge.BeginTransaction(this.handle) : 0;
+  }
+
+  private endListTransaction(tx: number): void {
+    if (tx) this.exports.DocxSessionBridge.CommitTransaction!(tx);
+  }
+
+  /** Write the `listDefaults` into the list `anchorId` was just made an item of: whole for a
+   *  numbered list, positions only for any other format. `remount` re-renders afterwards (the
+   *  multi-block path has rendered already). When the nearest list before it already has those
+   *  levels (and the same format), the new list continues that one instead, as a new list of the
+   *  engine's own levels continues the one before it. */
+  private applyListDefaults(anchorId: string, kind: string, remount = false): void {
+    const defaults = this.options.listDefaults;
+    const bridge = this.exports.DocxSessionBridge;
+    if (!defaults?.length || typeof bridge.SetListLevels !== "function" || typeof bridge.GetListLevels !== "function") return;
+    const levels: ListLevelSpec[] = kind === "decimal" ? defaults
+      : defaults.map((l) => ({ level: l.level, numberPositionTwips: l.numberPositionTwips, textPositionTwips: l.textPositionTwips }));
+    const read = (id: string) => {
+      try { return JSON.parse(bridge.GetListLevels!(this.handle, id)) as ListLevelInfo[] | null; } catch { return null; }
+    };
+    const mine = read(anchorId);
+    const all = this.editableList();
+    const here = this.activeBlock ? all.indexOf(this.activeBlock) : -1;
+    const before = here > 0 ? all.slice(0, here).reverse().find((b) => isListBlock(b) && !b.closest("table")) : undefined;
+    const beforeId = before ? this.anchorIdOf(before) : undefined;
+    const theirs = beforeId ? read(beforeId) : null;
+    const same = !!mine && !!theirs && theirs[0]?.format === mine[0]?.format
+      && levels.every((spec) => {
+        const l = theirs.find((x) => x.level === spec.level);
+        return !!l && (Object.keys(spec) as Array<keyof ListLevelSpec>).every((k) => spec[k] === undefined || spec[k] === l[k as keyof ListLevelInfo]);
+      });
+    if (same && typeof bridge.ContinueNumbering === "function") this.parseEdit(bridge.ContinueNumbering(this.handle, anchorId));
+    else this.parseEdit(bridge.SetListLevels(this.handle, anchorId, JSON.stringify(levels)));
+    if (remount) this.remount(here);
+  }
+
+  /** The levels new lists start from (see the `listDefaults` option); [] for the engine's own. */
+  setListDefaults(levels: ListLevelSpec[]): void {
+    this.options.listDefaults = levels.map((l) => ({ ...l }));
+  }
+
+  /** The levels of the caret's list — format, number text (`%1.%2`), start, positions — or null
+   *  when the caret is not in a list item. */
+  listLevels(): ListLevelInfo[] | null {
+    const block = this.activeBlock;
+    const bridge = this.exports.DocxSessionBridge;
+    if (this.closed || !block || typeof bridge.GetListLevels !== "function") return null;
+    const fullId = this.anchorIdOf(block);
+    if (!fullId) return null;
+    try {
+      return JSON.parse(bridge.GetListLevels(this.handle, fullId)) as ListLevelInfo[] | null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Run a list op on the caret's paragraph (committing its typing first) and re-render. */
+  private listOp(run: (fullId: string) => string): boolean {
+    const block = this.activeBlock;
+    if (this.closed || !block) return false;
     let fullId = this.anchorIdOf(block);
-    if (!fullId) return;
+    if (!fullId) return false;
     const idx = this.blockIndex(block);
     fullId = this.syncBlock(block, fullId);
-    if (!fullId) return;
-    const res = this.parseEdit(this.exports.DocxSessionBridge.ApplyListFormat(this.handle, fullId, kind));
-    if (!res.success) return;
+    if (!fullId) return false;
+    const res = this.parseEdit(run(fullId));
+    if (!res.success) return false;
     this.refreshAfter(block, idx, false, /* forceRemount */ true);
+    return true;
+  }
+
+  /**
+   * Change the caret's list's levels (Word's Define New Multilevel List: format, number text,
+   * start, positions, legal flag), as one undo step. Paragraphs not yet in a list (the selection's,
+   * or the caret's) are made a numbered list first.
+   */
+  setListLevels(levels: ListLevelSpec[]): boolean {
+    const bridge = this.exports.DocxSessionBridge;
+    const block = this.activeBlock;
+    if (this.closed || !block || typeof bridge.SetListLevels !== "function") return false;
+    if (isListBlock(block)) return this.listOp((id) => bridge.SetListLevels!(this.handle, id, JSON.stringify(levels)));
+    // Not a list yet: a numbered list first, then its levels, as one step.
+    const tx = this.beginListTransaction();
+    let ok = false;
+    try {
+      // (the paragraph is found again by its place: making the list renders the document afresh)
+      const index = this.editableList().indexOf(this.selectedBlocks()[0] ?? block);
+      const saved = this.options.listDefaults;
+      this.options.listDefaults = undefined;    // (the levels given are the ones wanted)
+      try { this.setListFormat("decimal"); } finally { this.options.listDefaults = saved; }
+      const now = this.editableList()[index];
+      if (now && isListBlock(now)) {
+        this.activeBlock = now;
+        ok = this.listOp((fullId) => bridge.SetListLevels!(this.handle, fullId, JSON.stringify(levels)));
+      }
+    } finally {
+      this.endListTransaction(tx);
+    }
+    return ok;
+  }
+
+  /**
+   * Legal numbering — 1., 1.1, 1.1.1 by level — on the caret's list (the selection, or the
+   * caret's paragraph, made a numbered list first when it is not one). `periods`: `"top"` ends
+   * the top level's number with a period (1. then 1.1), `"all"` every level's (1.1.), `"none"`
+   * none (1, 1.1).
+   */
+  setLegalNumbering(periods: "top" | "all" | "none" = "top"): boolean {
+    return this.setListLevels(legalLevels(periods));
+  }
+
+  /** Restart the caret's list at `start` (Word's Restart at 1 / Set Numbering Value). */
+  restartNumbering(start = 1): boolean {
+    const bridge = this.exports.DocxSessionBridge;
+    if (typeof bridge.SetListStartOverride !== "function" || !this.activeBlock || !isListBlock(this.activeBlock)) return false;
+    return this.listOp((id) => bridge.SetListStartOverride!(this.handle, id, Math.max(0, Math.round(start))));
+  }
+
+  /** Word's Continue Numbering: the caret's item, and the rest of its list, join the list before. */
+  continueNumbering(): boolean {
+    const bridge = this.exports.DocxSessionBridge;
+    if (typeof bridge.ContinueNumbering !== "function" || !this.activeBlock || !isListBlock(this.activeBlock)) return false;
+    return this.listOp((id) => bridge.ContinueNumbering!(this.handle, id));
   }
 
   /** The active block's list format (`"bullet"`, `"decimal"`, …), or null when it is not a list item. */

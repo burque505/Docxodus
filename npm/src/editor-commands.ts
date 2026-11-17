@@ -12,7 +12,7 @@
  * matching ribbon control is.
  */
 import type { DocxEditor, EditorAlignment, EditorPageSetup, EditorParagraphFormat, FormatKey, PasteFormatting } from "./editor.js";
-import type { ListFormat, NumberFormat, TableBorderSpec, TableOfContentsOptions } from "./types.js";
+import type { ListFormat, ListLevelSpec, NumberFormat, TableBorderSpec, TableOfContentsOptions } from "./types.js";
 import { TrackedChangeMode } from "./types.js";
 
 /** Why `exec` failed: no such command, an argument missing or of the wrong kind, no document
@@ -121,6 +121,27 @@ class Args {
   optObject(name: string): Record<string, unknown> | undefined {
     return this.value(name) === undefined ? undefined : this.object(name);
   }
+
+  /** An array of objects. */
+  objects(name: string): Record<string, unknown>[] {
+    const v = this.value(name);
+    if (!Array.isArray(v) || v.some((x) => typeof x !== "object" || x === null || Array.isArray(x))) this.fail(name, "an array of objects");
+    return v as Record<string, unknown>[];
+  }
+}
+
+/** A level change as setListLevels takes it, read from a plain object (bad fields refused). */
+function listLevelSpec(o: Record<string, unknown>, command: string): ListLevelSpec {
+  const a = new Args(command, o);
+  return {
+    level: a.number("level"),
+    format: a.optString("format"),
+    text: a.optString("text"),
+    start: a.optNumber("start"),
+    numberPositionTwips: a.optNumber("numberPositionTwips"),
+    textPositionTwips: a.optNumber("textPositionTwips"),
+    legal: a.optBool("legal"),
+  };
 }
 
 /** A command that reports "could not act" through a false result. */
@@ -248,6 +269,27 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   listFormat: {
     group: "paragraph", description: "Set the list's number format (\"none\" ends the list).", args: { format: LIST_FORMATS.join("|") },
     run: (e, a) => e.setListFormat(a.oneOf("format", LIST_FORMATS)),
+  },
+  legalNumbering: {
+    group: "paragraph",
+    description: "Legal numbering, 1. / 1.1 / 1.1.1 by level, on the list (the paragraphs made a numbered list first): a period after the top level's number (\"top\"), every level's (\"all\") or none.",
+    args: { "periods?": "top|all|none" },
+    run: (e, a) => must(e.setLegalNumbering(a.optOneOf("periods", ["top", "all", "none"] as const) ?? "top"), "legalNumbering", "there is no paragraph to number"),
+  },
+  setListLevels: {
+    group: "paragraph",
+    description: "Word's Define New Multilevel List: change levels of the list (the paragraphs made a numbered list first). Each object names a level (0-8) and any of format, text (\"%1.%2\"), start, numberPositionTwips, textPositionTwips, legal.",
+    args: { levels: "object" },
+    run: (e, a) => must(e.setListLevels(a.objects("levels").map((o) => listLevelSpec(o, "setListLevels"))), "setListLevels",
+      "the levels could not be set (a level outside 0-8, an unknown format, or a number text naming a deeper level)"),
+  },
+  restartNumbering: {
+    group: "paragraph", description: "Restart the list's numbering here, at start (1 when left out).", args: { "start?": "number" },
+    run: (e, a) => must(e.restartNumbering(a.optNumber("start") ?? 1), "restartNumbering", "the caret is not in a list item"),
+  },
+  continueNumbering: {
+    group: "paragraph", description: "Continue the numbering of the list before this one.", args: {},
+    run: (e) => must(e.continueNumbering(), "continueNumbering", "the caret is not in a list item, or no list comes before it"),
   },
   clearBorders: { group: "paragraph", description: "Remove the paragraph's borders.", args: {}, run: (e) => e.clearParagraphBorders() },
 
@@ -437,6 +479,10 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     group: "query",
     description: "The effective paragraph formatting of each selected paragraph (the caret's when nothing is selected): the paragraphFormat fields, in twips.",
     args: {}, returns: "array of objects", run: (e) => e.paragraphFormats(),
+  },
+  listLevels: {
+    group: "query", description: "The levels of the list at the caret: level, format, text, start, numberPositionTwips, textPositionTwips, legal.",
+    args: {}, returns: "array of objects, or null", run: (e) => e.listLevels(),
   },
   styleAtCaret: { group: "query", description: "The paragraph style at the caret.", args: {}, returns: "style id, or null", run: (e) => e.styleAtCaret() },
   fontSizeAtCaret: { group: "query", description: "The font size at the caret, in points.", args: {}, returns: "number, or null", run: (e) => e.fontSizeAtCaret() },

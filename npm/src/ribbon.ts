@@ -43,7 +43,7 @@ import type { RibbonHistoryBinding } from './ribbon-history.js';
 export type { RibbonHistoryBinding, RibbonHistoryOptions } from './ribbon-history.js';
 import type { BandWhich } from "./editor-headerfooter.js";
 import { TrackedChangeMode } from "./types.js";
-import type { ListFormat, NumberFormat } from "./types.js";
+import type { ListFormat, ListLevelSpec, NumberFormat } from "./types.js";
 import {
   COMMON_FONTS,
   HIGHLIGHT_COLORS,
@@ -55,6 +55,7 @@ import {
 } from "./ribbon-chrome.js";
 import { PARAGRAPH_DIALOG_CSS, PARAGRAPH_DIALOG_HTML, ParagraphDialog } from "./ribbon-paragraph-dialog.js";
 import type { MeasurementUnit } from "./ribbon-paragraph-dialog.js";
+import { LIST_DIALOG_CSS, LIST_DIALOG_HTML, ListDialog } from "./ribbon-list-dialog.js";
 export type { MeasurementUnit } from "./ribbon-paragraph-dialog.js";
 
 // Re-exported so the IIFE bundle built from this module (window.DocxodusEditor)
@@ -185,6 +186,15 @@ export interface RibbonOptions extends DocxEditorOptions {
   /** How the Paragraph dialog shows indents: inches (`"in"`, the default) or centimetres
    *  (`"cm"`). Any unit can be typed either way. `setMeasurementUnit` changes it later. */
   measurementUnit?: MeasurementUnit;
+  /** The levels every new list starts from (the editor's `listDefaults`); `setListDefaults`
+   *  changes them later. */
+  listDefaults?: ListLevelSpec[];
+  /**
+   * The List Levels dialog's "Also for new documents" was ticked: the host keeps these levels
+   * (for later documents too) and gives them back as `listDefaults`. Without this option the
+   * dialog has no such box.
+   */
+  onListDefaults?: (levels: ListLevelSpec[]) => void;
   /** Called after any document opens, with the live editor. */
   onOpen?: (editor: DocxEditor) => void;
   /** Called whenever the status line changes. */
@@ -295,6 +305,10 @@ export interface RibbonEditor {
   openParagraphDialog(): boolean;
   /** Show the Paragraph dialog's indents in inches or centimetres (the `measurementUnit` option). */
   setMeasurementUnit(unit: MeasurementUnit): void;
+  /** Open the List Levels dialog on the caret's list; false when no document is open. */
+  openListDialog(): boolean;
+  /** The levels new lists start from (see the `listDefaults` option). */
+  setListDefaults(levels: ListLevelSpec[]): void;
   /** Set the status line. */
   setStatus(text: string): void;
   /** Activate a ribbon tab by name ("home" | "insert" | "layout" | "references" | "review" | "view" | "table" | "headerfooter"). */
@@ -391,7 +405,7 @@ function ensureStyles(doc: Document): void {
   existing?.remove();
   const style = doc.createElement("style");
   style.setAttribute(RIBBON_STYLE_ATTR, RIBBON_STYLE_VERSION);
-  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS;
+  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS;
   (doc.head ?? doc.documentElement).appendChild(style);
 }
 
@@ -486,6 +500,8 @@ class RibbonSurface implements RibbonEditor {
   private recentEntries: RibbonRecentEntry[] = [];
   private fileMenuItems: RibbonFileMenuItem[] = [];
   private paragraphDialog!: ParagraphDialog;
+  private listDialog!: ListDialog;
+  private listDefaults: ListLevelSpec[] | undefined;
   // The chrome's text in the host's language (setLabels), and the English each text had.
   private labels: Record<string, string> = {};
   private readonly englishText = new WeakMap<Text, { english: string; written: string }>();
@@ -525,7 +541,7 @@ class RibbonSurface implements RibbonEditor {
     root.className = "dxr";
     root.dataset.state = "idle";
     root.dataset.frame = this.options.frame ?? "flush";
-    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML;
+    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML;
     for (const el of Array.from(root.querySelectorAll<HTMLElement>("[data-dxr]"))) {
       el.id = this.idPrefix + el.dataset.dxr;
     }
@@ -853,6 +869,7 @@ class RibbonSurface implements RibbonEditor {
       comments: this.options.comments,
       commentAuthor: this.author,
       typingUndo: this.options.typingUndo,
+      listDefaults: this.listDefaults,
       commentInitials: this.initials,
     });
     this.live?.close();
@@ -1236,6 +1253,38 @@ class RibbonSurface implements RibbonEditor {
     }
   }
 
+  /** The List Levels dialog, the Numbering menu's list commands and the 1.1 button. */
+  private wireListDialog(): void {
+    this.listDefaults = this.options.listDefaults?.map((l) => ({ ...l }));
+    this.listDialog = new ListDialog(this.require<HTMLDialogElement>("listdialog"), {
+      read: () => this.live?.listLevels() ?? null,
+      defaults: () => this.listDefaults ?? null,
+      apply: (levels) => this.run("list levels", () => this.live!.setListLevels(levels), cmd("setListLevels", { levels })),
+      keepDefaults: this.options.onListDefaults
+        ? (levels) => { this.setListDefaults(levels); this.options.onListDefaults!(levels); }
+        : undefined,
+    }, this.options.measurementUnit ?? "in");
+    const legal = this.control("legallist");
+    if (legal) {
+      this.keepSelection(legal);
+      legal.addEventListener("click", () => {
+        if (this.live) this.run("legal numbering", () => this.live!.setLegalNumbering("top"), cmd("legalNumbering", { periods: "top" }));
+      });
+    }
+  }
+
+  openListDialog(): boolean {
+    if (!this.live || this.listDialog.open || this.paragraphDialog.open) return false;
+    this.closePopovers();
+    this.listDialog.show();
+    return true;
+  }
+
+  setListDefaults(levels: ListLevelSpec[]): void {
+    this.listDefaults = levels.map((l) => ({ ...l }));
+    this.live?.setListDefaults(this.listDefaults);
+  }
+
   openParagraphDialog(): boolean {
     if (!this.live || this.paragraphDialog.open) return false;
     this.closePopovers();
@@ -1244,10 +1293,12 @@ class RibbonSurface implements RibbonEditor {
 
   setMeasurementUnit(unit: MeasurementUnit): void {
     this.paragraphDialog.setUnit(unit);
+    this.listDialog.setUnit(unit);
   }
 
   private wire(): void {
     this.wireParagraphDialog();
+    this.wireListDialog();
     const ribbon = this.require("ribbon");
 
     // (the File tab opens a menu instead: wireFileMenu)
@@ -1391,7 +1442,17 @@ class RibbonSurface implements RibbonEditor {
 
     this.wireSelect("fontfamily", "font family", (v) => this.live!.setFontFamily(v), (v) => cmd("fontFamily", { name: v }));
     this.wireSelect("style", "style", (v) => this.live!.setParagraphStyle(v), (v) => cmd("style", { styleId: v }));
-    this.wireSelect("listmenu", "list style", (v) => this.live!.setListFormat(v as ListFormat), (v) => cmd("listFormat", { format: v }));
+    const listMenu = this.require<HTMLSelectElement>("listmenu");
+    listMenu.addEventListener("change", () => {
+      const v = listMenu.value;
+      listMenu.value = "";
+      if (!this.live || !v) return;
+      if (v === "levels") { this.openListDialog(); return; }
+      if (v === "legal") this.run("legal numbering", () => this.live!.setLegalNumbering("top"), cmd("legalNumbering", { periods: "top" }));
+      else if (v === "restart") this.run("restart numbering", () => this.live!.restartNumbering(1), cmd("restartNumbering", { start: 1 }));
+      else if (v === "continue") this.run("continue numbering", () => this.live!.continueNumbering(), cmd("continueNumbering"));
+      else this.run("list style", () => this.live!.setListFormat(v as ListFormat), cmd("listFormat", { format: v }));
+    });
     this.wireSelect("linespacing", "line spacing", (v) => this.live!.setLineSpacing(parseFloat(v)),
       (v) => cmd("lineSpacing", { multiple: parseFloat(v) }));
     this.wireSelect("highlight", "highlight", (v) => this.live!.setHighlight(v === "none" ? "" : v), (v) => cmd("highlight", { color: v }));
@@ -2052,7 +2113,7 @@ class RibbonSurface implements RibbonEditor {
 
   private handleShortcut(event: KeyboardEvent): void {
     // A dialog owns its keys while it is open.
-    if (this.paragraphDialog?.open) return;
+    if (this.paragraphDialog?.open || this.listDialog?.open) return;
     // Alt+F opens the File menu, as in Word.
     if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && (event.key ?? "").toLowerCase() === "f") {
       event.preventDefault();

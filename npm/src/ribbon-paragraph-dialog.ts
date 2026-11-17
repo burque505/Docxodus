@@ -36,7 +36,45 @@ export function formatLength(twips: number, unit: MeasurementUnit): string {
   return unit === "cm" ? `${trimNumber(twips / (1440 / 2.54), 2)} cm` : `${trimNumber(twips / 1440, 2)}"`;
 }
 
-function formatPoints(twips: number): string {
+/** Drag a ribbon dialog by `handle` (its title), off the text it is changing. */
+export function makeDialogMovable(dialog: HTMLDialogElement, handle: HTMLElement): void {
+  handle.style.cursor = "move";
+  handle.style.userSelect = "none";
+  handle.addEventListener("pointerdown", (down) => {
+    if (down.button !== 0) return;
+    const box = dialog.getBoundingClientRect();
+    const dx = down.clientX - box.left, dy = down.clientY - box.top;
+    handle.setPointerCapture(down.pointerId);
+    const move = (e: PointerEvent) => placeDialogAt(dialog, e.clientX - dx, e.clientY - dy);
+    const up = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+      handle.removeEventListener("pointercancel", up);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+    handle.addEventListener("pointercancel", up);
+    down.preventDefault();
+  });
+}
+
+/** Put a ribbon dialog at a viewport position, its title kept reachable on screen. */
+export function placeDialogAt(dialog: HTMLDialogElement, left: number, top: number): void {
+  const view = dialog.ownerDocument.defaultView ?? window;
+  const box = dialog.getBoundingClientRect();
+  const x = Math.min(Math.max(left, 40 - box.width), view.innerWidth - 40);
+  const y = Math.min(Math.max(top, 0), view.innerHeight - 40);
+  dialog.style.margin = "0";
+  dialog.style.left = `${x}px`;
+  dialog.style.top = `${y}px`;
+}
+
+/** Where the user left a moved dialog, put back on screen after it opens again. */
+export function restoreDialogPlace(dialog: HTMLDialogElement): void {
+  if (dialog.style.left) placeDialogAt(dialog, parseFloat(dialog.style.left), parseFloat(dialog.style.top));
+}
+
+export function formatPoints(twips: number): string {
   return `${trimNumber(twips / 20, 1)} pt`;
 }
 
@@ -386,39 +424,12 @@ export class ParagraphDialog {
 
   // ── internals ──
 
-  /** Drag the dialog by its title, off the paragraphs it is changing; it opens where it was left (kept on screen). */
   private makeMovable(handle: HTMLElement): void {
-    const dialog = this.dialog;
-    handle.style.cursor = "move";
-    handle.style.userSelect = "none";
-    handle.addEventListener("pointerdown", (down) => {
-      if (down.button !== 0) return;
-      const box = dialog.getBoundingClientRect();
-      const dx = down.clientX - box.left, dy = down.clientY - box.top;
-      handle.setPointerCapture(down.pointerId);
-      const move = (e: PointerEvent) => this.placeAt(e.clientX - dx, e.clientY - dy);
-      const up = () => {
-        handle.removeEventListener("pointermove", move);
-        handle.removeEventListener("pointerup", up);
-        handle.removeEventListener("pointercancel", up);
-      };
-      handle.addEventListener("pointermove", move);
-      handle.addEventListener("pointerup", up);
-      handle.addEventListener("pointercancel", up);
-      down.preventDefault();
-    });
+    makeDialogMovable(this.dialog, handle);
   }
 
   private placeAt(left: number, top: number): void {
-    const dialog = this.dialog;
-    const view = dialog.ownerDocument.defaultView ?? window;
-    const box = dialog.getBoundingClientRect();
-    // (at least the title stays reachable)
-    const x = Math.min(Math.max(left, 40 - box.width), view.innerWidth - 40);
-    const y = Math.min(Math.max(top, 0), view.innerHeight - 40);
-    dialog.style.margin = "0";
-    dialog.style.left = `${x}px`;
-    dialog.style.top = `${y}px`;
+    placeDialogAt(this.dialog, left, top);
   }
 
   private finish(op: EditorParagraphFormat | null): void {

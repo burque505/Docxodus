@@ -29,7 +29,7 @@
  */
 
 /** Bumped whenever RIBBON_CSS changes, so a stale injected stylesheet is replaced. */
-export const RIBBON_STYLE_VERSION = "12";
+export const RIBBON_STYLE_VERSION = "13";
 export const RIBBON_STYLE_ATTR = "data-docxodus-ribbon-styles";
 
 /** Width of the comment gutter the surface reserves beside the sheet, in px. */
@@ -1040,6 +1040,7 @@ export const RIBBON_HTML = `
         <div class="dxr-row">
           <button type="button" class="dxr-icon" data-list="bullet" title="Bullets">&#8226;&#8801;</button>
           <button type="button" class="dxr-icon" data-list="decimal" title="Numbering">1.&#8801;</button>
+          <button type="button" class="dxr-icon" data-dxr="legallist" title="Legal numbering (1., 1.1, 1.1.1)">1.1</button>
           <select data-dxr="listmenu" title="Numbering format">
             <option value="">List style&#8230;</option>
             <option value="bullet">&#8226; Bullet</option>
@@ -1052,6 +1053,10 @@ export const RIBBON_HTML = `
             <option value="lowerRomanParenthesis">(i) (ii) (iii)</option>
             <option value="upperRoman">I. II. III.</option>
             <option value="none">No list</option>
+            <option value="legal">1. 1.1 1.1.1 Legal</option>
+            <option value="restart">Restart numbering</option>
+            <option value="continue">Continue numbering</option>
+            <option value="levels">List levels&#8230;</option>
           </select>
           <button type="button" class="dxr-icon" data-indent="-720" title="Decrease indent">${ICON_ALIGN(
             '<rect x="0" y="0" width="15" height="1.6"/><rect x="6" y="3.8" width="9" height="1.6"/><rect x="6" y="7.6" width="9" height="1.6"/><rect x="0" y="11.4" width="15" height="1.6"/><path d="M4.6 4.2v4.6L0.6 6.5z"/>',
