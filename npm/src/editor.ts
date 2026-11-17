@@ -4745,7 +4745,11 @@ export class DocxEditor {
     // A border change regroups the wrapping border <div>s, and a bordered paragraph's wrapper
     // carries its indentation and outer spacing — both are whole-document context. (A bordered
     // table cell is no such wrapper.)
-    const rewraps = !!op.clearBorders
+    // In page view the page-keeping rules decide where pages break, which only a new layout of the
+    // whole flow shows (a swapped block keeps its old page).
+    const repaginates = !!this.options.paginated && (op.pageBreakBefore !== undefined || op.keepNext !== undefined
+      || op.keepLines !== undefined || op.widowControl !== undefined);
+    const rewraps = !!op.clearBorders || repaginates
       || [block, ...blocks].some((b) => b.parentElement?.tagName === "DIV" && inBorderWrapper(b));
     if (
       blocks.length > 1 &&

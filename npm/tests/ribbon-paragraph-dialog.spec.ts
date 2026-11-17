@@ -158,3 +158,22 @@ test('the dialog moves by its title and opens where it was left', async ({ page 
   expect(Math.round(again.x)).toBe(Math.round(moved.x));
   expect(Math.round(again.y)).toBe(Math.round(moved.y));
 });
+
+test('in page view, Page break before moves the paragraph to a new page at once', async ({ page }) => {
+  await mount(page);
+  await page.keyboard.type('First paragraph.');
+  await page.keyboard.press('Enter');
+  await page.keyboard.type('Second paragraph, to start a new page.');
+  await page.evaluate(() => (window as any).__ribbon.exec('pageView', { on: true }));
+  const pageOf = () => page.evaluate(() => Array.from(document.querySelectorAll<HTMLElement>('#pd-host [data-anchor][contenteditable="true"]'))
+    .map((b) => b.closest('[data-page-number], .page-box')?.getAttribute('data-page-number') ?? Array.from(document.querySelectorAll('#pd-host .page-box')).indexOf(b.closest('.page-box')!)));
+  await expect.poll(pageOf).toHaveLength(2);
+  const [first, second] = await pageOf();
+  expect(second).toBe(first);
+  await page.locator('#pd-host [data-anchor][contenteditable="true"]').nth(1).click();
+  await page.locator('#pd-host [data-dxr="paralaunch"]').click();
+  await dialog(page).locator('[data-pd-tab="breaks"]').click();
+  await field(page, 'pageBreakBefore').check();
+  await dialog(page).locator('button[value="ok"]').click();
+  await expect.poll(async () => { const p = await pageOf(); return p[1] !== p[0]; }).toBe(true);
+});
