@@ -25,6 +25,8 @@ export { mountRibbon } from "./ribbon.js";
 // Change Case's Headline Case word lists, for a host that keeps them in a file to be edited.
 export { DEFAULT_HEADLINE_CASE_TEXT, parseHeadlineCaseLists } from "./change-case.js";
 export type { CaseMode, HeadlineCaseLists } from "./change-case.js";
+export { compileFind, expandReplacement, specialFindCodes, specialReplaceCodes, findOptionApplies, normalizeFindOptions, FIND_OPTION_KEYS } from "./find-query.js";
+export type { FindOptions, CompiledFind, SpecialCode } from "./find-query.js";
 export type {
   RibbonEditor,
   RibbonOptions,

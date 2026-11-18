@@ -67,6 +67,7 @@ import type { EditorCommandArgs, EditorCommandInfo } from "./editor-commands.js"
 import { imageOnlyDelta, patchImageAttributes } from "./editor-image-patch.js";
 import { cleanPastedHtml, pastedPlainText, serializePaste } from "./paste-html.js";
 import { FORMAT_PAINTER_CSS, pickRunFormat, runOpFromDirect, wordSpanAt } from "./format-painter.js";
+import { compileFind, expandReplacement, type FindOptions } from "./find-query.js";
 import { changeCase, DEFAULT_HEADLINE_CASE_LISTS, nextCycleCase, type CaseMode, type HeadlineCaseLists } from "./change-case.js";
 import type { RenderPlan, RenderUnit, UnitDiff } from "./editor-reconcile.js";
 
@@ -429,7 +430,18 @@ export type EditorPageSetup = PageSetupOp;
 export interface EditorMatch {
   block: HTMLElement;
   start: number;
+  /** Length in `block` (to the block's end when the hit runs on into `endBlock`). */
   length: number;
+  /** A hit over paragraph marks ends in this later block of the same story... */
+  endBlock?: HTMLElement;
+  /** ...at this content offset. */
+  endOffset?: number;
+  /** The blocks wholly inside a hit that runs over paragraph marks. */
+  between?: HTMLElement[];
+  /** The text found, in stream characters (a paragraph mark is a carriage return). */
+  text?: string;
+  /** The replacement text for this hit, read as the find that made it reads one (^p, ^&, $1...). */
+  expand?: (replacement: string) => string;
 }
 
 interface AnchorTargetLite {
@@ -1203,6 +1215,38 @@ function blockContentText(block: HTMLElement): string {
   return out;
 }
 
+/**
+ * `blockContentText` as Find searches it: the same characters at the same offsets, but a manual
+ * line break is Word's "\v", a page break "\f" and a column break "\x0E", so ^l, ^m and ^n can
+ * tell them apart (see find-query.ts).
+ */
+function blockStreamText(block: HTMLElement): string {
+  let out = "";
+  const walk = (node: Node): void => {
+    const atom = atomText(node);
+    if (atom !== null && !isInMarker(node)) {
+      if (atom === "\n" && node.nodeType === 1) {
+        const el = node as HTMLElement;
+        out += el.hasAttribute("data-page-break") ? "\f" : el.hasAttribute("data-column-break") ? "\x0E" : "\v";
+      } else {
+        out += stripBidi(atom);
+      }
+    } else if (node.nodeType === 3 /* TEXT_NODE */) {
+      if (!isInMarker(node)) out += stripBidi(node.textContent ?? "");
+    } else {
+      node.childNodes.forEach(walk);
+    }
+  };
+  walk(block);
+  return out;
+}
+
+/** Replacement text in stream characters as a run takes it: a line break is the engine's "\n";
+ *  page and column breaks cannot be typed into a run, so they go. */
+function streamToRunText(text: string): string {
+  return text.replace(/\v/g, "\n").replace(/[\f\x0E]/g, "");
+}
+
 /** A block's text as a reader sees it: no-break spaces as spaces, an empty paragraph's
  *  placeholder as nothing. */
 function plainBlockText(block: HTMLElement): string {
@@ -1624,6 +1668,8 @@ const FIND_HIGHLIGHT = "docxodus-find";
 const FIND_HIGHLIGHT_ACTIVE = "docxodus-find-active";
 /** Ranges are cheap, but a pathological query ("e" in a book) is not worth painting in full. */
 const FIND_PAINT_LIMIT = 500;
+/** A find stops counting here: a pattern that matches every character of a book is a mistake. */
+const FIND_HIT_LIMIT = 20000;
 
 const findHighlightStyledDocuments = new WeakSet<Document>();
 /**
@@ -6617,26 +6663,128 @@ export class DocxEditor {
 
   // ─── Find & replace ──────────────────────────────────────────────────
 
-  /** Every occurrence of `query` in the editable blocks, in document order. */
-  find(query: string, options: { matchCase?: boolean } = {}): EditorMatch[] {
+  /**
+   * Every hit of `query` in the editable blocks, in document order, with Word's find options
+   * (see find-query.ts). The paragraphs of one story (the body between tables, one table cell,
+   * one header or footer) are searched as one text with a paragraph mark between them, so ^p, a
+   * wildcard's ^13 or a regex's \n find hits that run over several paragraphs; a hit never
+   * crosses from one story into another. An invalid pattern finds nothing (`compileFind` says why).
+   */
+  find(query: string, options: FindOptions = {}): EditorMatch[] {
     if (!query) return [];
-    const needle = options.matchCase ? query : query.toLowerCase();
-    const blocks = this.editableList().concat(
-      Array.from(this.container.querySelectorAll<HTMLElement>('[data-hf-band] [data-anchor][contenteditable="true"]')),
-    );
+    const compiled = compileFind(query, options);
+    if (!compiled.ok) return [];
+    // Typing still in the focused block goes in first (it may re-render the block), so the hits
+    // point at blocks that stay, and a replacement does not remount over text the session lacks.
+    this.commitTyping();
+    const re = compiled.regex;
     const out: EditorMatch[] = [];
-    for (const block of blocks) {
-      const text = blockContentText(block);
-      const hay = options.matchCase ? text : text.toLowerCase();
-      let from = 0;
-      for (;;) {
-        const at = hay.indexOf(needle, from);
-        if (at < 0) break;
-        out.push({ block, start: at, length: query.length });
-        from = at + Math.max(1, query.length);
+    for (const segment of this.findSegments()) {
+      const { blocks, starts, text } = segment;
+      const blockAt = (pos: number): number => {
+        let lo = 0, hi = starts.length - 1;
+        while (lo < hi) {
+          const mid = (lo + hi + 1) >> 1;
+          if (starts[mid] <= pos) lo = mid; else hi = mid - 1;
+        }
+        return lo;
+      };
+      re.lastIndex = 0;
+      for (let hit = re.exec(text); hit; hit = re.exec(text)) {
+        if (hit[0].length === 0) {
+          // A zero-length hit (^, \b, a lookaround) marks no text: step past it.
+          re.lastIndex = hit.index + 1;
+          if (re.lastIndex > text.length) break;
+          continue;
+        }
+        const from = hit.index, to = hit.index + hit[0].length;
+        const first = blockAt(from), last = blockAt(to);
+        const start = from - starts[first];
+        const found = hit;
+        const expand = (replacement: string) => expandReplacement(replacement, found, options);
+        if (first === last) {
+          out.push({ block: blocks[first], start, length: to - from, text: hit[0], expand });
+        } else {
+          out.push({
+            block: blocks[first], start, length: segment.lengths[first] - start,
+            endBlock: blocks[last], endOffset: to - starts[last],
+            between: blocks.slice(first + 1, last), text: hit[0], expand,
+          });
+        }
+        if (out.length >= FIND_HIT_LIMIT) return out;
       }
     }
     return out;
+  }
+
+  /** Why `query` cannot be searched for with `options`, or null when it can. */
+  findError(query: string, options: FindOptions = {}): string | null {
+    if (!query) return null;
+    const compiled = compileFind(query, options);
+    return compiled.ok ? null : compiled.error;
+  }
+
+  /** The searchable stories: runs of consecutive editable blocks in the same container. */
+  private findSegments(): Array<{ blocks: HTMLElement[]; starts: number[]; lengths: number[]; text: string }> {
+    const blocks = this.editableList().concat(
+      Array.from(this.container.querySelectorAll<HTMLElement>('[data-hf-band] [data-anchor][contenteditable="true"]')),
+    );
+    const segments: Array<{ blocks: HTMLElement[]; starts: number[]; lengths: number[]; text: string }> = [];
+    let current: (typeof segments)[number] | null = null;
+    let currentKey: Element | null | undefined;
+    let previous: HTMLElement | null = null;
+    for (const block of blocks) {
+      const key = block.closest("td, th, [data-hf-band]");
+      // A new story starts in another container, and after anything that is not a paragraph
+      // (a table between two body paragraphs).
+      const adjacent = previous !== null && key === currentKey && !key
+        ? !this.tableBetween(previous, block)
+        : key === currentKey;
+      if (!current || !adjacent) {
+        current = { blocks: [], starts: [], lengths: [], text: "" };
+        segments.push(current);
+        currentKey = key;
+      }
+      // An empty paragraph's placeholder space is no text (as plainBlockText reads it).
+      const raw = blockStreamText(block);
+      const text = trimSpaces(raw).length === 0 ? "" : raw;
+      if (current.blocks.length > 0) current.text += "\r";
+      current.starts.push(current.text.length);
+      current.lengths.push(text.length);
+      current.blocks.push(block);
+      current.text += text;
+      previous = block;
+    }
+    return segments;
+  }
+
+  /** True when a table (or anything else no find can cross) sits between two body blocks. */
+  private tableBetween(a: HTMLElement, b: HTMLElement): boolean {
+    const range = a.ownerDocument.createRange();
+    try {
+      range.setStartAfter(a);
+      range.setEndBefore(b);
+    } catch {
+      return true;
+    }
+    const between = range.cloneContents();
+    return between.querySelector("table") !== null;
+  }
+
+  /** The DOM range a hit covers (across blocks for a hit that runs over paragraph marks). */
+  private matchRange(match: EditorMatch): Range | null {
+    if (!match.endBlock) return contentRangeIn(match.block, match.start, match.length);
+    if (!match.block.isConnected || !match.endBlock.isConnected) return null;
+    const range = match.block.ownerDocument.createRange();
+    const from = contentPositionIn(match.block, match.start);
+    const to = contentPositionIn(match.endBlock, match.endOffset ?? 0);
+    try {
+      range.setStart(from.node, from.offset);
+      range.setEnd(to.node, to.offset);
+    } catch {
+      return null;
+    }
+    return range;
   }
 
   /**
@@ -6648,7 +6796,16 @@ export class DocxEditor {
     if (!match.block.isConnected) return;
     this.clearFindMatches();
     this.activeBlock = match.block;
-    selectRange(match.block, match.start, match.length);
+    if (match.endBlock) {
+      // Over paragraph marks: the editor's own selection across blocks (as Shift+Down makes).
+      if (!match.endBlock.isConnected) return;
+      this.selectBetween(
+        contentPositionIn(match.block, match.start),
+        contentPositionIn(match.endBlock, match.endOffset ?? 0),
+      );
+    } else {
+      selectRange(match.block, match.start, match.length);
+    }
     match.block.scrollIntoView({ block: "center", behavior: "smooth" });
   }
 
@@ -6665,14 +6822,14 @@ export class DocxEditor {
     this.clearFindMatches();
     if (!active || !active.block.isConnected) return;
     this.activeBlock = active.block;
-    const activeRange = contentRangeIn(active.block, active.start, active.length);
+    const activeRange = this.matchRange(active);
     const registry = highlightRegistry();
     if (registry && activeRange) {
       ensureFindHighlightStyles(this.container.ownerDocument);
       const rest: Range[] = [];
       for (let i = 0; i < matches.length && rest.length < FIND_PAINT_LIMIT; i++) {
         if (i === activeIndex) continue;
-        const range = contentRangeIn(matches[i].block, matches[i].start, matches[i].length);
+        const range = this.matchRange(matches[i]);
         if (range) rest.push(range);
       }
       if (rest.length > 0) registry.set(FIND_HIGHLIGHT, makeHighlight(rest));
@@ -6699,9 +6856,11 @@ export class DocxEditor {
   }
 
   /**
-   * Replace one match's text (formatting of the surrounding run is inherited). `focus: false`
-   * leaves the keyboard where it is — a Replace button pressed from the find bar must not drag
-   * the caret into the document mid-search.
+   * Replace one match. `replacement` is read as the find that made the match reads it (^p, ^&,
+   * \1, $1 ...: see `expandReplacement`); a match made by hand ({block, start, length}) takes it
+   * as it is. Formatting of the surrounding run is inherited. `focus: false` leaves the keyboard
+   * where it is — a Replace button pressed from the find bar must not drag the caret into the
+   * document mid-search.
    */
   replaceMatch(
     match: EditorMatch,
@@ -6710,6 +6869,8 @@ export class DocxEditor {
   ): boolean {
     const block = match.block;
     if (this.closed || !block.isConnected) return false;
+    const text = match.expand ? match.expand(replacement) : replacement;
+    if (match.endBlock || text.includes("\r")) return this.replaceMatches([{ match, text }]) > 0;
     const unid = block.getAttribute("data-anchor");
     if (!unid) return false;
     let fullId = this.anchorIdOf(block);
@@ -6718,48 +6879,148 @@ export class DocxEditor {
     if (!fullId) return false;
     const span = trimmedSpan(block, { start: match.start, length: match.length });
     if (span.length === 0) return false;
+    const runText = streamToRunText(text);
     const res = this.parseEdit(
       this.exports.DocxSessionBridge.ReplaceTextAtSpan(
-        this.handle, fullId, span.start, span.length, replacement,
+        this.handle, fullId, span.start, span.length, runText,
       ),
     );
     if (!res.success) return false;
     const fresh = this.swapBlock(block, unid, res.modified?.[0]);
-    if (fresh && options.focus !== false) selectRange(fresh, span.start, replacement.length);
+    if (fresh && options.focus !== false) selectRange(fresh, span.start, runText.length);
     return true;
   }
 
-  /** Replace every occurrence; returns how many were replaced. */
+  /** Replace every hit of `query` (read with `options`, as `find` reads it); returns how many
+   *  were replaced. One undo step. */
   replaceAll(
     query: string,
     replacement: string,
-    options: { matchCase?: boolean; focus?: boolean } = {},
+    options: FindOptions & { focus?: boolean } = {},
   ): number {
     if (this.closed || !query) return 0;
     const matches = this.find(query, options);
-    let count = 0;
-    // Group by block and replace from the END so earlier offsets stay valid.
-    const byBlock = new Map<HTMLElement, EditorMatch[]>();
-    for (const m of matches) {
-      const list = byBlock.get(m.block) ?? [];
-      list.push(m);
-      byBlock.set(m.block, list);
-    }
-    for (const [block, list] of byBlock) {
-      let current: HTMLElement = block;
-      for (const m of list.slice().sort((a, b) => b.start - a.start)) {
-        if (!current.isConnected) break;
-        const before = current;
-        if (this.replaceMatch(
-          { block: current, start: m.start, length: m.length }, replacement, { focus: options.focus },
-        )) {
-          count++;
-          // swapBlock replaced the node; keep following it.
-          current = this.activeBlock && this.activeBlock !== before ? this.activeBlock : current;
+    if (matches.length === 0) return 0;
+    return this.replaceMatches(matches.map((match) => ({
+      match, text: match.expand ? match.expand(replacement) : replacement,
+    })));
+  }
+
+  /**
+   * Make `items` (hits in document order, each with its text in stream characters) in the session
+   * as ONE transaction — one undo step — working from the last to the first so the offsets of the
+   * earlier ones stay true; then show the result: the blocks swapped in place when every hit stayed
+   * in its paragraph, else the document again. Returns how many were made (0 when the engine
+   * refused one: then none is).
+   */
+  private replaceMatches(items: Array<{ match: EditorMatch; text: string }>): number {
+    const bridge = this.exports.DocxSessionBridge;
+    this.commitTyping();
+    const live = items.filter((it) => it.match.block.isConnected && (!it.match.endBlock || it.match.endBlock.isConnected));
+    if (live.length === 0) return 0;
+    if (live.some((it) => it.match.endBlock && [it.match.block, it.match.endBlock].some((b) => b.closest("table"))
+      && it.match.block.closest("td, th") !== it.match.endBlock!.closest("td, th"))) return 0;
+    const structural = live.some((it) => it.match.endBlock || it.text.includes("\r"));
+    const ids = new Map<HTMLElement, string>();
+    const results = new Map<HTMLElement, EditResultLite>();
+    const tracked = this.options.trackedChanges === TrackedChangeMode.RenderInline;
+    const firstIndex = this.editableList().indexOf(live[0].match.block);
+    const tx = typeof bridge.BeginTransaction === "function" ? bridge.BeginTransaction(this.handle) : 0;
+    let ok = true;
+    let made = 0;
+    try {
+      const step = (json: string) => {
+        const res = this.parseEdit(json);
+        if (!res.success) throw new Error("the engine refused the edit");
+        return res;
+      };
+      // Typing not yet committed goes in first, so the offsets match the session.
+      const idOf = (block: HTMLElement): string => {
+        const known = ids.get(block);
+        if (known) return known;
+        const fullId = this.anchorIdOf(block);
+        const synced = fullId ? this.syncBlock(block, fullId) : undefined;
+        if (!synced) throw new Error("a block could not be committed");
+        ids.set(block, synced);
+        return synced;
+      };
+      for (const it of live.slice().reverse()) {
+        const m = it.match;
+        const lines = it.text.split("\r").map(streamToRunText);
+        const firstSpan = trimmedSpan(m.block, { start: m.start, length: m.length });
+        let current = idOf(m.block);
+        if (!m.endBlock) {
+          if (firstSpan.length === 0 && m.length > 0) continue;
+          if (firstSpan.length === 0 && !lines[0] && lines.length === 1) continue;
+          const res = step(bridge.ReplaceTextAtSpan(this.handle, current, firstSpan.start, firstSpan.length, lines[0], ""));
+          current = res.modified?.[0]?.id ?? current;
+          results.set(m.block, res);
+        } else {
+          const last = m.endBlock;
+          let lastId = idOf(last);
+          const between = (m.between ?? []).map(idOf);
+          if (firstSpan.length > 0 || lines[0]) {
+            current = step(bridge.ReplaceTextAtSpan(this.handle, current, firstSpan.start, firstSpan.length, lines[0], ""))
+              .modified?.[0]?.id ?? current;
+          }
+          const lastSpan = trimmedSpan(last, { start: 0, length: m.endOffset ?? 0 });
+          if (lastSpan.length > 0) {
+            lastId = step(bridge.ReplaceTextAtSpan(this.handle, lastId, 0, lastSpan.length, "", "")).modified?.[0]?.id ?? lastId;
+          }
+          if (between.length > 0) {
+            if (typeof bridge.DeleteRange === "function") step(bridge.DeleteRange(this.handle, between[0], lastId));
+            else for (const id of between) step(bridge.DeleteBlock(this.handle, id));
+          }
+          current = step(bridge.MergeParagraphs(this.handle, current, lastId)).modified?.[0]?.id ?? current;
+          // MergeParagraphs puts a space between the two when neither side has one; a replaced
+          // paragraph mark joins the two sides as they are (Word's ^p -> nothing).
+          const kept = blockContentText(m.block).slice(0, firstSpan.start) + lines[0];
+          const rest = blockContentText(last).slice(lastSpan.start + lastSpan.length);
+          if (!tracked && kept && rest && !/\s$/.test(kept) && !/^\s/.test(rest)) {
+            current = step(bridge.ReplaceTextAtSpan(this.handle, current, kept.length, 1, "", "")).modified?.[0]?.id ?? current;
+          }
+          ids.delete(last);
         }
+        // Lines after the first become paragraphs of their own.
+        let head = current;
+        let offset = firstSpan.start + lines[0].length;
+        for (const line of lines.slice(1)) {
+          const split = step(bridge.SplitParagraph(this.handle, current, offset));
+          if (current === head) head = split.modified?.[0]?.id ?? head;
+          const second = split.created?.[0]?.id;
+          if (!second) throw new Error("the engine made no new paragraph");
+          current = line ? step(bridge.ReplaceTextAtSpan(this.handle, second, 0, 0, line, "")).modified?.[0]?.id ?? second : second;
+          offset = line.length;
+        }
+        // The hits before this one in the same paragraph go on in its head.
+        ids.set(m.block, head);
+        made++;
+      }
+    } catch {
+      ok = false;
+      made = 0;
+    } finally {
+      if (tx) {
+        if (ok) bridge.CommitTransaction!(tx);
+        else bridge.RollbackTransaction?.(tx);
       }
     }
-    return count;
+    if (!ok) {
+      // Without a transaction, part of the work may be in the session: show what it holds.
+      if (!tx) this.remount(firstIndex);
+      return 0;
+    }
+    if (structural) {
+      this.remount(firstIndex);
+    } else {
+      const targets = Array.from(results, ([block, res]) => ({
+        block, unid: block.getAttribute("data-anchor"), span: null, res,
+      }));
+      this.finishMultiBlockOp(targets, false);
+    }
+    const target = this.editableList()[firstIndex];
+    if (target) this.options.onEdit?.({ anchorId: this.anchorIdOf(target) ?? "", unid: target.getAttribute("data-anchor") ?? "" });
+    return made;
   }
 
   // ─── View ────────────────────────────────────────────────────────────

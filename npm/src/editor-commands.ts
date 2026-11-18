@@ -14,6 +14,19 @@
 import type { DocxEditor, EditorAlignment, EditorPageSetup, EditorParagraphFormat, FormatKey, PasteFormatting } from "./editor.js";
 import type { ListFormat, ListLevelSpec, NumberFormat, TableBorderSpec, TableOfContentsOptions } from "./types.js";
 import { TrackedChangeMode } from "./types.js";
+import { FIND_OPTION_KEYS, type FindOptions } from "./find-query.js";
+
+/** The find options as command arguments (all optional booleans). */
+const FIND_OPTION_ARGS = Object.fromEntries(FIND_OPTION_KEYS.map((k) => [`${k}?`, "boolean"])) as Record<string, string>;
+
+/** The find options a command was given; an invalid pattern is a bad argument. */
+function findOptionsOf(a: Args, command: string, e: DocxEditor, text: string): FindOptions {
+  const options: FindOptions = {};
+  for (const key of FIND_OPTION_KEYS) if (a.optBool(key)) options[key] = true;
+  const error = e.findError(text, options);
+  if (error) throw new EditorCommandError("bad_arguments", command, `${command}: ${error}`);
+  return options;
+}
 
 /** Why `exec` failed: no such command, an argument missing or of the wrong kind, no document
  *  open, or the command could not act (the engine refused, or there is nothing to act on). */
@@ -475,19 +488,25 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     run: (e, a) => e.pasteText(a.string("text")),
   },
   find: {
-    group: "edit", description: "Find text and select one match (the first, or the one at \"index\").",
-    args: { text: "string", "matchCase?": "boolean", "index?": "number" }, returns: "how many matches there are",
+    group: "edit", description: "Find text and select one match (the first, or the one at \"index\"). The options are Word's (see find-query.ts); an invalid pattern is an error.",
+    args: { text: "string", ...FIND_OPTION_ARGS, "index?": "number" }, returns: "how many matches there are",
     run: (e, a) => {
-      const matches = e.find(a.string("text"), { matchCase: a.optBool("matchCase") });
+      const text = a.string("text");
+      const options = findOptionsOf(a, "find", e, text);
+      const matches = e.find(text, options);
       const index = a.optNumber("index") ?? 0;
       if (matches.length > 0) e.selectMatch(matches[Math.max(0, Math.min(matches.length - 1, Math.trunc(index)))]);
       return matches.length;
     },
   },
   replaceAll: {
-    group: "edit", description: "Replace every match of the text.", args: { text: "string", with: "string", "matchCase?": "boolean" },
+    group: "edit", description: "Replace every match of the text (one undo step). The replacement reads ^p, ^&, \\1 or $1 as the options say.",
+    args: { text: "string", with: "string", ...FIND_OPTION_ARGS },
     returns: "how many were replaced",
-    run: (e, a) => e.replaceAll(a.string("text"), a.string("with"), { matchCase: a.optBool("matchCase") }),
+    run: (e, a) => {
+      const text = a.string("text");
+      return e.replaceAll(text, a.string("with"), findOptionsOf(a, "replaceAll", e, text));
+    },
   },
   moveCaret: {
     group: "edit", description: "Put the caret at the start or end of the document or of the paragraph.",

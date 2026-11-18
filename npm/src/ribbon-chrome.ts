@@ -409,6 +409,13 @@ export const RIBBON_CSS = `
 .dxr-findbar [data-dxr="replacegroup"] { display: inline-flex; align-items: center; gap: 6px; }
 .dxr-findbar input[type="search"], .dxr-findbar input[type="text"] { width: 180px; }
 .dxr-findbar .dxr-findcount { min-width: 5ch; color: var(--dxr-muted); font-family: var(--dxr-mono); font-size: 11.5px; }
+.dxr-findbar input[aria-invalid="true"] { border-color: var(--dxr-danger, #c42b1c); }
+.dxr-findbar [data-dxr="findoptions"][data-active]::before { content: "\\2022 "; color: var(--dxr-accent); }
+.dxr-findoptmenu { min-width: 250px; }
+.dxr-findoptmenu label { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 7px; font-size: 13px; cursor: pointer; }
+.dxr-findoptmenu label:hover { background: var(--dxr-chrome-sunk); }
+.dxr-findoptmenu label[data-disabled] { color: var(--dxr-muted); cursor: default; }
+.dxr-findspecialmenu { max-height: 60vh; overflow-y: auto; }
 
 /* ── Status bar (carries the anchor rail) ─────────────────────────────────────
    The addressing spine made permanent chrome. Every block in this editor is
@@ -1467,7 +1474,8 @@ export const RIBBON_HTML = `
     <button type="button" class="dxr-icon" data-dxr="findprev" title="Previous match (Shift+Enter)">&#9650;</button>
     <button type="button" class="dxr-icon" data-dxr="findnext" title="Next match (Enter)">&#9660;</button>
     <span class="dxr-findcount" data-dxr="findcount"></span>
-    <label class="dxr-toggle"><input data-dxr="findcase" type="checkbox" /> Match case</label>
+    <button type="button" data-dxr="findoptions" aria-haspopup="menu" aria-expanded="false" title="Match case, whole words, wildcards, regular expressions">Options &#9662;</button>
+    <button type="button" data-dxr="findspecial" aria-haspopup="menu" aria-expanded="false" title="Insert a special character (paragraph mark, tab, any digit...)">Special &#9662;</button>
     <span data-dxr="replacegroup">
       <input data-dxr="replacetext" type="text" placeholder="Replace with" aria-label="Replace with" />
       <button type="button" data-dxr="replaceone" title="Replace this match">Replace</button>
@@ -1538,6 +1546,20 @@ export const RIBBON_HTML = `
   <button type="button" role="menuitem" data-case="toggle"><span>tOGGLE cASE</span><kbd aria-hidden="true"></kbd></button>
   <button type="button" role="menuitem" data-case="headline" title="Small words in lower case, abbreviations as written"><span>Headline Case</span><kbd aria-hidden="true"></kbd></button>
 </div>
+
+<!-- Find options and the Special codes, anchored to the find bar's Options and Special buttons. -->
+<div class="dxr-pop dxr-filemenu dxr-findoptmenu" data-dxr="findoptmenu" role="menu" aria-label="Find options">
+  <label role="menuitemcheckbox"><input type="checkbox" data-dxr="findcase" data-findopt="matchCase" /> <span>Match case</span></label>
+  <label role="menuitemcheckbox"><input type="checkbox" data-findopt="wholeWord" /> <span>Find whole words only</span></label>
+  <label role="menuitemcheckbox"><input type="checkbox" data-findopt="matchPrefix" /> <span>Match prefix</span></label>
+  <label role="menuitemcheckbox"><input type="checkbox" data-findopt="matchSuffix" /> <span>Match suffix</span></label>
+  <label role="menuitemcheckbox" title="e-mail finds email and e.mail"><input type="checkbox" data-findopt="ignorePunctuation" /> <span>Ignore punctuation characters</span></label>
+  <label role="menuitemcheckbox" title="ice cream finds icecream and ice  cream"><input type="checkbox" data-findopt="ignoreSpace" /> <span>Ignore white-space characters</span></label>
+  <div class="dxr-filesep"></div>
+  <label role="menuitemcheckbox" title="Word's wildcards: ? * @ &lt; &gt; [ ] [! ] {n,m} ( ) and \\1 in Replace; always matches case"><input type="checkbox" data-findopt="wildcards" /> <span>Use wildcards</span></label>
+  <label role="menuitemcheckbox" title="Regular expressions as in AutoHotkey: \\d+, (a|b), ^ and $ at paragraph ends; $1 in Replace"><input type="checkbox" data-findopt="regex" /> <span>Use regular expressions</span></label>
+</div>
+<div class="dxr-pop dxr-filemenu dxr-findspecialmenu" data-dxr="findspecialmenu" role="menu" aria-label="Special"></div>
 
 <!-- Table size picker, anchored to the Insert tab's Table button. -->
 <div class="dxr-pop" data-dxr="gridpicker">
