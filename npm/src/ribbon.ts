@@ -56,6 +56,7 @@ import {
 import { PARAGRAPH_DIALOG_CSS, PARAGRAPH_DIALOG_HTML, ParagraphDialog } from "./ribbon-paragraph-dialog.js";
 import type { MeasurementUnit } from "./ribbon-paragraph-dialog.js";
 import type { CaseMode, HeadlineCaseLists } from "./change-case.js";
+import { FIND_OPTION_KEYS, findOptionApplies, normalizeFindOptions, specialFindCodes, specialReplaceCodes, type FindOptions } from "./find-query.js";
 import { LIST_DIALOG_CSS, LIST_DIALOG_HTML, ListDialog } from "./ribbon-list-dialog.js";
 export type { MeasurementUnit } from "./ribbon-paragraph-dialog.js";
 
@@ -65,6 +66,8 @@ export { DocxEditor } from "./editor.js";
 export type { DocxEditorExports, DocxEditorOptions, FormatPainterState, PasteContent, PasteFormatting } from "./editor.js";
 export { DEFAULT_HEADLINE_CASE_TEXT, parseHeadlineCaseLists } from "./change-case.js";
 export type { CaseMode, HeadlineCaseLists } from "./change-case.js";
+export { compileFind, expandReplacement, specialFindCodes, specialReplaceCodes } from "./find-query.js";
+export type { FindOptions } from "./find-query.js";
 
 /** Which layout the chrome uses. "auto" measures the root and switches at `compactBreakpoint`. */
 export type RibbonChromeMode = "full" | "compact" | "auto";
@@ -206,6 +209,12 @@ export interface RibbonOptions extends DocxEditorOptions {
   showFormattingMarks?: boolean;
   /** Show/Hide ¶ was switched (the button, Ctrl+Shift+8 or the command), for a host to keep. */
   onFormattingMarksChange?: (on: boolean) => void;
+  /** Find's options at the start (Match case, whole words, wildcards...: see find-query.ts);
+   *  `setFindOptions` changes them later. */
+  findOptions?: FindOptions;
+  /** Find's options were changed in the find bar's Options menu, for a host to keep (only the
+   *  options that are on). */
+  onFindOptionsChange?: (options: FindOptions) => void;
   /** Called after any document opens, with the live editor. */
   onOpen?: (editor: DocxEditor) => void;
   /** Called whenever the status line changes. */
@@ -327,6 +336,10 @@ export interface RibbonEditor {
   setHeadlineCaseLists(lists: HeadlineCaseLists | null): void;
   /** Show/Hide ¶ (see the `showFormattingMarks` option). */
   setShowFormattingMarks(on: boolean): void;
+  /** Find's options (see the `findOptions` option). */
+  setFindOptions(options: FindOptions): void;
+  /** Find's options as they are now. */
+  getFindOptions(): FindOptions;
   /** Set the status line. */
   setStatus(text: string): void;
   /** Activate a ribbon tab by name ("home" | "insert" | "layout" | "references" | "review" | "view" | "table" | "headerfooter"). */
@@ -398,7 +411,8 @@ const CONTROL_NAMES = [
   "viewpage", "viewweb", "zoom", "zoomfit", "zoomonepage", "showrail", "showhint",
   "shadebtn", "shadebar", "shade", "repeatheader",
   "hfFirst", "hfEven", "hfstory",
-  "findbar", "findtext", "findprev", "findnext", "findcount", "findcase", "replacegroup",
+  "findbar", "findtext", "findprev", "findnext", "findcount", "findcase", "findoptions", "findspecial",
+  "findoptmenu", "findspecialmenu", "replacegroup",
   "replacetext", "replaceone", "replaceall", "findclose",
   "railAnchor", "railBlocks", "railSession", "railOp", "pageinfo", "wordcount",
   "zoomout", "zoomlevel", "zoomin",
@@ -507,6 +521,9 @@ class RibbonSurface implements RibbonEditor {
   private statsTimer: ReturnType<typeof setTimeout> | null = null;
   private findMatches: EditorMatch[] = [];
   private findIndex = -1;
+  private findOptions: FindOptions = {};
+  private findSpecialTarget: "find" | "replace" = "find";
+  private findErrorText: string | null = null;
   // Changed state (isDirty): the session version and the count of typing events at the last
   // open or markSaved. Typing counts before the editor commits it (on a pause, a word or blur),
   // so the document reads as changed from the first key.
@@ -2125,12 +2142,14 @@ class RibbonSurface implements RibbonEditor {
     const bar = this.require("findbar");
     const text = this.require<HTMLInputElement>("findtext");
     const replace = this.require<HTMLInputElement>("replacetext");
-    const matchCase = this.require<HTMLInputElement>("findcase");
     this.control("findtoggle")?.addEventListener("click", () => this.openFindBar(false));
     this.control("replacetoggle")?.addEventListener("click", () => this.openFindBar(true));
     this.control("findclose")?.addEventListener("click", () => this.closeFindBar());
     text.addEventListener("input", () => this.refreshFind(true));
-    matchCase.addEventListener("change", () => this.refreshFind(true));
+    // Special inserts its code into the field last typed in.
+    text.addEventListener("focus", () => { this.findSpecialTarget = "find"; });
+    replace.addEventListener("focus", () => { this.findSpecialTarget = "replace"; });
+    this.wireFindOptions();
     text.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
@@ -2153,14 +2172,12 @@ class RibbonSurface implements RibbonEditor {
     this.control("findnext")?.addEventListener("click", () => this.stepFind(1));
     this.control("replaceone")?.addEventListener("click", () => this.replaceCurrent());
     this.control("replaceall")?.addEventListener("click", () => {
-      if (!this.live || !text.value) return;
+      if (!this.live || !text.value || this.live.findError(text.value, this.findOptions)) return;
       let count = 0;
+      const options = normalizeFindOptions(this.findOptions);
       this.run("replace all", () => {
-        count = this.live!.replaceAll(text.value, replace.value, {
-          matchCase: matchCase.checked,
-          focus: false,
-        });
-      }, cmd("replaceAll", { text: text.value, with: replace.value, matchCase: matchCase.checked }));
+        count = this.live!.replaceAll(text.value, replace.value, { ...options, focus: false });
+      }, cmd("replaceAll", { text: text.value, with: replace.value, ...options }));
       this.setStatus(`Replaced ${count} occurrence${count === 1 ? "" : "s"}`);
       this.refreshFind(true);
     });
@@ -2208,9 +2225,10 @@ class RibbonSurface implements RibbonEditor {
    */
   private refreshFind(show: boolean): void {
     const text = this.require<HTMLInputElement>("findtext");
-    const matchCase = this.require<HTMLInputElement>("findcase").checked;
-    this.findMatches = this.live && text.value ? this.live.find(text.value, { matchCase }) : [];
+    const error = this.live && text.value ? this.live.findError(text.value, this.findOptions) : null;
+    this.findMatches = this.live && text.value && !error ? this.live.find(text.value, this.findOptions) : [];
     this.findIndex = this.findMatches.length > 0 ? 0 : -1;
+    this.findErrorText = error;
     this.updateFindCount();
     if (!show) return;
     if (this.findIndex >= 0) this.live?.showFindMatches(this.findMatches, this.findIndex);
@@ -2246,9 +2264,147 @@ class RibbonSurface implements RibbonEditor {
   private updateFindCount(): void {
     const el = this.control("findcount");
     if (!el) return;
-    el.textContent = this.findMatches.length === 0
-      ? (this.require<HTMLInputElement>("findtext").value ? "0 of 0" : "")
-      : `${this.findIndex + 1} of ${this.findMatches.length}`;
+    const field = this.require<HTMLInputElement>("findtext");
+    const error = this.findErrorText;
+    el.textContent = error
+      ? this.translateText("Invalid")
+      : this.findMatches.length === 0
+        ? (field.value ? "0 of 0" : "")
+        : `${this.findIndex + 1} of ${this.findMatches.length}`;
+    el.title = error ?? "";
+    if (error) field.setAttribute("aria-invalid", "true");
+    else field.removeAttribute("aria-invalid");
+    field.title = error ?? "";
+  }
+
+  /** A text in the ribbon's language (see `setLabels`), for text the ribbon writes later. */
+  private translateText(text: string): string {
+    return this.labels[text] ?? text;
+  }
+
+  /** The find bar's Options ▾ (Word's More >> checkboxes) and Special ▾ menus. */
+  private wireFindOptions(): void {
+    this.findOptions = normalizeFindOptions(this.options.findOptions);
+    const button = this.control("findoptions"), menu = this.control("findoptmenu");
+    const special = this.control("findspecial"), specialMenu = this.control("findspecialmenu");
+    if (button && menu) {
+      this.keepSelection(button);
+      button.addEventListener("click", () => {
+        if (menu.hasAttribute("data-open")) { this.closePopovers(); return; }
+        this.closePopovers();
+        menu.setAttribute("data-open", "");
+        button.setAttribute("aria-expanded", "true");
+        this.positionPopover(menu, button);
+      });
+      menu.addEventListener("change", (event) => {
+        const box = (event.target as HTMLElement).closest<HTMLInputElement>("input[data-findopt]");
+        if (!box) return;
+        const key = box.dataset.findopt as keyof FindOptions;
+        const next: FindOptions = { ...this.findOptions, [key]: box.checked };
+        // Wildcards and regular expressions are two readings of the query: one at a time.
+        if (box.checked && key === "wildcards") next.regex = false;
+        if (box.checked && key === "regex") next.wildcards = false;
+        this.applyFindOptions(next, true);
+        this.require<HTMLInputElement>(this.findSpecialTarget === "replace" ? "replacetext" : "findtext").focus();
+      });
+      menu.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") { event.preventDefault(); this.closePopovers(); button.focus(); }
+      });
+    }
+    if (special && specialMenu) {
+      this.keepSelection(special);
+      special.addEventListener("click", () => {
+        if (specialMenu.hasAttribute("data-open")) { this.closePopovers(); return; }
+        this.closePopovers();
+        this.renderSpecialMenu(specialMenu);
+        specialMenu.setAttribute("data-open", "");
+        special.setAttribute("aria-expanded", "true");
+        this.positionPopover(specialMenu, special);
+      });
+      specialMenu.addEventListener("mousedown", (event) => event.preventDefault());
+      specialMenu.addEventListener("click", (event) => {
+        const chosen = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-code]");
+        if (!chosen) return;
+        this.closePopovers();
+        this.insertFindCode(chosen.dataset.code ?? "");
+      });
+      specialMenu.addEventListener("keydown", (event) => {
+        const items = Array.from(specialMenu.querySelectorAll<HTMLButtonElement>("button"));
+        const at = items.indexOf(event.target as HTMLButtonElement);
+        let next = -1;
+        if (event.key === "ArrowDown") next = (at + 1) % items.length;
+        else if (event.key === "ArrowUp") next = (at - 1 + items.length) % items.length;
+        else if (event.key === "Escape") { event.preventDefault(); this.closePopovers(); special.focus(); return; }
+        if (next >= 0) { event.preventDefault(); items[next].focus(); }
+      });
+    }
+    this.syncFindOptionControls();
+  }
+
+  /** The codes Special offers for the field it will insert into, in the current mode. */
+  private renderSpecialMenu(menu: HTMLElement): void {
+    const codes = this.findSpecialTarget === "replace"
+      ? specialReplaceCodes(this.findOptions)
+      : specialFindCodes(this.findOptions);
+    const doc = menu.ownerDocument;
+    menu.replaceChildren(...codes.map((c) => {
+      const item = doc.createElement("button");
+      item.type = "button";
+      item.setAttribute("role", "menuitem");
+      item.dataset.code = c.code;
+      const label = doc.createElement("span");
+      label.textContent = this.translateText(c.label);
+      const code = doc.createElement("kbd");
+      code.textContent = c.code;
+      item.append(label, code);
+      return item;
+    }));
+  }
+
+  /** Put a Special code into the field at its caret (replacing what is selected there). */
+  private insertFindCode(code: string): void {
+    const field = this.require<HTMLInputElement>(this.findSpecialTarget === "replace" ? "replacetext" : "findtext");
+    const start = field.selectionStart ?? field.value.length;
+    const end = field.selectionEnd ?? start;
+    field.focus();
+    field.setRangeText(code, start, end, "end");
+    // A group's "( )" leaves the caret between the brackets.
+    if (code === "( )") field.setSelectionRange(start + 1, start + 2);
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
+  private applyFindOptions(options: FindOptions, report: boolean): void {
+    const next = normalizeFindOptions(options);
+    const changed = JSON.stringify(next) !== JSON.stringify(this.findOptions);
+    this.findOptions = next;
+    this.syncFindOptionControls();
+    if (changed && report) this.options.onFindOptionsChange?.({ ...next });
+    if (changed && !this.require("findbar").hidden) this.refreshFind(true);
+  }
+
+  /** The checkboxes show the options; those the mode leaves out are greyed, as in Word. */
+  private syncFindOptionControls(): void {
+    const menu = this.control("findoptmenu");
+    if (!menu) return;
+    for (const box of Array.from(menu.querySelectorAll<HTMLInputElement>("input[data-findopt]"))) {
+      const key = box.dataset.findopt as keyof FindOptions;
+      const applies = findOptionApplies(key, this.findOptions);
+      box.checked = !!this.findOptions[key] || (key === "matchCase" && !!this.findOptions.wildcards);
+      box.disabled = !applies;
+      box.closest("label")?.toggleAttribute("data-disabled", !applies);
+    }
+    const active = FIND_OPTION_KEYS.some((k) => this.findOptions[k] && findOptionApplies(k, this.findOptions));
+    this.control("findoptions")?.toggleAttribute("data-active", active);
+  }
+
+  /** Find's options (see the `findOptions` option). */
+  setFindOptions(options: FindOptions): void {
+    this.applyFindOptions(options, false);
+  }
+
+  /** Find's options as they are now. */
+  getFindOptions(): FindOptions {
+    return { ...this.findOptions };
   }
 
   // ── keyboard shortcuts the engine does not own ──────────────────────────────
@@ -2437,6 +2593,10 @@ class RibbonSurface implements RibbonEditor {
     this.control("pastemore")?.setAttribute("aria-expanded", "false");
     this.control("casemenu")?.removeAttribute("data-open");
     this.control("changecase")?.setAttribute("aria-expanded", "false");
+    this.control("findoptmenu")?.removeAttribute("data-open");
+    this.control("findoptions")?.setAttribute("aria-expanded", "false");
+    this.control("findspecialmenu")?.removeAttribute("data-open");
+    this.control("findspecial")?.setAttribute("aria-expanded", "false");
     this.control("gridpicker")?.removeAttribute("data-open");
     this.control("linkpop")?.removeAttribute("data-open");
     this.control("filemenu")?.removeAttribute("data-open");
@@ -2445,7 +2605,7 @@ class RibbonSurface implements RibbonEditor {
 
   private maybeClosePopovers(event: MouseEvent): void {
     const target = event.target as Node;
-    for (const [popName, buttonName] of [["gridpicker", "table"], ["linkpop", "link"], ["filemenu", "filebutton"], ["pastemenu", "pastemore"], ["casemenu", "changecase"]] as const) {
+    for (const [popName, buttonName] of [["gridpicker", "table"], ["linkpop", "link"], ["filemenu", "filebutton"], ["pastemenu", "pastemore"], ["casemenu", "changecase"], ["findoptmenu", "findoptions"], ["findspecialmenu", "findspecial"]] as const) {
       const pop = this.control(popName);
       if (!pop?.hasAttribute("data-open")) continue;
       if (pop.contains(target) || this.control(buttonName)?.contains(target)) continue;
@@ -2453,6 +2613,8 @@ class RibbonSurface implements RibbonEditor {
       if (popName === "filemenu") this.control("filebutton")?.setAttribute("aria-expanded", "false");
       if (popName === "pastemenu") this.control("pastemore")?.setAttribute("aria-expanded", "false");
       if (popName === "casemenu") this.control("changecase")?.setAttribute("aria-expanded", "false");
+      if (popName === "findoptmenu") this.control("findoptions")?.setAttribute("aria-expanded", "false");
+      if (popName === "findspecialmenu") this.control("findspecial")?.setAttribute("aria-expanded", "false");
     }
   }
 
