@@ -5603,43 +5603,90 @@ export class DocxEditor {
     const index = this.blockIndex(first);
     const tx = this.beginListTransaction();
     let edited: { anchorId: string; unid: string } | null = null;
+    // Like every other format command, a paint repaints only the blocks it changed (a swap
+    // each); the whole document renders again only when the paint changed what a swap cannot
+    // show: list numbering, a border wrapper, or — in page view — where pages break.
+    let wholeFlow = false;
+    const done: Array<{ block: HTMLElement; unid: string | null; span: { start: number; length: number } | null; res: EditResultLite | null }> = [];
     try {
       for (const t of targets) {
         if (!t.fullId) continue;
         let id = this.syncBlock(t.block, t.fullId);
         if (!id) continue;
+        const unid = t.block.getAttribute("data-anchor");
+        let last: EditResultLite | null = null;
         const step = (json: string): void => {
           const res = this.parseEdit(json);
           if (!res.success) return;
           id = res.modified?.[0]?.id ?? id;
-          edited = { anchorId: id!, unid: t.block.getAttribute("data-anchor") ?? "" };
+          last = res;
+          if (this.affectsList(res)) wholeFlow = true;
+          edited = { anchorId: id!, unid: unid ?? "" };
         };
+        const para = copied.paragraph;
+        if (para) {
+          if (t.block.parentElement?.tagName === "DIV" && inBorderWrapper(t.block)) wholeFlow = true;
+          if (this.options.paginated && this.pageKeepingDiffers(id, para.format)) wholeFlow = true;
+        }
         if (t.chars) {
           step(bridge.ApplyFormat(this.handle, id, t.span ? JSON.stringify(t.span) : "", JSON.stringify(copied.run)));
         }
-        const para = copied.paragraph;
-        if (!para) continue;
-        if (para.styleId) step(bridge.SetParagraphStyle(this.handle, id!, para.styleId));
-        if (para.list && typeof bridge.SetListMembership === "function") {
-          step(bridge.SetListMembership(this.handle, id!, para.list.numId, para.list.level));
-        } else if (!para.list && isListBlock(t.block)) {
-          step(bridge.ApplyListFormat(this.handle, id!, "none"));
+        if (para) {
+          if (para.styleId) step(bridge.SetParagraphStyle(this.handle, id!, para.styleId));
+          if (para.list && typeof bridge.SetListMembership === "function") {
+            step(bridge.SetListMembership(this.handle, id!, para.list.numId, para.list.level));
+            wholeFlow = true;
+          } else if (!para.list && isListBlock(t.block)) {
+            step(bridge.ApplyListFormat(this.handle, id!, "none"));
+            wholeFlow = true;
+          }
+          step(bridge.SetParagraphFormat(this.handle, id!, JSON.stringify(para.format)));
         }
-        step(bridge.SetParagraphFormat(this.handle, id!, JSON.stringify(para.format)));
+        done.push({ block: t.block, unid, span: t.span, res: last });
       }
     } finally {
       this.endListTransaction(tx);
     }
     if (!edited) return false;
-    this.refreshAfter(first, index, false, true);
-    const block = this.editableList()[index];
-    if (block && blocks.length <= 1) {
+    if (blocks.length > 1) {
+      // The multi-block finisher swaps each block and keeps the selection (or renders the flow
+      // again where it must: lists, page view).
+      this.finishMultiBlockOp(done, wholeFlow);
+      this.options.onEdit?.(edited);
+      return true;
+    }
+    const only = done[0];
+    let block: HTMLElement | null | undefined = null;
+    if (!wholeFlow && only?.res && only.unid) {
+      block = this.swapBlock(only.block, only.unid, (only.res as EditResultLite).modified?.[0]);
+    }
+    if (!block) {
+      this.refreshAfter(first, index, false, true);
+      block = this.editableList()[index];
+      this.options.onEdit?.(edited);
+    }
+    if (block) {
       this.activeBlock = block;
+      block.focus();
       if (restore) selectRange(block, restore.start, restore.length);
       else placeCaretAtOffset(block, caret ?? 0);
     }
-    this.options.onEdit?.(edited);
     return true;
+  }
+
+  /** Whether painting `format` on the paragraph `fullId` changes where pages break (Page break
+   *  before, Keep with next, Keep lines together, Widow/Orphan control). */
+  private pageKeepingDiffers(fullId: string, format: EditorParagraphFormat): boolean {
+    let now: ParagraphFormatting | undefined;
+    try {
+      now = (JSON.parse(this.exports.DocxSessionBridge.GetFormatting!(this.handle, fullId)) as FormattingInspection | null)
+        ?.effectiveParagraph;
+    } catch {
+      return true;
+    }
+    if (!now) return true;
+    return !!format.pageBreakBefore !== !!now.pageBreakBefore || !!format.keepNext !== !!now.keepNext
+      || !!format.keepLines !== !!now.keepLines || (format.widowControl ?? true) !== (now.widowControl ?? true);
   }
 
   /**

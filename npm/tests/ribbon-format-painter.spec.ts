@@ -186,6 +186,27 @@ test.describe('Format Painter', () => {
     await expect.poll(() => numbers(page)).toEqual(['1.', '2.', '', '']);
   });
 
+  test('a paint repaints only the painted paragraph, not the whole document', async ({ page }) => {
+    await mount(page, ['Source words', 'Bystander paragraph', 'Target text here']);
+    await select(page, 0, 'Source');
+    await exec(page, 'bold', { on: true });
+    await exec(page, 'align', { alignment: 'center' });
+    // Mark the paragraph the paint does not touch: a full re-render would replace its element.
+    await page.evaluate(() => {
+      (document.querySelectorAll('#fp-host [data-anchor][contenteditable="true"]')[1] as any).__bystander = true;
+    });
+    await select(page, 0, 'Source', 1);
+    await page.keyboard.press('Control+Shift+C');
+    await select(page, 2, 'text', 1);
+    await page.keyboard.press('Control+Shift+V');
+    await expect.poll(() => look(page, 2, 'text')).toMatchObject({ bold: true, align: 'center' });
+    expect(await page.evaluate(() =>
+      (document.querySelectorAll('#fp-host [data-anchor][contenteditable="true"]')[1] as any).__bystander === true)).toBe(true);
+    // Still one undo step.
+    await exec(page, 'undo');
+    await expect.poll(() => look(page, 2, 'text')).toMatchObject({ bold: false });
+  });
+
   test('exec copyFormatting / pasteFormatting / formatPainter', async ({ page }) => {
     await mount(page, ['Alpha beta']);
     await select(page, 0, 'Alpha');
