@@ -201,6 +201,11 @@ export interface RibbonOptions extends DocxEditorOptions {
   /** Headline Case's word lists (the editor's `headlineCaseLists`; a host that keeps them in a
    *  file reads it with `parseHeadlineCaseLists`); `setHeadlineCaseLists` changes them later. */
   headlineCaseLists?: HeadlineCaseLists;
+  /** Show/Hide ¶ at the start (Word's paragraph marks and tabs); `setShowFormattingMarks`
+   *  changes it later. It stays as it is from one document to the next. */
+  showFormattingMarks?: boolean;
+  /** Show/Hide ¶ was switched (the button, Ctrl+Shift+8 or the command), for a host to keep. */
+  onFormattingMarksChange?: (on: boolean) => void;
   /** Called after any document opens, with the live editor. */
   onOpen?: (editor: DocxEditor) => void;
   /** Called whenever the status line changes. */
@@ -317,6 +322,8 @@ export interface RibbonEditor {
   setListDefaults(levels: ListLevelSpec[]): void;
   /** Headline Case's word lists (see the `headlineCaseLists` option); null for the built-in ones. */
   setHeadlineCaseLists(lists: HeadlineCaseLists | null): void;
+  /** Show/Hide ¶ (see the `showFormattingMarks` option). */
+  setShowFormattingMarks(on: boolean): void;
   /** Set the status line. */
   setStatus(text: string): void;
   /** Activate a ribbon tab by name ("home" | "insert" | "layout" | "references" | "review" | "view" | "table" | "headerfooter"). */
@@ -511,6 +518,7 @@ class RibbonSurface implements RibbonEditor {
   private listDialog!: ListDialog;
   private listDefaults: ListLevelSpec[] | undefined;
   private headlineCaseLists: HeadlineCaseLists | undefined;
+  private showMarks = false;
   // The chrome's text in the host's language (setLabels), and the English each text had.
   private labels: Record<string, string> = {};
   private readonly englishText = new WeakMap<Text, { english: string; written: string }>();
@@ -881,6 +889,8 @@ class RibbonSurface implements RibbonEditor {
       typingUndo: this.options.typingUndo,
       listDefaults: this.listDefaults,
       headlineCaseLists: this.headlineCaseLists,
+      showFormattingMarks: this.showMarks,
+      onFormattingMarksChange: (on) => this.marksChanged(on),
       commentInitials: this.initials,
     });
     this.live?.close();
@@ -1118,6 +1128,31 @@ class RibbonSurface implements RibbonEditor {
     });
   }
 
+  /** Show/Hide ¶ (see the `showFormattingMarks` option). */
+  setShowFormattingMarks(on: boolean): void {
+    if (this.live) this.live.setShowFormattingMarks(on);
+    else this.marksChanged(on);
+  }
+
+  /** The editor turned Show/Hide ¶ on or off: the button shows it, the next document keeps it. */
+  private marksChanged(on: boolean): void {
+    if (this.showMarks === on) return;
+    this.showMarks = on;
+    this.control("showmarks")?.setAttribute("aria-pressed", String(on));
+    this.options.onFormattingMarksChange?.(on);
+  }
+
+  /** Home > Paragraph > ¶. */
+  private wireShowMarks(): void {
+    const button = this.control("showmarks");
+    if (!button) return;
+    this.keepSelection(button);
+    button.addEventListener("click", () => {
+      const on = !this.showMarks;
+      this.run("show marks", () => this.setShowFormattingMarks(on), cmd("showMarks", { on }));
+    });
+  }
+
   /** Home > Font > Change Case (Aa▾): Word's menu, and Headline Case. */
   private wireChangeCase(): void {
     const button = this.control("changecase"), menu = this.control("casemenu");
@@ -1326,6 +1361,8 @@ class RibbonSurface implements RibbonEditor {
   private wireListDialog(): void {
     this.listDefaults = this.options.listDefaults?.map((l) => ({ ...l }));
     this.headlineCaseLists = this.options.headlineCaseLists;
+    this.showMarks = !!this.options.showFormattingMarks;
+    this.control("showmarks")?.setAttribute("aria-pressed", String(this.showMarks));
     this.listDialog = new ListDialog(this.require<HTMLDialogElement>("listdialog"), {
       read: () => this.live?.listLevels() ?? null,
       defaults: () => this.listDefaults ?? null,
@@ -1630,6 +1667,7 @@ class RibbonSurface implements RibbonEditor {
     this.wirePaste();
     this.wireFormatPainter();
     this.wireChangeCase();
+    this.wireShowMarks();
     this.wireLinkPopover();
     this.wireFindBar();
     this.wireHeaderFooterTab();
@@ -2190,6 +2228,14 @@ class RibbonSurface implements RibbonEditor {
     if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && (event.key ?? "").toLowerCase() === "f") {
       event.preventDefault();
       this.openFileMenu();
+      return;
+    }
+    // Ctrl+Shift+8 (Ctrl+*): Word's Show/Hide ¶, wherever the focus is.
+    if ((event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey && event.code === "Digit8") {
+      event.preventDefault();
+      const on = !this.showMarks;
+      this.setShowFormattingMarks(on);
+      this.options.onCommand?.("show marks", 0, cmd("showMarks", { on }));
       return;
     }
     // Shift+F3: the editor has cycled the case (Word's Change Case cycle).

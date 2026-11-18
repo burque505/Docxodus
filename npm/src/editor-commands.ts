@@ -227,6 +227,15 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   },
 
   // ── paragraph ──
+  showMarks: {
+    group: "paragraph", description: "Show/Hide ¶: show paragraph marks and tabs (on), hide them (off), or switch (no argument), as Word's Ctrl+Shift+8.",
+    args: { "on?": "boolean" }, returns: "boolean",
+    run: (e, a) => { const on = a.optBool("on") ?? !e.showFormattingMarks; e.setShowFormattingMarks(on); return on; },
+  },
+  joinParagraphs: {
+    group: "paragraph", description: "Join the paragraphs the selection touches into one, keeping the last paragraph mark (mends text copied from a PDF: a space where two lines meet, none after a hyphen). One undo step.",
+    args: {}, returns: "boolean", run: (e) => e.joinParagraphs(),
+  },
   align: {
     group: "paragraph", description: "Align the paragraph.", args: { alignment: ALIGNMENTS.join("|") },
     run: (e, a) => e.setAlignment(a.oneOf("alignment", ALIGNMENTS)),

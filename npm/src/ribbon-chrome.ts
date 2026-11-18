@@ -1085,6 +1085,8 @@ export const RIBBON_HTML = `
           <button type="button" class="dxr-icon" data-align="justify" title="Justify (Ctrl+J)">${ICON_ALIGN(
             '<rect x="0" y="0" width="15" height="1.6"/><rect x="0" y="3.8" width="15" height="1.6"/><rect x="0" y="7.6" width="15" height="1.6"/><rect x="0" y="11.4" width="15" height="1.6"/>',
           )}</button>
+          <button type="button" class="dxr-icon" data-dxr="showmarks" aria-pressed="false"
+                  title="Show/Hide ¶: paragraph marks and tabs (Ctrl+Shift+8)">&#182;</button>
           <select data-dxr="linespacing" title="Line spacing">
             <option value="">&#8597; Spacing&#8230;</option>
             <option value="1">1.0</option>

@@ -364,6 +364,11 @@ export interface DocxEditorOptions {
    */
   headlineCaseLists?: HeadlineCaseLists;
   /**
+   * Word's Show/Hide ¶: a ¶ at the end of every paragraph and an arrow in every tab, drawn over
+   * the text (nothing moves, and nothing is saved). `setShowFormattingMarks` changes it later.
+   */
+  showFormattingMarks?: boolean;
+  /**
    * Initials stamped on `commentAuthor`'s comments and replies (`w:initials`, shown in Word's
    * balloons). Defaults to the first letter of each word of the author's name, as Word makes them.
    */
@@ -385,6 +390,8 @@ export interface DocxEditorOptions {
   pasteFormatting?: PasteFormatting;
   /** Called when Format Painter turns on (`"once"`, `"sticky"`) or off, so a button can show it. */
   onFormatPainterChange?: (state: FormatPainterState) => void;
+  /** Called when Show/Hide ¶ turns on or off, so a button can show it. */
+  onFormattingMarksChange?: (on: boolean) => void;
   /**
    * Find the bytes of a pasted picture the page cannot fetch itself, such as Word's
    * `file:///…/clip_image001.png`: a `data:` URL, or null to leave the picture out. Pictures on
@@ -1492,6 +1499,30 @@ interface CopiedFormatting {
   } | null;
 }
 
+/** Show/Hide ¶: the marks are pseudo-elements placed where they would stand but taking no room
+ *  (absolutely positioned at their static position), so no line wraps differently and page view
+ *  lays out the same pages. */
+const FORMATTING_MARKS_CSS = `
+.docx-show-marks [data-anchor][contenteditable="true"]::after {
+  content: "¶"; position: absolute; color: #4a7fc1; font-weight: normal; font-style: normal;
+  text-decoration: none; pointer-events: none; user-select: none; padding-left: 1px;
+}
+.docx-show-marks [data-docx-tab] { position: relative; }
+.docx-show-marks [data-docx-tab]::after {
+  content: "→"; position: absolute; left: 0; right: 0; text-align: center; color: #4a7fc1;
+  font-weight: normal; font-style: normal; text-decoration: none; pointer-events: none; user-select: none;
+}
+`;
+const formattingMarksStyledDocuments = new WeakSet<Document>();
+function ensureFormattingMarksStyles(doc: Document): void {
+  if (formattingMarksStyledDocuments.has(doc)) return;
+  formattingMarksStyledDocuments.add(doc);
+  const style = doc.createElement("style");
+  style.dataset.docxodusFormattingMarks = "true";
+  style.textContent = FORMATTING_MARKS_CSS;
+  (doc.head ?? doc.documentElement).appendChild(style);
+}
+
 const formatPainterStyledDocuments = new WeakSet<Document>();
 
 function ensureFormatPainterStyles(doc: Document): void {
@@ -1730,9 +1761,9 @@ export class DocxEditor {
   private container: HTMLElement;
   private readonly handle: number;
   private readonly options: Required<
-    Omit<DocxEditorOptions, "onEdit" | "onEditFailed" | "onMove" | "onStoryChange" | "onCommentsChange" | "showRevisions" | "resolvePasteImage" | "listDefaults" | "onFormatPainterChange" | "headlineCaseLists">
+    Omit<DocxEditorOptions, "onEdit" | "onEditFailed" | "onMove" | "onStoryChange" | "onCommentsChange" | "showRevisions" | "resolvePasteImage" | "listDefaults" | "onFormatPainterChange" | "headlineCaseLists" | "showFormattingMarks" | "onFormattingMarksChange">
   > &
-    Pick<DocxEditorOptions, "onEdit" | "onEditFailed" | "onMove" | "onStoryChange" | "onCommentsChange" | "showRevisions" | "resolvePasteImage" | "listDefaults" | "onFormatPainterChange" | "headlineCaseLists">;
+    Pick<DocxEditorOptions, "onEdit" | "onEditFailed" | "onMove" | "onStoryChange" | "onCommentsChange" | "showRevisions" | "resolvePasteImage" | "listDefaults" | "onFormatPainterChange" | "headlineCaseLists" | "showFormattingMarks" | "onFormattingMarksChange">;
   /** Map a block's current bare unid → its full kind:scope:unid (DocxSession anchor). */
   private readonly unidToFullId = new Map<string, string>();
   /** The element whose [data-anchor] descendants are the editable blocks (container or page container). */
@@ -2213,6 +2244,7 @@ export class DocxEditor {
       typingUndo: options.typingUndo ?? "block",
       listDefaults: options.listDefaults?.map((l) => ({ ...l })),
       headlineCaseLists: options.headlineCaseLists,
+      showFormattingMarks: options.showFormattingMarks,
       commentInitials: options.commentInitials ?? "",
       onEdit: options.onEdit,
       onEditFailed: options.onEditFailed,
@@ -2220,6 +2252,7 @@ export class DocxEditor {
       onStoryChange: options.onStoryChange,
       onCommentsChange: options.onCommentsChange,
       onFormatPainterChange: options.onFormatPainterChange,
+      onFormattingMarksChange: options.onFormattingMarksChange,
     };
   }
 
@@ -2247,6 +2280,7 @@ export class DocxEditor {
 
   /** The steps every mount ends with once the body is in the DOM. */
   private finishMount(): void {
+    this.applyFormattingMarks();
     this.syncRegionToBody();
     this.setupBlockDrag();
     if (this.options.comments) this.createGutter();
@@ -2477,6 +2511,8 @@ export class DocxEditor {
     container.addEventListener("cut", this.onCut);
     container.addEventListener("paste", this.onPaste);
     this.viewport.adoptHost(container);
+    previous.classList.remove("docx-show-marks");
+    this.applyFormattingMarks();
     this.setupBlockDrag();
     if (this.options.comments) this.createGutter();
   }
@@ -5897,6 +5933,92 @@ export class DocxEditor {
   /** The word lists Headline Case uses (see the `headlineCaseLists` option). */
   setHeadlineCaseLists(lists: HeadlineCaseLists | null): void {
     this.options.headlineCaseLists = lists ?? undefined;
+  }
+
+  // ─── Show/Hide ¶ and joining paragraphs ──────────────────────────────
+
+  /** Word's Show/Hide ¶ (see the `showFormattingMarks` option). */
+  setShowFormattingMarks(on: boolean): void {
+    if (!!this.options.showFormattingMarks === on) return;
+    this.options.showFormattingMarks = on;
+    this.applyFormattingMarks();
+    this.options.onFormattingMarksChange?.(on);
+  }
+
+  /** Whether Show/Hide ¶ is on. */
+  get showFormattingMarks(): boolean {
+    return !!this.options.showFormattingMarks;
+  }
+
+  private applyFormattingMarks(): void {
+    const on = !!this.options.showFormattingMarks;
+    if (on) ensureFormattingMarksStyles(this.container.ownerDocument);
+    this.container.classList.toggle("docx-show-marks", on);
+  }
+
+  /**
+   * Join the paragraphs the selection touches into one, keeping the last one's paragraph mark —
+   * Word's "delete every ¶ but the last", the way to mend text copied from a PDF with a paragraph
+   * for every printed line. Where two lines meet without a space, a space goes in, except after a
+   * hyphen. The joined paragraph keeps the first one's formatting. One undo step. False when the
+   * selection is in one paragraph, or takes in a table.
+   */
+  joinParagraphs(): boolean {
+    const bridge = this.exports.DocxSessionBridge;
+    if (this.closed || !this.activeBlock) return false;
+    const blocks = this.selectedBlocks();
+    if (blocks.length < 2) return false;
+    // Paragraphs side by side in the body (a table, or a cell's paragraphs, are left alone).
+    if (blocks.some((b) => b.closest("table") || this.isBandBlock(b))) return false;
+    const first = blocks[0]!;
+    const index = this.blockIndex(first);
+    const ids: string[] = [];
+    for (const b of blocks) {
+      const full = this.anchorIdOf(b);
+      const id = full ? this.syncBlock(b, full) : undefined;
+      if (!id) return false;
+      ids.push(id);
+    }
+    const text = (id: string): string => {
+      try {
+        const runs = (JSON.parse(bridge.GetFormatting!(this.handle, id)) as FormattingInspection | null)?.runs ?? [];
+        return runs.map((r) => r.text).join("");
+      } catch {
+        return "";
+      }
+    };
+    const tracked = this.options.trackedChanges === TrackedChangeMode.RenderInline;
+    const tx = this.beginListTransaction();
+    let current = ids[0]!;
+    let joined = 0;
+    try {
+      for (const next of ids.slice(1)) {
+        const before = text(current);
+        const after = text(next);
+        const res = this.parseEdit(bridge.MergeParagraphs(this.handle, current, next));
+        if (!res.success) break;
+        current = res.modified?.[0]?.id ?? current;
+        joined++;
+        // The engine puts a space between two lines that have none; after a hyphen there is none.
+        if (!tracked && /-$/.test(before) && before.length > 0 && after.length > 0 && !/^\s/.test(after)) {
+          const fix = this.parseEdit(bridge.ReplaceTextAtSpan(this.handle, current, before.length, 1, ""));
+          if (fix.success) current = fix.modified?.[0]?.id ?? current;
+        }
+      }
+    } finally {
+      this.endListTransaction(tx);
+    }
+    if (joined === 0) return false;
+    this.invalidateBlockMoveTargets();
+    this.reconcile();
+    const block = this.editableList()[index];
+    if (block) {
+      this.activeBlock = block;
+      block.focus();
+      placeCaretAtOffset(block, blockContentText(block).length);
+    }
+    this.options.onEdit?.({ anchorId: current, unid: block?.getAttribute("data-anchor") ?? "" });
+    return true;
   }
 
   /** The caret's rendered font size in points (from computed style), or null. */
