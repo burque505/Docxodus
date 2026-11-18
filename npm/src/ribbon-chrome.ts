@@ -355,6 +355,7 @@ export const RIBBON_CSS = `
   outline-offset: 1px;
 }
 .dxr [data-dxr="fontsize"] { width: 58px; }
+.dxr [data-dxr="showmarks"] { font-size: 17px; font-weight: 700; line-height: 1; }
 .dxr [data-dxr="fontfamily"] { width: 138px; }
 .dxr [data-dxr="style"] { width: 148px; }
 .dxr [data-dxr="pgstart"], .dxr [data-dxr="spacebefore"], .dxr [data-dxr="spaceafter"],

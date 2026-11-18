@@ -289,6 +289,9 @@ export interface RibbonEditor {
   setExports(exports: DocxEditorExports): void;
   /** Open a document, replacing any open one. Throws if exports are not set yet. */
   open(bytes: Uint8Array, name?: string): DocxEditor;
+  /** {@link open} window by window (`DocxEditor.openAsync`): a long document mounts while the page
+   *  keeps painting, `onProgress` telling how far it has got. */
+  openAsync(bytes: Uint8Array, name?: string, options?: { onProgress?: (mounted: number, total: number) => void; windowSize?: number }): Promise<DocxEditor>;
   /** Open a fresh blank document. */
   openBlank(name?: string): DocxEditor;
   /** Lossless DOCX bytes, or null when nothing is open. */
@@ -845,6 +848,29 @@ class RibbonSurface implements RibbonEditor {
   }
 
   open(bytes: Uint8Array, name?: string): DocxEditor {
+    const { candidateSurface, paginated, started } = this.beginOpen();
+    const candidate = DocxEditor.open(candidateSurface, bytes, this.exports!, this.editorOptions(paginated));
+    return this.finishOpen(candidate, paginated, started, name);
+  }
+
+  /**
+   * {@link open} for a long document: it mounts window by window (`DocxEditor.openAsync`), so the
+   * page keeps painting and `onProgress` can show how far it has got. The same editor options as
+   * open's, so a document opened either way behaves the same.
+   */
+  async openAsync(
+    bytes: Uint8Array,
+    name?: string,
+    { onProgress, windowSize }: { onProgress?: (mounted: number, total: number) => void; windowSize?: number } = {},
+  ): Promise<DocxEditor> {
+    const { candidateSurface, paginated, started } = this.beginOpen();
+    const candidate = await DocxEditor.openAsync(candidateSurface, bytes, this.exports!, {
+      ...this.editorOptions(paginated), windowSize, onProgress,
+    });
+    return this.finishOpen(candidate, paginated, started, name);
+  }
+
+  private beginOpen(): { candidateSurface: HTMLElement; paginated: boolean; started: number } {
     if (!this.exports) throw new Error("Docxodus ribbon: WASM exports are not set yet");
     this.history?.beforeOpen();
     const paginated = this.require<HTMLInputElement>("paginated").checked;
@@ -852,12 +878,15 @@ class RibbonSurface implements RibbonEditor {
     // DOM, selection and undo stack intact. The viewport measures again after attachment.
     const candidateSurface = this.surface.cloneNode(false) as HTMLElement;
     candidateSurface.dataset.view = paginated ? "paginated" : "continuous";
+    return { candidateSurface, paginated, started: performance.now() };
+  }
 
-    const started = performance.now();
+  /** The options every document's editor gets (open, openAsync). */
+  private editorOptions(paginated: boolean): DocxEditorOptions {
     const tracked = this.require<HTMLInputElement>("trackchanges").checked
       ? TrackedChangeMode.RenderInline
       : (this.options.trackedChanges ?? TrackedChangeMode.Accept);
-    const candidate = DocxEditor.open(candidateSurface, bytes, this.exports, {
+    return {
       cssPrefix: this.options.cssPrefix,
       fabricateClasses: this.options.fabricateClasses,
       editable: this.options.editable,
@@ -892,7 +921,10 @@ class RibbonSurface implements RibbonEditor {
       showFormattingMarks: this.showMarks,
       onFormattingMarksChange: (on) => this.marksChanged(on),
       commentInitials: this.initials,
-    });
+    };
+  }
+
+  private finishOpen(candidate: DocxEditor, paginated: boolean, started: number, name?: string): DocxEditor {
     this.live?.close();
     candidate.adoptContainer(this.surface);
     this.surface.dataset.view = paginated ? "paginated" : "continuous";

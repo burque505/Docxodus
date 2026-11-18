@@ -81,6 +81,22 @@ test.describe('Show/Hide ¶', () => {
   });
 });
 
+test('a document opened window by window (openAsync) turns the marks on and off', async ({ page }) => {
+  await mount(page, ['Saved paragraph', 'Another']);
+  await page.evaluate(async () => {
+    const r = (window as any).__ribbon;
+    await r.openAsync(r.editor.save(), 'reopened.docx', { windowSize: 1 });
+  });
+  await blocks(page).first().click();
+  const button = page.locator('#mj-host [data-dxr="showmarks"]');
+  await page.keyboard.press('Control+Shift+8');
+  await expect(button).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(() => page.evaluate(() => !!document.querySelector('#mj-host .docx-show-marks'))).toBe(true);
+  await page.keyboard.press('Control+Shift+8');
+  await expect(button).toHaveAttribute('aria-pressed', 'false');
+  await expect.poll(() => page.evaluate(() => !!document.querySelector('#mj-host .docx-show-marks'))).toBe(false);
+});
+
 test.describe('Join paragraphs', () => {
   test('the selected lines become one paragraph: a space where lines meet, none after a hyphen; one undo step', async ({ page }) => {
     await mount(page, ['My imagination takes me where a wall of', 'overloaded shelves lords over their profes-', 'sional life.', 'After']);
