@@ -146,4 +146,37 @@ test.describe('Change Case', () => {
     expect(await exec(page, 'changeCase', { mode: 'headline' })).toBe(true);
     await expect.poll(() => texts(page)).toEqual(['Report on WIDGETS']);
   });
+
+  test('page view: a change across paragraphs and its Undo repaint only those paragraphs', async ({ page }) => {
+    await mount(page, ['Bystander first', 'one two', 'three four', 'Bystander last']);
+    await exec(page, 'pageView', { on: true });
+    // (the typing still in the last paragraph went in before the view changed)
+    await expect.poll(async () => (await texts(page)).filter((t) => t.includes('Bystander')).length).toBe(2);
+    await expect.poll(() => page.locator('#cc-host .page-box, #cc-host [data-page-number]').count()).toBeGreaterThan(0);
+    const mark = () => page.evaluate(() => {
+      for (const b of document.querySelectorAll<HTMLElement>('#cc-host [data-anchor][contenteditable="true"]'))
+        if ((b.textContent ?? '').includes('Bystander')) (b as any).__bystander = true;
+    });
+    const marked = () => page.evaluate(() =>
+      Array.from(document.querySelectorAll<HTMLElement>('#cc-host [data-anchor][contenteditable="true"]'))
+        .filter((b) => (b.textContent ?? '').includes('Bystander') && (b as any).__bystander === true).length);
+    const index = async (word: string) => (await texts(page)).findIndex((t) => t.includes(word));
+    await mark();
+    await blocks(page).nth(await index('one')).click();
+    await page.evaluate(([a, b]) => {
+      const all = document.querySelectorAll<HTMLElement>('#cc-host [data-anchor][contenteditable="true"]');
+      const range = document.createRange();
+      range.setStart(all[a as number], 0);
+      range.setEnd(all[b as number], all[b as number].childNodes.length);
+      const sel = window.getSelection()!;
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }, [await index('one'), await index('three')] as const);
+    expect(await exec(page, 'changeCase', { mode: 'upper' })).toBe(true);
+    await expect.poll(async () => (await texts(page)).filter((t) => /ONE TWO|THREE FOUR/.test(t)).length).toBe(2);
+    expect(await marked()).toBe(2);
+    await exec(page, 'undo');
+    await expect.poll(async () => (await texts(page)).filter((t) => /one two|three four/.test(t)).length).toBe(2);
+    expect(await marked()).toBe(2);
+  });
 });

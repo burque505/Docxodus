@@ -101,7 +101,15 @@ export function nextCycleCase(text: string): CaseMode {
 /** `text` in `mode`, the same length; `hidden` marks characters to pass over (left as they are,
  *  read as spaces). */
 export function changeCase(text: string, mode: CaseMode, lists: HeadlineCaseLists = DEFAULT_HEADLINE_CASE_LISTS, hidden?: boolean[]): string {
-  const seen = hidden ? text.split("").map((c, i) => (hidden[i] ? " " : c)).join("") : text;
+  let seen = hidden ? text.split("").map((c, i) => (hidden[i] ? " " : c)).join("") : text;
+  // A paragraph whose next one starts in lower case goes on into it (a document whose every
+  // printed line is a paragraph, as a PDF's conversion has it): Sentence and Headline Case read
+  // the two as one line. A next paragraph that starts in capitals (a heading, a new sentence)
+  // starts a line of its own.
+  const joined: boolean[] = [];
+  if (mode === "sentence" || mode === "headline") {
+    seen = seen.replace(/\n(?=[\s]*\p{Ll})/gu, (m, at: number) => { joined[at] = true; return " "; });
+  }
   let out: string;
   switch (mode) {
     case "upper": out = mapChars(seen, up); break;
@@ -111,8 +119,8 @@ export function changeCase(text: string, mode: CaseMode, lists: HeadlineCaseList
     case "sentence": out = sentenceCase(seen); break;
     case "headline": out = headlineCase(seen, lists); break;
   }
-  if (!hidden) return out;
-  return out.split("").map((c, i) => (hidden[i] ? text[i]! : c)).join("");
+  if (!hidden && joined.length === 0) return out;
+  return out.split("").map((c, i) => (hidden?.[i] || joined[i] ? text[i]! : c)).join("");
 }
 
 // Capitalize Each Word: a word's first letter in capitals, the rest in lower case (as Word does it).

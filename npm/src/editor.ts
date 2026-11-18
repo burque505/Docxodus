@@ -2444,6 +2444,9 @@ export class DocxEditor {
   setPaginated(value: boolean): void {
     this.assertOpen();
     if (this.options.paginated === value) return;
+    // The view renders again from the session: the typing still in the focused block goes in
+    // first, or it is lost (the View tab's buttons keep the focus in the document).
+    this.commitTyping();
     this.options.paginated = value;
     this.remount();
   }
@@ -3381,6 +3384,7 @@ export class DocxEditor {
     const pageRoot = target.querySelector<HTMLElement>("#pagination-container") ?? target;
     this.editRoot = pageRoot;
     if (this.options.editable) this.wireBlocks(pageRoot);
+    this.stampPlanState();
     // The page boxes render their own header/footer margins as inert clones; the region turns
     // the clicked one into the live story in place (Word's edit-in-the-margin), so there is
     // still exactly one addressable node per story paragraph at any time.
@@ -4562,13 +4566,18 @@ export class DocxEditor {
       res: EditResultLite | null;
     }>,
     forceRemount: boolean,
+    /** In page view too, swap each block in place (an op that keeps every block's length, as
+     *  Change Case does) unless one is split across two pages. */
+    swapInPageView = false,
   ): void {
     const edited = targets.filter((t) => t.res && t.unid);
     if (edited.length === 0) return;
+    const splitAcrossPages = (unid: string) => this.editRoot.querySelectorAll(`[data-anchor="${CSS.escape(unid)}"]`).length > 1;
+    const pageViewSwap = swapInPageView && !!this.options.paginated && !edited.some((t) => splitAcrossPages(t.unid!));
     // Paginated mode: a multi-block format change can alter block heights, and page boxes
     // need a reflow — keep the (pre-existing) full remount there until M4 lands a scoped
     // re-paginate. Continuous mode reconciles incrementally.
-    if (forceRemount || this.options.paginated || edited.some((t) => this.affectsList(t.res!))) {
+    if (forceRemount || (this.options.paginated && !pageViewSwap) || edited.some((t) => this.affectsList(t.res!))) {
       this.refreshAfter(edited[0].block, -1, false);
       return;
     }
@@ -5864,7 +5873,7 @@ export class DocxEditor {
     }
     if (!edited) return false;
     if (blocks.length > 1) {
-      this.finishMultiBlockOp(done, false);
+      this.finishMultiBlockOp(done, false, /* swapInPageView */ true);
       this.options.onEdit?.(edited);
       return true;
     }
@@ -7302,12 +7311,13 @@ export class DocxEditor {
    * as remount.
    */
   private reconcile(focusIndex = -1, caretAtEnd = false): void {
-    if (!this.canReconcile()) {
+    const inPlace = !this.canReconcile();
+    if (inPlace && !this.canReconcileInPlace()) {
       this.remount(focusIndex, caretAtEnd);
       return;
     }
     try {
-      if (!this.reconcileCore()) {
+      if (!(inPlace ? this.reconcileInPlace() : this.reconcileCore())) {
         this.remount(focusIndex, caretAtEnd);
         return;
       }
@@ -7326,6 +7336,70 @@ export class DocxEditor {
     }
     this.syncRegionToBody(this.activeBlock ?? undefined);
     this.gutter?.schedule();
+  }
+
+  /** Page view's reconcile needs the plan and the single-block render. */
+  private canReconcileInPlace(): boolean {
+    const b = this.exports.DocxSessionBridge;
+    return !!this.options.paginated && typeof b.ListBlocks === "function";
+  }
+
+  /** The notes as the last full render or reconcile in page view saw them (their tokens). */
+  private planNotesKey: string | null = null;
+
+  private static notesKeyOf(plan: RenderPlan): string {
+    return JSON.stringify([plan.footnotes.map(tokenOf), plan.endnotes.map(tokenOf)]);
+  }
+
+  /**
+   * Page view's reconcile (after Undo or Redo, or an op that re-renders): when every change is
+   * a body paragraph changed in place — an undone format or case change, say — swap those
+   * paragraphs where they are, as an edit in one paragraph does in page view (the pages are not
+   * laid out again). Anything a swap cannot show asks for the full render: paragraphs added,
+   * removed or moved, a table or a list item changed, a paragraph split across two pages, the
+   * notes changed, or very many paragraphs changed.
+   */
+  private reconcileInPlace(): boolean {
+    this.refreshAnchorMap();
+    const plan = JSON.parse(this.renderPlanJson()) as RenderPlan & { error?: string };
+    if (plan.error) return this.bail(`plan error: ${plan.error}`);
+    const notesKey = DocxEditor.notesKeyOf(plan);
+    if (this.planNotesKey === null || notesKey !== this.planNotesKey) return this.bail("page view: notes changed (or not known)");
+    // A paragraph split across pages is there twice (one piece on each page): count it once.
+    const count = new Map<string, number>();
+    const oldNodes: HTMLElement[] = [];
+    for (const el of this.bodyUnitNodes()) {
+      const unid = el.getAttribute("data-anchor") ?? "";
+      const n = (count.get(unid) ?? 0) + 1;
+      count.set(unid, n);
+      if (n === 1) oldNodes.push(el);
+    }
+    const diff = diffUnits(oldNodes.map(DocxEditor.domTokenOf), plan.body);
+    const n = diff.substituted.length;
+    if (diff.moved.length > 0 || diff.added.length !== n || diff.removed.length !== n) {
+      return this.bail(`page view: +${diff.added.length} -${diff.removed.length} ~${n} moved=${diff.moved.length}`);
+    }
+    if (n > 200) return this.bail(`page view: ${n} paragraphs changed`);
+    const swaps: Array<{ old: HTMLElement; fresh: HTMLElement }> = [];
+    for (const { oldIndex, newIndex } of diff.substituted) {
+      const old = oldNodes[oldIndex]!;
+      if ((count.get(old.getAttribute("data-anchor") ?? "") ?? 0) > 1) return this.bail("page view: a changed paragraph is split across pages");
+      if (DocxEditor.domKindOf(old) !== "p" || ["li", "tbl", "tr", "tc"].includes(plan.body[newIndex]!.kind)) return this.bail("page view: a table or list item changed");
+      const fresh = this.renderInto(plan.body[newIndex]!.id);
+      if (!fresh || !fresh.hasAttribute("data-anchor")) return this.bail(`page view: unrenderable ${plan.body[newIndex]!.id}`);
+      fresh.removeAttribute("xmlns");
+      swaps.push({ old, fresh });
+    }
+    for (const { old, fresh } of swaps) {
+      const wasActive = this.activeBlock === old;
+      if (!this.replaceNode(old, fresh)) return this.bail("page view: swap failed");
+      this.wireBlock(fresh);
+      this.maybeRenumberNotes(fresh);
+      if (wasActive) this.activeBlock = fresh;
+    }
+    if (this.activeBlock && !this.activeBlock.isConnected) this.activeBlock = null;
+    this.lastReconcileFallback = null;
+    return true;
   }
 
   /** The patch itself. Returns false to request the remount fallback. */
@@ -7742,7 +7816,8 @@ export class DocxEditor {
     if (typeof bridge.ListBlocks !== "function") return;
     try {
       const plan = JSON.parse(planJson ?? this.renderPlanJson()) as RenderPlan & { error?: string };
-      if (plan.error) return;
+      if (plan.error) { this.planNotesKey = null; return; }
+      this.planNotesKey = DocxEditor.notesKeyOf(plan);
       // Positional pairing: a fresh full mount renders exactly the plan's units in
       // order (verified invariant). On any mismatch, leave unstamped — an unstamped
       // unit just diffs as changed and re-renders once.
