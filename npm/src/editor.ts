@@ -2245,7 +2245,9 @@ export class DocxEditor {
   ): Promise<DocxEditor> {
     const bridge = exports.DocxSessionBridge;
     if (
-      typeof bridge.RenderEditorChromeHtml !== "function"
+      // Page view lays every page out at once: there are no windows to mount.
+      options.paginated
+      || typeof bridge.RenderEditorChromeHtml !== "function"
       || typeof bridge.RenderEditorRangeHtml !== "function"
       || typeof bridge.ListRenderedBlocks !== "function"
     ) {
