@@ -301,6 +301,18 @@ export function prepareMixedLineHeights(root: HTMLElement, checkpoint?: () => vo
       offset: marker.getBoundingClientRect().top - range.getBoundingClientRect().top };
     probe.remove(); fontMetrics.set(key, result); return result;
   };
+  // Whether a section holds a text frame, wrapped text or an edge picture: asked once per section,
+  // not once per paragraph (a whole-section scan for each paragraph of a one-section book is
+  // quadratic: 0.7 s of a 3800-paragraph page view).
+  const floatsBySection = new Map<HTMLElement, boolean>();
+  const sectionHasFloats = (section: HTMLElement): boolean => {
+    let has = floatsBySection.get(section);
+    if (has === undefined) {
+      has = !!section.querySelector('[data-docx-text-frame], [data-docx-wrap-text], [data-docx-edge-picture]');
+      floatsBySection.set(section, has);
+    }
+    return has;
+  };
   const paragraphs = root.matches(PARAGRAPH_SELECTOR) ? [root]
     : Array.from(root.querySelectorAll<HTMLElement>(PARAGRAPH_SELECTOR));
   let prepared = 0;
@@ -318,8 +330,7 @@ export function prepareMixedLineHeights(root: HTMLElement, checkpoint?: () => vo
     const multiple = Number(style.getPropertyValue('--docx-auto-line-spacing')) || 1;
     const pitch = Number.parseFloat(style.getPropertyValue('--docx-line-grid')) * 4 / 3 || 0;
     const section = paragraph.closest<HTMLElement>('[data-section-index]');
-    if (Number(section?.dataset.cols ?? 1) > 1 || section?.querySelector(
-      '[data-docx-text-frame], [data-docx-wrap-text], [data-docx-edge-picture]')) continue;
+    if (Number(section?.dataset.cols ?? 1) > 1 || (section && sectionHasFloats(section))) continue;
     // Off a grid, a multiple below one stays with the converter; on one, it is whole grid lines (#1551).
     if (style.direction !== 'ltr' || style.writingMode !== 'horizontal-tb'
       || multiple < 1 && !pitch

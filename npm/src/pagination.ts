@@ -7835,11 +7835,14 @@ export class PaginationEngine {
 
   /** Keep a raised inline text box's paint above the body band without moving its flow slot. */
   private positionRaisedInlineTextBoxes(pageBox: HTMLElement, contentArea: HTMLElement, dims: PageDimensions): void {
+    const boxes = Array.from(contentArea.querySelectorAll<HTMLElement>('[data-docx-textbox="true"]'));
+    // (no text boxes: no layout forced for every page of a long document)
+    if (boxes.length === 0) return;
     const paper = pageBox.getBoundingClientRect();
     const body = contentArea.getBoundingClientRect();
     const pixelsPerPoint = paper.width / dims.pageWidth;
     if (!(pixelsPerPoint > 0)) return;
-    for (const box of Array.from(contentArea.querySelectorAll<HTMLElement>('[data-docx-textbox="true"]'))) {
+    for (const box of boxes) {
       const rect = box.getBoundingClientRect();
       const style = this.view.getComputedStyle(box);
       if (box.dataset.docxDrawingAnchor || style.position !== 'static' || style.display !== 'inline-block' || style.transform !== 'none'
@@ -7898,6 +7901,8 @@ export class PaginationEngine {
   /** Resolve legacy paragraph frames after their ordinary anchor paragraphs have flowed. */
   private positionTextFrames(pageBox: HTMLElement, dims: PageDimensions, pageNumber: number): HTMLElement[] {
     const frames = Array.from(pageBox.querySelectorAll<HTMLElement>('[data-docx-text-frame="true"]'));
+    // (no frames: nothing to place, and no layout forced for every page of a long document)
+    if (frames.length === 0) return [];
     const pageRect = pageBox.getBoundingClientRect();
     const pixelsPerPoint = pageRect.width / dims.pageWidth;
     if (!(pixelsPerPoint > 0)) return [];
@@ -8663,13 +8668,16 @@ export class PaginationEngine {
     // Note paragraphs keep their own exact spacing too (issue #1120); the band is bottom-anchored,
     // so only glyphs move within their unchanged line boxes.
     if (notesEl) alignExactLineBaselines(notesEl);
-    const paper = pageBox.getBoundingClientRect();
-    const header = pageBox.querySelector<HTMLElement>(`.${this.cssPrefix}header`);
-    const footer = pageBox.querySelector<HTMLElement>(`.${this.cssPrefix}footer`);
-    preserveExactLineInk(contentArea,
-      Math.max(paper.top, header?.getBoundingClientRect().bottom ?? paper.top),
-      Math.min(paper.bottom, footer?.getBoundingClientRect().top ?? paper.bottom,
-        notesEl?.getBoundingClientRect().top ?? paper.bottom), paper);
+    // (only a page with exact-height runs has ink to keep: the others need no forced layout)
+    if (contentArea.querySelector("[data-docx-exact-run]")) {
+      const paper = pageBox.getBoundingClientRect();
+      const header = pageBox.querySelector<HTMLElement>(`.${this.cssPrefix}header`);
+      const footer = pageBox.querySelector<HTMLElement>(`.${this.cssPrefix}footer`);
+      preserveExactLineInk(contentArea,
+        Math.max(paper.top, header?.getBoundingClientRect().bottom ?? paper.top),
+        Math.min(paper.bottom, footer?.getBoundingClientRect().top ?? paper.bottom,
+          notesEl?.getBoundingClientRect().top ?? paper.bottom), paper);
+    }
 
     this.positionRaisedInlineTextBoxes(pageBox, contentArea, dims);
 

@@ -866,8 +866,12 @@ class RibbonSurface implements RibbonEditor {
 
   open(bytes: Uint8Array, name?: string): DocxEditor {
     const { candidateSurface, paginated, started } = this.beginOpen();
-    const candidate = DocxEditor.open(candidateSurface, bytes, this.exports!, this.editorOptions(paginated));
-    return this.finishOpen(candidate, paginated, started, name);
+    try {
+      const candidate = DocxEditor.open(candidateSurface, bytes, this.exports!, this.editorOptions(paginated));
+      return this.finishOpen(candidate, paginated, started, name);
+    } finally {
+      candidateSurface.remove();
+    }
   }
 
   /**
@@ -881,10 +885,14 @@ class RibbonSurface implements RibbonEditor {
     { onProgress, windowSize }: { onProgress?: (mounted: number, total: number) => void; windowSize?: number } = {},
   ): Promise<DocxEditor> {
     const { candidateSurface, paginated, started } = this.beginOpen();
-    const candidate = await DocxEditor.openAsync(candidateSurface, bytes, this.exports!, {
-      ...this.editorOptions(paginated), windowSize, onProgress,
-    });
-    return this.finishOpen(candidate, paginated, started, name);
+    try {
+      const candidate = await DocxEditor.openAsync(candidateSurface, bytes, this.exports!, {
+        ...this.editorOptions(paginated), windowSize, onProgress,
+      });
+      return this.finishOpen(candidate, paginated, started, name);
+    } finally {
+      candidateSurface.remove();
+    }
   }
 
   private beginOpen(): { candidateSurface: HTMLElement; paginated: boolean; started: number } {
@@ -895,6 +903,19 @@ class RibbonSurface implements RibbonEditor {
     // DOM, selection and undo stack intact. The viewport measures again after attachment.
     const candidateSurface = this.surface.cloneNode(false) as HTMLElement;
     candidateSurface.dataset.view = paginated ? "paginated" : "continuous";
+    // (not a second "editor" control while both are in the document)
+    candidateSurface.removeAttribute("data-dxr");
+    candidateSurface.removeAttribute("data-dxr-surface");
+    // Page view measures as it lays pages out, which needs a surface in the document: the
+    // candidate renders there, hidden, at the surface's width. Opening straight into page view
+    // renders the document once, where opening continuous and switching rendered it twice.
+    if (paginated && this.surface.parentElement) {
+      Object.assign(candidateSurface.style, {
+        position: "absolute", left: "0", top: "0", width: `${this.surface.clientWidth || 800}px`,
+        visibility: "hidden", pointerEvents: "none",
+      });
+      this.surface.parentElement.appendChild(candidateSurface);
+    }
     return { candidateSurface, paginated, started: performance.now() };
   }
 
