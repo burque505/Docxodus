@@ -43,6 +43,7 @@ import type {
   EditErrorCode,
   EditResult,
   FormattingInspection,
+  InlineSpan,
   HeaderFooterKind,
   HyperlinkInfo,
   ImageInsertOptions,
@@ -66,6 +67,7 @@ import type { EditorCommandArgs, EditorCommandInfo } from "./editor-commands.js"
 import { imageOnlyDelta, patchImageAttributes } from "./editor-image-patch.js";
 import { cleanPastedHtml, pastedPlainText, serializePaste } from "./paste-html.js";
 import { FORMAT_PAINTER_CSS, pickRunFormat, runOpFromDirect, wordSpanAt } from "./format-painter.js";
+import { changeCase, DEFAULT_HEADLINE_CASE_LISTS, nextCycleCase, type CaseMode, type HeadlineCaseLists } from "./change-case.js";
 import type { RenderPlan, RenderUnit, UnitDiff } from "./editor-reconcile.js";
 
 /** The subset of WASM bridge exports the editor needs (as exposed on `window.Docxodus`). */
@@ -355,6 +357,12 @@ export interface DocxEditorOptions {
    * changes them later.
    */
   listDefaults?: ListLevelSpec[];
+  /**
+   * Headline Case's word lists (small words, always lower case, always as written); unset, the
+   * built-in ones ({@link DEFAULT_HEADLINE_CASE_LISTS}). A host that keeps them in a file reads
+   * it with {@link parseHeadlineCaseLists}. `setHeadlineCaseLists` changes them later.
+   */
+  headlineCaseLists?: HeadlineCaseLists;
   /**
    * Initials stamped on `commentAuthor`'s comments and replies (`w:initials`, shown in Word's
    * balloons). Defaults to the first letter of each word of the author's name, as Word makes them.
@@ -1722,9 +1730,9 @@ export class DocxEditor {
   private container: HTMLElement;
   private readonly handle: number;
   private readonly options: Required<
-    Omit<DocxEditorOptions, "onEdit" | "onEditFailed" | "onMove" | "onStoryChange" | "onCommentsChange" | "showRevisions" | "resolvePasteImage" | "listDefaults" | "onFormatPainterChange">
+    Omit<DocxEditorOptions, "onEdit" | "onEditFailed" | "onMove" | "onStoryChange" | "onCommentsChange" | "showRevisions" | "resolvePasteImage" | "listDefaults" | "onFormatPainterChange" | "headlineCaseLists">
   > &
-    Pick<DocxEditorOptions, "onEdit" | "onEditFailed" | "onMove" | "onStoryChange" | "onCommentsChange" | "showRevisions" | "resolvePasteImage" | "listDefaults" | "onFormatPainterChange">;
+    Pick<DocxEditorOptions, "onEdit" | "onEditFailed" | "onMove" | "onStoryChange" | "onCommentsChange" | "showRevisions" | "resolvePasteImage" | "listDefaults" | "onFormatPainterChange" | "headlineCaseLists">;
   /** Map a block's current bare unid → its full kind:scope:unid (DocxSession anchor). */
   private readonly unidToFullId = new Map<string, string>();
   /** The element whose [data-anchor] descendants are the editable blocks (container or page container). */
@@ -2204,6 +2212,7 @@ export class DocxEditor {
       commentAuthor: options.commentAuthor ?? options.revisionAuthor ?? "Reviewer",
       typingUndo: options.typingUndo ?? "block",
       listDefaults: options.listDefaults?.map((l) => ({ ...l })),
+      headlineCaseLists: options.headlineCaseLists,
       commentInitials: options.commentInitials ?? "",
       onEdit: options.onEdit,
       onEditFailed: options.onEditFailed,
@@ -3556,6 +3565,12 @@ export class DocxEditor {
       // Word's Copy Formatting / Paste Formatting (Format Painter from the keyboard).
       if (k === "c" && ev.shiftKey) { ev.preventDefault(); this.copyFormatting(); return; }
       if (k === "v" && ev.shiftKey) { ev.preventDefault(); this.pasteFormatting(); return; }
+    }
+    // Shift+F3: Word's Change Case cycle.
+    if (ev.key === "F3" && ev.shiftKey && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+      ev.preventDefault();
+      this.changeCase("cycle");
+      return;
     }
     // Ctrl+Alt+Shift+V: paste the text only.
     if ((ev.ctrlKey || ev.metaKey) && ev.altKey && ev.shiftKey && (ev.key ?? "").toLowerCase() === "v") {
@@ -5737,6 +5752,142 @@ export class DocxEditor {
     if (this.closed || this.painter === "off") return;
     this.pasteFormatting();
     if (this.painter === "once") this.stopFormatPainter();
+  }
+
+  // ─── Change Case ─────────────────────────────────────────────────────
+
+  /**
+   * Word's Change Case on the selection — with a caret, the word around it: Sentence case,
+   * lowercase, UPPERCASE, Capitalize Each Word, tOGGLE cASE, or Headline Case (small words in
+   * lower case, abbreviations as written: the `headlineCaseLists`). `"cycle"` is Word's Shift+F3:
+   * capitals go to lower case, lower case to Capitalize Each Word, anything else to capitals. Only
+   * the letters that change are written, each keeping its formatting. One undo step; the
+   * selection stays. False when there is nothing to change.
+   */
+  changeCase(mode: CaseMode | "cycle"): boolean {
+    const bridge = this.exports.DocxSessionBridge;
+    if (this.closed || !this.activeBlock || typeof bridge.GetFormatting !== "function") return false;
+    const blocks = this.selectedBlocks();
+    const first = blocks[0] ?? this.activeBlock;
+    let caret: number | null = null;
+    let restore: { start: number; length: number } | null = null;
+    let targets: Array<{ block: HTMLElement; fullId: string | undefined; span: { start: number; length: number } | null }>;
+    if (blocks.length > 1) {
+      targets = this.multiBlockTargets(blocks).map((t) => ({ block: t.block, fullId: t.fullId, span: t.span }));
+    } else {
+      const block = this.activeBlock;
+      const unid = block.getAttribute("data-anchor");
+      let span = selectionSpanIn(block);
+      if (!span && this.lastSelection && this.lastSelection.unid === unid) span = this.lastSelection.span;
+      restore = span;
+      if (!span) {
+        caret = caretOffsetIn(block) ?? 0;
+        const word = wordSpanAt(blockContentText(block), caret);
+        span = word ? trimmedSpan(block, word) : null;
+        if (!span || span.length === 0) return false;
+      }
+      targets = [{ block, fullId: this.anchorIdOf(block), span }];
+    }
+    // Each block's text as the engine has it, run by run (characters no run covers are passed
+    // over), and the selected stretch of it.
+    type Piece = { block: HTMLElement; span: { start: number; length: number } | null; id: string; runs: InlineSpan[]; flat: string[]; hidden: boolean[]; from: number; to: number };
+    const pieces: Piece[] = [];
+    for (const t of targets) {
+      if (!t.fullId) continue;
+      const id = this.syncBlock(t.block, t.fullId);
+      if (!id) continue;
+      let runs: InlineSpan[];
+      try {
+        runs = (JSON.parse(bridge.GetFormatting(this.handle, id)) as FormattingInspection | null)?.runs ?? [];
+      } catch {
+        continue;
+      }
+      runs = runs.filter((r) => r.span.length > 0 && r.text.length === r.span.length);
+      const end = runs.reduce((m, r) => Math.max(m, r.span.start + r.span.length), 0);
+      const flat: string[] = new Array<string>(end).fill(" ");
+      const hidden: boolean[] = new Array<boolean>(end).fill(true);
+      for (const r of runs) {
+        for (let k = 0; k < r.span.length; k++) { flat[r.span.start + k] = r.text[k]!; hidden[r.span.start + k] = false; }
+      }
+      const from = Math.min(t.span?.start ?? 0, end);
+      const to = Math.min(t.span ? t.span.start + t.span.length : end, end);
+      if (to > from) pieces.push({ block: t.block, span: t.span, id, runs, flat, hidden, from, to });
+    }
+    if (pieces.length === 0) return false;
+    // The selection as one text (a paragraph a line), so Sentence and Headline Case see where
+    // lines start and end.
+    const text = pieces.map((p) => p.flat.slice(p.from, p.to).join("")).join("\n");
+    const hidden = pieces.flatMap((p, i) => [...p.hidden.slice(p.from, p.to), ...(i < pieces.length - 1 ? [false] : [])]);
+    const resolved: CaseMode = mode === "cycle" ? nextCycleCase(text.split("").filter((_, i) => !hidden[i]).join("")) : mode;
+    const cased = changeCase(text, resolved, this.options.headlineCaseLists ?? DEFAULT_HEADLINE_CASE_LISTS, hidden);
+    if (cased === text) return false;
+    const index = this.blockIndex(first);
+    const tx = this.beginListTransaction();
+    let edited: { anchorId: string; unid: string } | null = null;
+    const done: Array<{ block: HTMLElement; unid: string | null; span: { start: number; length: number } | null; res: EditResultLite | null }> = [];
+    try {
+      let at = 0;
+      for (const p of pieces) {
+        const want = cased.slice(at, at + (p.to - p.from));
+        at += p.to - p.from + 1;
+        const unid = p.block.getAttribute("data-anchor");
+        let id = p.id;
+        let last: EditResultLite | null = null;
+        // The stretches to write: changed characters inside one run, joined across unchanged
+        // letters, digits and spaces (never across a quote, which the engine would make curly).
+        for (const r of p.runs) {
+          const lo = Math.max(p.from, r.span.start), hi = Math.min(p.to, r.span.start + r.span.length);
+          let k = lo;
+          while (k < hi) {
+            if (want[k - p.from] === p.flat[k]) { k++; continue; }
+            let e = k + 1, lastChanged = k;
+            while (e < hi) {
+              const same = want[e - p.from] === p.flat[e];
+              if (!same) lastChanged = e;
+              else if (!/[\p{L}\p{N} ]/u.test(p.flat[e]!)) break;
+              e++;
+            }
+            const len = lastChanged - k + 1;
+            const res = this.parseEdit(bridge.ReplaceTextAtSpan(this.handle, id, k, len, want.slice(k - p.from, k - p.from + len)));
+            if (res.success) {
+              id = res.modified?.[0]?.id ?? id;
+              last = res;
+              edited = { anchorId: id, unid: unid ?? "" };
+            }
+            k = lastChanged + 1;
+          }
+        }
+        done.push({ block: p.block, unid, span: p.span, res: last });
+      }
+    } finally {
+      this.endListTransaction(tx);
+    }
+    if (!edited) return false;
+    if (blocks.length > 1) {
+      this.finishMultiBlockOp(done, false);
+      this.options.onEdit?.(edited);
+      return true;
+    }
+    const only = done[0];
+    let block: HTMLElement | null | undefined = null;
+    if (only?.res && only.unid) block = this.swapBlock(only.block, only.unid, (only.res as EditResultLite).modified?.[0]);
+    if (!block) {
+      this.refreshAfter(first, index, false, true);
+      block = this.editableList()[index];
+      this.options.onEdit?.(edited);
+    }
+    if (block) {
+      this.activeBlock = block;
+      block.focus();
+      if (restore) selectRange(block, restore.start, restore.length);
+      else placeCaretAtOffset(block, caret ?? 0);
+    }
+    return true;
+  }
+
+  /** The word lists Headline Case uses (see the `headlineCaseLists` option). */
+  setHeadlineCaseLists(lists: HeadlineCaseLists | null): void {
+    this.options.headlineCaseLists = lists ?? undefined;
   }
 
   /** The caret's rendered font size in points (from computed style), or null. */

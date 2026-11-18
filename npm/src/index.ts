@@ -22,6 +22,9 @@ export type { BandWhich } from "./editor-headerfooter.js";
 // loading overlay wired onto DocxEditor's command surface. `createRibbonEditor`
 // (docxodus/embed) is the one-call version that also boots WASM.
 export { mountRibbon } from "./ribbon.js";
+// Change Case's Headline Case word lists, for a host that keeps them in a file to be edited.
+export { DEFAULT_HEADLINE_CASE_TEXT, parseHeadlineCaseLists } from "./change-case.js";
+export type { CaseMode, HeadlineCaseLists } from "./change-case.js";
 export type {
   RibbonEditor,
   RibbonOptions,

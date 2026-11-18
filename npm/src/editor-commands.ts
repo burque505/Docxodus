@@ -220,6 +220,12 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     },
   },
 
+  changeCase: {
+    group: "font", description: "Change Case on the selection (with a caret, the word there), keeping its formatting: sentence, lower, upper, title (Capitalize Each Word), toggle, headline (Headline Case), or cycle (Word's Shift+F3).",
+    args: { mode: "sentence|lower|upper|title|toggle|headline|cycle" }, returns: "boolean",
+    run: (e, a) => e.changeCase(a.oneOf("mode", ["sentence", "lower", "upper", "title", "toggle", "headline", "cycle"] as const)),
+  },
+
   // ── paragraph ──
   align: {
     group: "paragraph", description: "Align the paragraph.", args: { alignment: ALIGNMENTS.join("|") },

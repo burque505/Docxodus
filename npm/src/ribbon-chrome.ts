@@ -1014,6 +1014,8 @@ export const RIBBON_HTML = `
           </datalist>
           <button type="button" class="dxr-icon" data-dxr="fontgrow" title="Increase font size (Ctrl+])">A<sup>&#9650;</sup></button>
           <button type="button" class="dxr-icon" data-dxr="fontshrink" title="Decrease font size (Ctrl+[)">A<sub>&#9660;</sub></button>
+          <button type="button" class="dxr-icon" data-dxr="changecase" aria-haspopup="menu" aria-expanded="false"
+                  title="Change Case (Shift+F3 cycles)">Aa&#9662;</button>
           <button type="button" class="dxr-icon" data-dxr="clearformat" title="Clear all formatting">A&#10008;</button>
         </div>
         <div class="dxr-row">
@@ -1523,6 +1525,15 @@ export const RIBBON_HTML = `
   <button type="button" role="menuitem" data-paste="keep" title="The source's fonts, sizes and colors come along"><span>Keep Source Formatting</span><kbd aria-hidden="true"></kbd></button>
   <button type="button" role="menuitem" data-paste="merge" title="Paragraphs, headings, lists, tables, links and emphasis come along; fonts, sizes and colors are the document's" aria-keyshortcuts="Control+V"><span>Merge Formatting</span><kbd aria-hidden="true">Ctrl+V</kbd></button>
   <button type="button" role="menuitem" data-paste="text" title="The text only, taking the formatting where it lands" aria-keyshortcuts="Control+Alt+Shift+V"><span>Keep Text Only</span><kbd aria-hidden="true">Ctrl+Alt+Shift+V</kbd></button>
+</div>
+
+<div class="dxr-pop dxr-filemenu" data-dxr="casemenu" role="menu" aria-label="Change Case">
+  <button type="button" role="menuitem" data-case="sentence"><span>Sentence case.</span><kbd aria-hidden="true"></kbd></button>
+  <button type="button" role="menuitem" data-case="lower"><span>lowercase</span><kbd aria-hidden="true"></kbd></button>
+  <button type="button" role="menuitem" data-case="upper"><span>UPPERCASE</span><kbd aria-hidden="true"></kbd></button>
+  <button type="button" role="menuitem" data-case="title"><span>Capitalize Each Word</span><kbd aria-hidden="true"></kbd></button>
+  <button type="button" role="menuitem" data-case="toggle"><span>tOGGLE cASE</span><kbd aria-hidden="true"></kbd></button>
+  <button type="button" role="menuitem" data-case="headline" title="Small words in lower case, abbreviations as written"><span>Headline Case</span><kbd aria-hidden="true"></kbd></button>
 </div>
 
 <!-- Table size picker, anchored to the Insert tab's Table button. -->

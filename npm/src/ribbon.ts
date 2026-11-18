@@ -55,6 +55,7 @@ import {
 } from "./ribbon-chrome.js";
 import { PARAGRAPH_DIALOG_CSS, PARAGRAPH_DIALOG_HTML, ParagraphDialog } from "./ribbon-paragraph-dialog.js";
 import type { MeasurementUnit } from "./ribbon-paragraph-dialog.js";
+import type { CaseMode, HeadlineCaseLists } from "./change-case.js";
 import { LIST_DIALOG_CSS, LIST_DIALOG_HTML, ListDialog } from "./ribbon-list-dialog.js";
 export type { MeasurementUnit } from "./ribbon-paragraph-dialog.js";
 
@@ -62,6 +63,8 @@ export type { MeasurementUnit } from "./ribbon-paragraph-dialog.js";
 // carries both the shell and the engine it wraps.
 export { DocxEditor } from "./editor.js";
 export type { DocxEditorExports, DocxEditorOptions, FormatPainterState, PasteContent, PasteFormatting } from "./editor.js";
+export { DEFAULT_HEADLINE_CASE_TEXT, parseHeadlineCaseLists } from "./change-case.js";
+export type { CaseMode, HeadlineCaseLists } from "./change-case.js";
 
 /** Which layout the chrome uses. "auto" measures the root and switches at `compactBreakpoint`. */
 export type RibbonChromeMode = "full" | "compact" | "auto";
@@ -195,6 +198,9 @@ export interface RibbonOptions extends DocxEditorOptions {
    * dialog has no such box.
    */
   onListDefaults?: (levels: ListLevelSpec[]) => void;
+  /** Headline Case's word lists (the editor's `headlineCaseLists`; a host that keeps them in a
+   *  file reads it with `parseHeadlineCaseLists`); `setHeadlineCaseLists` changes them later. */
+  headlineCaseLists?: HeadlineCaseLists;
   /** Called after any document opens, with the live editor. */
   onOpen?: (editor: DocxEditor) => void;
   /** Called whenever the status line changes. */
@@ -309,6 +315,8 @@ export interface RibbonEditor {
   openListDialog(): boolean;
   /** The levels new lists start from (see the `listDefaults` option). */
   setListDefaults(levels: ListLevelSpec[]): void;
+  /** Headline Case's word lists (see the `headlineCaseLists` option); null for the built-in ones. */
+  setHeadlineCaseLists(lists: HeadlineCaseLists | null): void;
   /** Set the status line. */
   setStatus(text: string): void;
   /** Activate a ribbon tab by name ("home" | "insert" | "layout" | "references" | "review" | "view" | "table" | "headerfooter"). */
@@ -502,6 +510,7 @@ class RibbonSurface implements RibbonEditor {
   private paragraphDialog!: ParagraphDialog;
   private listDialog!: ListDialog;
   private listDefaults: ListLevelSpec[] | undefined;
+  private headlineCaseLists: HeadlineCaseLists | undefined;
   // The chrome's text in the host's language (setLabels), and the English each text had.
   private labels: Record<string, string> = {};
   private readonly englishText = new WeakMap<Text, { english: string; written: string }>();
@@ -871,6 +880,7 @@ class RibbonSurface implements RibbonEditor {
       commentAuthor: this.author,
       typingUndo: this.options.typingUndo,
       listDefaults: this.listDefaults,
+      headlineCaseLists: this.headlineCaseLists,
       commentInitials: this.initials,
     });
     this.live?.close();
@@ -1108,6 +1118,45 @@ class RibbonSurface implements RibbonEditor {
     });
   }
 
+  /** Home > Font > Change Case (Aa▾): Word's menu, and Headline Case. */
+  private wireChangeCase(): void {
+    const button = this.control("changecase"), menu = this.control("casemenu");
+    if (!button || !menu) return;
+    this.keepSelection(button);
+    button.addEventListener("click", () => {
+      if (menu.hasAttribute("data-open")) { this.closePopovers(); return; }
+      this.closePopovers();
+      menu.setAttribute("data-open", "");
+      button.setAttribute("aria-expanded", "true");
+      this.positionPopover(menu, button);
+    });
+    menu.addEventListener("mousedown", (event) => event.preventDefault());
+    menu.addEventListener("click", (event) => {
+      const chosen = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-case]");
+      if (!chosen) return;
+      this.closePopovers();
+      const mode = chosen.dataset.case as CaseMode;
+      const live = this.live;
+      if (!live) return;
+      this.run("change case", () => { live.changeCase(mode); }, cmd("changeCase", { mode }));
+    });
+    menu.addEventListener("keydown", (event) => {
+      const items = Array.from(menu.querySelectorAll<HTMLButtonElement>("button"));
+      const at = items.indexOf(event.target as HTMLButtonElement);
+      let next = -1;
+      if (event.key === "ArrowDown") next = (at + 1) % items.length;
+      else if (event.key === "ArrowUp") next = (at - 1 + items.length) % items.length;
+      else if (event.key === "Escape") { event.preventDefault(); this.closePopovers(); button.focus(); return; }
+      if (next >= 0) { event.preventDefault(); items[next].focus(); }
+    });
+  }
+
+  /** Headline Case's word lists (see the `headlineCaseLists` option); null for the built-in ones. */
+  setHeadlineCaseLists(lists: HeadlineCaseLists | null): void {
+    this.headlineCaseLists = lists ?? undefined;
+    this.live?.setHeadlineCaseLists(lists);
+  }
+
   /** Home > Clipboard > Format Painter: a click paints once (a second click turns it off), a
    *  double-click keeps painting until Esc or another click. */
   private wireFormatPainter(): void {
@@ -1276,6 +1325,7 @@ class RibbonSurface implements RibbonEditor {
   /** The List Levels dialog, the Numbering menu's list commands and the 1.1 button. */
   private wireListDialog(): void {
     this.listDefaults = this.options.listDefaults?.map((l) => ({ ...l }));
+    this.headlineCaseLists = this.options.headlineCaseLists;
     this.listDialog = new ListDialog(this.require<HTMLDialogElement>("listdialog"), {
       read: () => this.live?.listLevels() ?? null,
       defaults: () => this.listDefaults ?? null,
@@ -1579,6 +1629,7 @@ class RibbonSurface implements RibbonEditor {
     this.wireFileMenu();
     this.wirePaste();
     this.wireFormatPainter();
+    this.wireChangeCase();
     this.wireLinkPopover();
     this.wireFindBar();
     this.wireHeaderFooterTab();
@@ -2141,6 +2192,13 @@ class RibbonSurface implements RibbonEditor {
       this.openFileMenu();
       return;
     }
+    // Shift+F3: the editor has cycled the case (Word's Change Case cycle).
+    if (this.live && event.key === "F3" && event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey
+      && event.composedPath().includes(this.surface)) {
+      this.scheduleDirtyCheck();
+      this.options.onCommand?.("change case", 0, cmd("changeCase", { mode: "cycle" }));
+      return;
+    }
     if (!this.live || !(event.ctrlKey || event.metaKey)) return;
     const key = (event.key ?? "").toLowerCase();    // (no key: an autofill pick in a text box)
     const target = event.target instanceof Element ? event.target : null;
@@ -2299,6 +2357,8 @@ class RibbonSurface implements RibbonEditor {
   private closePopovers(): void {
     this.control("pastemenu")?.removeAttribute("data-open");
     this.control("pastemore")?.setAttribute("aria-expanded", "false");
+    this.control("casemenu")?.removeAttribute("data-open");
+    this.control("changecase")?.setAttribute("aria-expanded", "false");
     this.control("gridpicker")?.removeAttribute("data-open");
     this.control("linkpop")?.removeAttribute("data-open");
     this.control("filemenu")?.removeAttribute("data-open");
@@ -2307,13 +2367,14 @@ class RibbonSurface implements RibbonEditor {
 
   private maybeClosePopovers(event: MouseEvent): void {
     const target = event.target as Node;
-    for (const [popName, buttonName] of [["gridpicker", "table"], ["linkpop", "link"], ["filemenu", "filebutton"], ["pastemenu", "pastemore"]] as const) {
+    for (const [popName, buttonName] of [["gridpicker", "table"], ["linkpop", "link"], ["filemenu", "filebutton"], ["pastemenu", "pastemore"], ["casemenu", "changecase"]] as const) {
       const pop = this.control(popName);
       if (!pop?.hasAttribute("data-open")) continue;
       if (pop.contains(target) || this.control(buttonName)?.contains(target)) continue;
       pop.removeAttribute("data-open");
       if (popName === "filemenu") this.control("filebutton")?.setAttribute("aria-expanded", "false");
       if (popName === "pastemenu") this.control("pastemore")?.setAttribute("aria-expanded", "false");
+      if (popName === "casemenu") this.control("changecase")?.setAttribute("aria-expanded", "false");
     }
   }
 
