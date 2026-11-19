@@ -58,7 +58,7 @@ test.describe('DocxEditor.exec', () => {
       expect(names).toContain(name);
     expect(new Set(names).size).toBe(names.length);
     for (const c of commands) {
-      expect(c.group).toMatch(/^(font|paragraph|insert|layout|table|review|edit|view|query)$/);
+      expect(c.group).toMatch(/^(font|paragraph|insert|layout|table|picture|review|edit|view|query)$/);
       expect(c.description.length).toBeGreaterThan(5);
       expect(typeof c.args).toBe('object');
     }

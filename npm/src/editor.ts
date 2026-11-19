@@ -47,6 +47,8 @@ import type {
   HeaderFooterKind,
   HyperlinkInfo,
   ImageInsertOptions,
+  ImageOccurrence,
+  FloatingImageLayout,
   ListFormat,
   ListLevelInfo,
   ListLevelSpec,
@@ -68,6 +70,7 @@ import { diffUnits, needsRemount, tokenOf, unidOf } from "./editor-reconcile.js"
 import { EditorCommandError, editorCommands, runEditorCommand } from "./editor-commands.js";
 import type { EditorCommandArgs, EditorCommandInfo } from "./editor-commands.js";
 import { imageOnlyDelta, patchImageAttributes } from "./editor-image-patch.js";
+import { PictureOverlay } from "./editor-picture.js";
 import { cleanPastedHtml, pastedPlainText, serializePaste } from "./paste-html.js";
 import { FORMAT_PAINTER_CSS, pickRunFormat, runOpFromDirect, wordSpanAt } from "./format-painter.js";
 import { compileFind, expandReplacement, type FindOptions } from "./find-query.js";
@@ -240,6 +243,13 @@ export interface DocxEditorExports {
       imageBase64: string,
       optionsJson: string,
     ) => string;
+    ListImages?: (handle: number, scopes: number) => string;
+    SetImageDimensions?: (handle: number, imageId: string, dimensionsJson: string) => string;
+    SetImageMetadata?: (handle: number, imageId: string, altText: string | null, title: string | null) => string;
+    SetImageFloatingLayout?: (handle: number, imageId: string, layoutJson: string) => string;
+    SetImagePlacement?: (handle: number, imageId: string, placement: string, layoutJson: string | null) => string;
+    ReplaceImage?: (handle: number, imageId: string, imageBase64: string) => string;
+    RemoveImage?: (handle: number, imageId: string) => string;
     InsertTableOfContents?: (handle: number, anchor: string, pos: string, optionsJson: string) => string;
     /** Paste (optional): the clipboard's HTML as XHTML, or plain text, at a caret. */
     InsertHtml?: (
@@ -401,6 +411,8 @@ export interface DocxEditorOptions {
   onFormatPainterChange?: (state: FormatPainterState) => void;
   /** Called when Show/Hide ¶ turns on or off, so a button can show it. */
   onFormattingMarksChange?: (on: boolean) => void;
+  /** Called when a picture is selected or deselected, and after the selected picture changes. */
+  onPictureChange?: (picture: PictureInfo | null) => void;
   /**
    * Find the bytes of a pasted picture the page cannot fetch itself, such as Word's
    * `file:///…/clip_image001.png`: a `data:` URL, or null to leave the picture out. Pictures on
@@ -776,7 +788,88 @@ interface AnchorRef {
  * in both at compile time; the lists are optional because a malformed reply may omit them.
  */
 type EditResultLite = Pick<EditResult, "success">
-  & Partial<Pick<EditResult, "created" | "removed" | "modified" | "error" | "caret">>;
+  & Partial<Pick<EditResult, "created" | "removed" | "modified" | "error" | "caret" | "imageId">>;
+
+/**
+ * How text flows around a picture, as Word's Wrap Text names it: in line with the text, or
+ * floating with square, tight, through or top-and-bottom wrapping, or behind or in front of the
+ * text (no wrapping).
+ */
+export type PictureWrap = "inline" | "square" | "tight" | "through" | "topAndBottom" | "behind" | "inFront";
+
+/** The selected picture, as the Picture Format tab and dialog show it. */
+export interface PictureInfo {
+  /** The engine's image id. */
+  id: string;
+  /** How text wraps it; null when the document says something the editor cannot change. */
+  wrap: PictureWrap | null;
+  /** Its size on the page, in points (null when the document gives none). */
+  widthPoints: number | null;
+  heightPoints: number | null;
+  /** Its picture's own size at 96 dpi, in points (Reset), when known. */
+  originalWidthPoints: number | null;
+  originalHeightPoints: number | null;
+  altText: string;
+  title: string;
+  /** Where a floating picture sits and how text wraps round it; null for an inline one. */
+  layout: FloatingImageLayout | null;
+  /** What can be changed. */
+  can: { size: boolean; wrap: boolean; layout: boolean; altText: boolean; replace: boolean; remove: boolean };
+}
+
+/** What a picture can be selected as: a rendered picture (an inline SVG for a vector one). */
+const PICTURE_SELECTOR = "img, [data-docx-vector-frame]";
+
+/** Word's clearance at the sides of a picture newly made to float (0.125"). */
+const FLOAT_SIDE_DISTANCE_EMU = 114300;
+
+function wrapOf(occurrence: ImageOccurrence): PictureWrap | null {
+  if (occurrence.placement === "inline") return "inline";
+  const layout = occurrence.floatingLayout;
+  if (occurrence.placement !== "floating" || !layout) return null;
+  switch (layout.wrapMode) {
+    case "none": return layout.behindDocument ? "behind" : "inFront";
+    case "square": return "square";
+    case "tight": return "tight";
+    case "through": return "through";
+    case "top_and_bottom": return "topAndBottom";
+    default: return null;
+  }
+}
+
+function pictureInfoOf(occurrence: ImageOccurrence): PictureInfo {
+  const can = (name: string): boolean =>
+    !!occurrence.operations?.find((op) => op.operation === name)?.canMutate;
+  const floating = occurrence.placement === "floating";
+  const layoutWritable = floating && occurrence.floatingLayoutSupported && can("set_floating_layout");
+  const px = (n: number | undefined): number | null => (n && n > 0 ? n * 0.75 : null);
+  return {
+    id: occurrence.id,
+    wrap: wrapOf(occurrence),
+    widthPoints: occurrence.renderedWidthPoints ?? null,
+    heightPoints: occurrence.renderedHeightPoints ?? null,
+    originalWidthPoints: px(occurrence.intrinsicWidthPixels),
+    originalHeightPoints: px(occurrence.intrinsicHeightPixels),
+    altText: occurrence.altText ?? "",
+    title: occurrence.title ?? "",
+    layout: floating ? occurrence.floatingLayout ?? null : null,
+    can: {
+      size: can("set_dimensions"),
+      wrap: can("set_placement") || layoutWritable,
+      layout: layoutWritable,
+      altText: can("set_metadata"),
+      replace: can("replace"),
+      remove: can("remove"),
+    },
+  };
+}
+
+/** A layout as the engine takes it back: the read-only raw tokens left out. */
+function writableLayout(layout: FloatingImageLayout): FloatingImageLayout {
+  const copy: Record<string, unknown> = { ...layout };
+  for (const key of Object.keys(copy)) if (key.startsWith("raw")) delete copy[key];
+  return copy as FloatingImageLayout;
+}
 
 /** What {@link DocxEditorOptions.onEditFailed} receives when the engine rejects an edit. */
 export interface EditFailure {
@@ -1851,9 +1944,9 @@ export class DocxEditor {
   private container: HTMLElement;
   private readonly handle: number;
   private readonly options: Required<
-    Omit<DocxEditorOptions, "onEdit" | "onEditFailed" | "onMove" | "onStoryChange" | "onCommentsChange" | "showRevisions" | "resolvePasteImage" | "listDefaults" | "onFormatPainterChange" | "headlineCaseLists" | "showFormattingMarks" | "onFormattingMarksChange">
+    Omit<DocxEditorOptions, "onEdit" | "onEditFailed" | "onMove" | "onStoryChange" | "onCommentsChange" | "showRevisions" | "resolvePasteImage" | "listDefaults" | "onFormatPainterChange" | "headlineCaseLists" | "showFormattingMarks" | "onFormattingMarksChange" | "onPictureChange">
   > &
-    Pick<DocxEditorOptions, "onEdit" | "onEditFailed" | "onMove" | "onStoryChange" | "onCommentsChange" | "showRevisions" | "resolvePasteImage" | "listDefaults" | "onFormatPainterChange" | "headlineCaseLists" | "showFormattingMarks" | "onFormattingMarksChange">;
+    Pick<DocxEditorOptions, "onEdit" | "onEditFailed" | "onMove" | "onStoryChange" | "onCommentsChange" | "showRevisions" | "resolvePasteImage" | "listDefaults" | "onFormatPainterChange" | "headlineCaseLists" | "showFormattingMarks" | "onFormattingMarksChange" | "onPictureChange">;
   /** Map a block's current bare unid → its full kind:scope:unid (DocxSession anchor). */
   private readonly unidToFullId = new Map<string, string>();
   /** The element whose [data-anchor] descendants are the editable blocks (container or page container). */
@@ -1976,6 +2069,7 @@ export class DocxEditor {
       document.addEventListener("mousedown", this.onMouseDown, true);
       document.addEventListener("mousemove", this.onMouseMove, true);
       document.addEventListener("mouseup", this.onMouseUp, true);
+      document.addEventListener("keydown", this.onPictureKey, true);
     }
   }
 
@@ -2101,7 +2195,9 @@ export class DocxEditor {
 
   /** Start tracking a normal primary-button text drag inside one editable block. */
   private readonly onMouseDown = (event: MouseEvent): void => {
-    if (this.closed || !this.options.editable || event.button !== 0) return;
+    if (this.closed || !this.options.editable) return;
+    if (this.pictureMouseDown(event)) return;
+    if (event.button !== 0) return;
     if (this.extendSelectionByClick(event)) { this.clearDragSelection(); return; }
     const target = event.target instanceof Node ? event.target : null;
     const origin = this.editableBlockOf(target);
@@ -2345,6 +2441,7 @@ export class DocxEditor {
       onCommentsChange: options.onCommentsChange,
       onFormatPainterChange: options.onFormatPainterChange,
       onFormattingMarksChange: options.onFormattingMarksChange,
+      onPictureChange: options.onPictureChange,
     };
   }
 
@@ -2551,7 +2648,11 @@ export class DocxEditor {
       document.removeEventListener("mousedown", this.onMouseDown, true);
       document.removeEventListener("mousemove", this.onMouseMove, true);
       document.removeEventListener("mouseup", this.onMouseUp, true);
+      document.removeEventListener("keydown", this.onPictureKey, true);
     }
+    this.pictureOverlay?.destroy();
+    this.pictureOverlay = null;
+    this.selectedPictureId = null;
     this.clearDragSelection();
     this.clearFindMatches();
     this.teardownBlockDrag();
@@ -5396,11 +5497,13 @@ export class DocxEditor {
   /** Undo the last edit (incremental repaint; falls back to a full re-render). Typing still in the
    *  focused block is committed first, as a step of its own, so it is what Undo takes back. */
   undo(): void {
+    this.deselectPicture();
     this.stepHistory((handle) => this.exports.DocxSessionBridge.Undo(handle));
   }
 
   /** Redo the last undone edit (incremental repaint; falls back to a full re-render). */
   redo(): void {
+    this.deselectPicture();
     this.stepHistory((handle) => this.exports.DocxSessionBridge.Redo(handle));
   }
 
@@ -6546,6 +6649,326 @@ export class DocxEditor {
     const created = res.created?.[0];
     if (created) this.options.onEdit?.({ anchorId: created.id, unid: created.unid });
     return true;
+  }
+
+  // ─── Pictures: selection, size, wrapping, position, alt text ─────────
+
+  private pictureOverlay: PictureOverlay | null = null;
+  private selectedPictureId: string | null = null;
+
+  private overlay(): PictureOverlay {
+    if (!this.pictureOverlay) {
+      this.pictureOverlay = new PictureOverlay(this.container.ownerDocument, {
+        resize: (wr, hr) => this.resizePictureBy(wr, hr),
+      });
+    }
+    return this.pictureOverlay;
+  }
+
+  /** Every image occurrence the engine knows, in document order. */
+  private listImages(): ImageOccurrence[] {
+    const bridge = this.exports.DocxSessionBridge;
+    if (typeof bridge.ListImages !== "function") return [];
+    try {
+      return JSON.parse(bridge.ListImages(this.handle, 63 /* ProjectionScopes.All */)) as ImageOccurrence[];
+    } catch {
+      return [];
+    }
+  }
+
+  /** The rendered pictures of a block, outermost only (a vector frame's own parts are not). */
+  private picturesIn(block: HTMLElement): HTMLElement[] {
+    return Array.from(block.querySelectorAll<HTMLElement>(PICTURE_SELECTOR))
+      .filter((p) => !p.parentElement?.closest(PICTURE_SELECTOR));
+  }
+
+  /** A picture's place in its block: its content offset (pictures take none) and its rank among
+   *  the pictures at that offset, which is how the engine's occurrences line up with it. */
+  private picturePlace(picture: HTMLElement, block: HTMLElement): { offset: number; rank: number } {
+    const offsetOf = (p: HTMLElement): number => {
+      const parent = p.parentNode!;
+      return contentOffsetOf(block, parent, Array.prototype.indexOf.call(parent.childNodes, p));
+    };
+    const offset = offsetOf(picture);
+    const same = this.picturesIn(block).filter((p) => offsetOf(p) === offset);
+    return { offset, rank: Math.max(0, same.indexOf(picture)) };
+  }
+
+  private pictureAtPlace(block: HTMLElement, place: { offset: number; rank: number }): HTMLElement | null {
+    const same = this.picturesIn(block).filter((p) => this.picturePlace(p, block).offset === place.offset);
+    return same[place.rank] ?? null;
+  }
+
+  /** The engine's occurrence for a picture at `place` in the block whose anchor is `anchorId`. */
+  private occurrenceAt(anchorId: string, place: { offset: number; rank: number }): ImageOccurrence | null {
+    const candidates = this.listImages().filter((i) => i.anchorId === anchorId && i.span.start === place.offset);
+    return candidates[place.rank] ?? null;
+  }
+
+  /** A click on a picture selects it (left or right button). True when it did. */
+  private pictureMouseDown(event: MouseEvent): boolean {
+    const target = event.target instanceof Element ? event.target : null;
+    if (this.pictureOverlay?.owns(target)) return true;
+    const picture = target?.closest<HTMLElement>(PICTURE_SELECTOR) ?? null;
+    const block = picture ? this.editableBlockOf(picture) : null;
+    if (!picture || !block || (event.button !== 0 && event.button !== 2)) {
+      // A click elsewhere in the document drops the selection; one in the ribbon or a dialog keeps it.
+      if (this.selectedPictureId && event.button === 0 && target && this.container.contains(target)) this.deselectPicture();
+      return false;
+    }
+    if (event.button === 0) event.preventDefault();
+    if (this.selectedPictureId && this.pictureOverlay?.picture === picture) return true;
+    return this.selectPictureElement(picture, block);
+  }
+
+  private selectPictureElement(picture: HTMLElement, block: HTMLElement): boolean {
+    // Commit the block's typing first: the change that follows renders from the session.
+    let place = this.picturePlace(picture, block);
+    let fullId = this.anchorIdOf(block);
+    if (!fullId) return false;
+    const idx = this.blockIndex(block);
+    const synced = this.syncBlock(block, fullId);
+    if (!synced) return false;
+    fullId = synced;
+    if (!block.isConnected) {
+      const fresh = this.blockForAnchorId(fullId) ?? this.editableList()[idx];
+      if (!fresh) return false;
+      block = fresh;
+    }
+    const occurrence = this.occurrenceAt(fullId, place);
+    const element = picture.isConnected ? picture : this.pictureAtPlace(block, place);
+    if (!occurrence || !element) return false;
+    place = { ...place };
+    this.showPictureSelection(occurrence, element, block);
+    return true;
+  }
+
+  private showPictureSelection(occurrence: ImageOccurrence, picture: HTMLElement, block: HTMLElement): void {
+    this.selectedPictureId = occurrence.id;
+    this.activeBlock = block;
+    const info = pictureInfoOf(occurrence);
+    this.overlay().show(picture, info.can.size);
+    this.overlay().follow();
+    // The caret waits just after the picture, so typing goes on from there.
+    if (document.activeElement !== block) block.focus({ preventScroll: true });
+    const sel = window.getSelection();
+    if (sel) {
+      const range = document.createRange();
+      range.setStartAfter(picture);
+      range.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+    this.options.onPictureChange?.(info);
+  }
+
+  /** Select the picture the engine calls `imageId` again, after a render replaced its element. */
+  private reselectPicture(imageId: string): boolean {
+    const occurrence = this.listImages().find((i) => i.id === imageId);
+    const block = occurrence ? this.blockForAnchorId(occurrence.anchorId) : null;
+    if (!occurrence || !block) { this.deselectPicture(); return false; }
+    const rank = this.listImages()
+      .filter((i) => i.anchorId === occurrence.anchorId && i.span.start === occurrence.span.start)
+      .findIndex((i) => i.id === imageId);
+    const picture = this.pictureAtPlace(block, { offset: occurrence.span.start, rank: Math.max(0, rank) });
+    if (!picture) { this.deselectPicture(); return false; }
+    this.showPictureSelection(occurrence, picture, block);
+    return true;
+  }
+
+  private readonly onPictureKey = (ev: KeyboardEvent): void => {
+    if (!this.selectedPictureId || this.closed) return;
+    const picture = this.pictureOverlay?.picture;
+    if (!picture?.isConnected) { this.deselectPicture(); return; }
+    const active = document.activeElement;
+    if (!active || !this.container.contains(active)) return;
+    const caretBy = (before: boolean): void => {
+      const sel = window.getSelection();
+      if (!sel) return;
+      const range = document.createRange();
+      if (before) range.setStartBefore(picture); else range.setStartAfter(picture);
+      range.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    };
+    switch (ev.key) {
+      case "Delete":
+      case "Backspace":
+        ev.preventDefault();
+        ev.stopPropagation();
+        this.removePicture();
+        return;
+      case "Escape":
+        ev.preventDefault();
+        this.deselectPicture();
+        return;
+      case "ArrowLeft":
+      case "ArrowUp":
+      case "ArrowRight":
+      case "ArrowDown":
+        ev.preventDefault();
+        caretBy(ev.key === "ArrowLeft" || ev.key === "ArrowUp");
+        this.deselectPicture();
+        return;
+      case "Shift": case "Control": case "Alt": case "Meta": case "ContextMenu":
+        return;
+      default:
+        if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+        this.deselectPicture();
+    }
+  };
+
+  /** The selected picture, or null. */
+  selectedPicture(): PictureInfo | null {
+    if (!this.selectedPictureId) return null;
+    const occurrence = this.listImages().find((i) => i.id === this.selectedPictureId);
+    return occurrence ? pictureInfoOf(occurrence) : null;
+  }
+
+  /** Select the `index`th picture of the body (0 = the first), as a click on it does. */
+  selectPicture(index = 0): boolean {
+    this.assertOpen();
+    let n = 0;
+    for (const block of this.editableList()) {
+      if (this.isBandBlock(block)) continue;
+      for (const picture of this.picturesIn(block)) {
+        if (n++ !== index) continue;
+        return this.selectPictureElement(picture, block);
+      }
+    }
+    return false;
+  }
+
+  /** Clear the picture selection (the caret stays where it is). */
+  deselectPicture(): void {
+    if (!this.selectedPictureId && !this.pictureOverlay?.picture) return;
+    this.selectedPictureId = null;
+    this.pictureOverlay?.hide();
+    this.options.onPictureChange?.(null);
+  }
+
+  /** Run one engine change on the selected picture, re-render, and keep it selected. */
+  private changePicture(
+    call: (bridge: DocxEditorExports["DocxSessionBridge"], id: string, occurrence: ImageOccurrence) => string | undefined,
+    keepSelected = true,
+  ): boolean {
+    if (this.closed) return false;
+    const id = this.selectedPictureId;
+    const occurrence = id ? this.listImages().find((i) => i.id === id) : undefined;
+    if (!id || !occurrence) return false;
+    const json = call(this.exports.DocxSessionBridge, id, occurrence);
+    if (json === undefined) return false;
+    const res = this.parseEdit(json);
+    if (!res.success) return false;
+    const block = this.blockForAnchorId(occurrence.anchorId);
+    // Picture media and drawings are not in the block-render shell: only the full render shows them.
+    // The selection is held quietly across it (no "deselected" for the ribbon to act on), then found again.
+    this.selectedPictureId = null;
+    this.remount(block ? this.blockIndex(block) : -1, false);
+    if (keepSelected) this.reselectPicture(res.imageId ?? id);
+    else this.deselectPicture();
+    return true;
+  }
+
+  /**
+   * Size the selected picture, in points. Give one side with `lockAspect` (the default) and the
+   * other follows; give both to set both exactly.
+   */
+  setPictureSize(widthPoints?: number | null, heightPoints?: number | null, lockAspect = true): boolean {
+    const w = widthPoints ?? undefined, h = heightPoints ?? undefined;
+    if (w === undefined && h === undefined) return false;
+    return this.changePicture((bridge, id) => bridge.SetImageDimensions?.(this.handle, id, JSON.stringify({
+      ...(w !== undefined ? { widthPoints: w } : {}),
+      ...(h !== undefined ? { heightPoints: h } : {}),
+      preserveAspect: lockAspect && (w === undefined || h === undefined),
+    })));
+  }
+
+  /** The picture's own size (Word's Reset Picture & Size, size only). */
+  resetPictureSize(): boolean {
+    const info = this.selectedPicture();
+    if (!info?.originalWidthPoints || !info.originalHeightPoints) return false;
+    return this.setPictureSize(info.originalWidthPoints, info.originalHeightPoints, false);
+  }
+
+  private resizePictureBy(widthRatio: number, heightRatio: number): void {
+    const info = this.selectedPicture();
+    if (!info?.widthPoints || !info.heightPoints) return;
+    const round = (n: number): number => Math.round(n * 100) / 100;
+    this.setPictureSize(round(info.widthPoints * widthRatio), round(info.heightPoints * heightRatio), false);
+  }
+
+  /** Word's Wrap Text for the selected picture. */
+  setPictureWrap(wrap: PictureWrap): boolean {
+    return this.changePicture((bridge, id, occurrence) => {
+      if (wrap === "inline") {
+        if (occurrence.placement === "inline") return JSON.stringify({ success: true, imageId: id });
+        return bridge.SetImagePlacement?.(this.handle, id, "inline", null);
+      }
+      const floating = occurrence.placement === "floating";
+      let base: FloatingImageLayout;
+      if (floating && occurrence.floatingLayout) base = writableLayout(occurrence.floatingLayout);
+      else {
+        // Made to float: where it was (its paragraph, the column's edge), above the other floating
+        // pictures, with Word's clearance at its sides.
+        const highest = this.listImages().reduce((max, i) => Math.max(max, i.floatingLayout?.relativeHeight ?? 0), 251658240);
+        base = {
+          horizontalRelativeFrom: "column", horizontalOffsetEmu: 0, horizontalAlignment: null,
+          verticalRelativeFrom: "paragraph", verticalOffsetEmu: 0, verticalAlignment: null,
+          wrapSide: "both_sides", distanceTopEmu: 0, distanceBottomEmu: 0,
+          distanceLeftEmu: FLOAT_SIDE_DISTANCE_EMU, distanceRightEmu: FLOAT_SIDE_DISTANCE_EMU,
+          relativeHeight: Math.min(highest + 1, 0xfffffffe), locked: false, layoutInCell: true, allowOverlap: true,
+        };
+      }
+      const mode = ({ square: "square", tight: "tight", through: "through", topAndBottom: "top_and_bottom",
+        behind: "none", inFront: "none" } as const)[wrap];
+      const layout: FloatingImageLayout = { ...base, wrapMode: mode, behindDocument: wrap === "behind" };
+      if (layout.wrapSide === "unknown") layout.wrapSide = "both_sides";
+      return floating
+        ? bridge.SetImageFloatingLayout?.(this.handle, id, JSON.stringify(layout))
+        : bridge.SetImagePlacement?.(this.handle, id, "floating", JSON.stringify(layout));
+    });
+  }
+
+  /** Position and wrap a floating picture (the Layout tab of the picture dialog). */
+  setPictureLayout(layout: FloatingImageLayout): boolean {
+    return this.changePicture((bridge, id, occurrence) => occurrence.placement === "floating"
+      ? bridge.SetImageFloatingLayout?.(this.handle, id, JSON.stringify(writableLayout(layout)))
+      : bridge.SetImagePlacement?.(this.handle, id, "floating", JSON.stringify(writableLayout(layout))));
+  }
+
+  /** The selected picture's alt text (description) and title; null or "" clears one. */
+  setPictureAltText(altText: string | null, title?: string | null): boolean {
+    return this.changePicture((bridge, id, occurrence) => bridge.SetImageMetadata?.(this.handle, id,
+      altText || null, title === undefined ? occurrence.title ?? null : title || null));
+  }
+
+  /** Put new picture bytes (base64) in place of the selected picture's, keeping its size and place. */
+  replacePicture(imageBase64: string): boolean {
+    return this.changePicture((bridge, id) => bridge.ReplaceImage?.(this.handle, id, imageBase64));
+  }
+
+  /** Read a picked file and put it in place of the selected picture. */
+  async replacePictureFile(file: Blob): Promise<boolean> {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let binary = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return this.replacePicture(btoa(binary));
+  }
+
+  /** Delete the selected picture. */
+  removePicture(): boolean {
+    const id = this.selectedPictureId;
+    const occurrence = id ? this.listImages().find((i) => i.id === id) : undefined;
+    const ok = this.changePicture((bridge, imageId) => bridge.RemoveImage?.(this.handle, imageId), false);
+    if (ok && occurrence) {
+      const block = this.blockForAnchorId(occurrence.anchorId);
+      if (block) {
+        this.activeBlock = block;
+        placeCaretAtOffset(block, occurrence.span.start);
+      }
+    }
+    return ok;
   }
 
   /** Read a picked file and insert it as an inline image. */
@@ -8441,6 +8864,7 @@ export class DocxEditor {
     this.syncRegionToBody(this.activeBlock ?? undefined);
     this.setupBlockDrag();
     this.gutter?.schedule();
+    if (this.selectedPictureId && !this.pictureOverlay?.picture?.isConnected) this.deselectPicture();
   }
 
   /** Re-append the gutter after a mount emptied the container (mounts replace `innerHTML`). */

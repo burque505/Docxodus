@@ -60,6 +60,9 @@ import type { CaseMode, HeadlineCaseLists } from "./change-case.js";
 import { FIND_OPTION_KEYS, findOptionApplies, normalizeFindOptions, specialFindCodes, specialReplaceCodes, type FindOptions } from "./find-query.js";
 import { LIST_DIALOG_CSS, LIST_DIALOG_HTML, ListDialog } from "./ribbon-list-dialog.js";
 import { COLUMNS_DIALOG_CSS, COLUMNS_DIALOG_HTML, ColumnsDialog } from "./ribbon-columns-dialog.js";
+import { PICTURE_DIALOG_CSS, PICTURE_DIALOG_HTML, PICTURE_MENU_HTML, PictureDialog, type PictureDialogResult, type PictureDialogTab } from "./ribbon-picture-dialog.js";
+import { formatLength, parseLength } from "./ribbon-paragraph-dialog.js";
+import type { PictureInfo, PictureWrap } from "./editor.js";
 export type { MeasurementUnit } from "./ribbon-paragraph-dialog.js";
 
 // Re-exported so the IIFE bundle built from this module (window.DocxodusEditor)
@@ -334,6 +337,9 @@ export interface RibbonEditor {
   openListDialog(): boolean;
   /** Open the Columns dialog (Word's More Columns) on the caret's section; false when no document is open. */
   openColumnsDialog(): boolean;
+  /** Open the picture dialog (Size, Text Wrapping and Position, Alt Text) on the selected picture;
+   *  false when no picture is selected. */
+  openPictureDialog(tab?: "size" | "layout" | "alt"): boolean;
   /** The levels new lists start from (see the `listDefaults` option). */
   setListDefaults(levels: ListLevelSpec[]): void;
   /** Headline Case's word lists (see the `headlineCaseLists` option); null for the built-in ones. */
@@ -346,7 +352,7 @@ export interface RibbonEditor {
   getFindOptions(): FindOptions;
   /** Set the status line. */
   setStatus(text: string): void;
-  /** Activate a ribbon tab by name ("home" | "insert" | "layout" | "references" | "review" | "view" | "table" | "headerfooter"). */
+  /** Activate a ribbon tab by name ("home" | "insert" | "layout" | "references" | "review" | "view" | "table" | "headerfooter" | "picture"). */
   selectTab(name: string): void;
   /**
    * Run an editor command by name (`DocxEditor.exec`) as a ribbon control runs it: the rail and
@@ -441,7 +447,7 @@ function ensureStyles(doc: Document): void {
   existing?.remove();
   const style = doc.createElement("style");
   style.setAttribute(RIBBON_STYLE_ATTR, RIBBON_STYLE_VERSION);
-  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS;
+  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS;
   (doc.head ?? doc.documentElement).appendChild(style);
 }
 
@@ -542,6 +548,8 @@ class RibbonSurface implements RibbonEditor {
   private columnsDialog!: ColumnsDialog;
   // (the selection the Columns dialog opened on: its fields take the focus, OK puts it back)
   private columnsRange: Range | null = null;
+  private pictureDialog!: PictureDialog;
+  private pictureUnit: MeasurementUnit = "in";
   private listDialog!: ListDialog;
   private listDefaults: ListLevelSpec[] | undefined;
   private headlineCaseLists: HeadlineCaseLists | undefined;
@@ -587,7 +595,7 @@ class RibbonSurface implements RibbonEditor {
     root.className = "dxr";
     root.dataset.state = "idle";
     root.dataset.frame = this.options.frame ?? "flush";
-    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML;
+    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML;
     for (const el of Array.from(root.querySelectorAll<HTMLElement>("[data-dxr]"))) {
       el.id = this.idPrefix + el.dataset.dxr;
     }
@@ -967,6 +975,7 @@ class RibbonSurface implements RibbonEditor {
       headlineCaseLists: this.headlineCaseLists,
       showFormattingMarks: this.showMarks,
       onFormattingMarksChange: (on) => this.marksChanged(on),
+      onPictureChange: (picture) => this.pictureChanged(picture),
       commentInitials: this.initials,
     };
   }
@@ -1459,6 +1468,173 @@ class RibbonSurface implements RibbonEditor {
     }
   }
 
+  // ── Picture Format (contextual), the picture menu and dialog ─────────────────
+
+  /** The editor selected a picture, dropped the selection, or changed the picture. */
+  private pictureChanged(info: PictureInfo | null): void {
+    const tab = this.element.querySelector<HTMLElement>('.dxr-tab[data-tab="picture"]');
+    if (tab) {
+      tab.hidden = !info;
+      if (!info && tab.getAttribute("aria-selected") === "true") this.selectTab("home");
+    }
+    if (!info) {
+      this.control("picturemenu")?.removeAttribute("data-open");
+      return;
+    }
+    const wrap = this.require<HTMLSelectElement>("picwrap");
+    wrap.value = info.wrap ?? "";
+    wrap.disabled = !info.can.wrap;
+    const doc = this.element.ownerDocument;
+    for (const [name, points] of [["picheight", info.heightPoints], ["picwidth", info.widthPoints]] as const) {
+      const input = this.require<HTMLInputElement>(name);
+      if (doc.activeElement !== input) input.value = points === null ? "" : formatLength(points * 20, this.pictureUnit);
+      input.disabled = !info.can.size;
+    }
+    this.require<HTMLButtonElement>("picreset").disabled = !info.can.size || !info.originalWidthPoints;
+    this.require<HTMLButtonElement>("picposition").disabled = !info.can.layout && !info.can.wrap;
+    this.require<HTMLButtonElement>("picalt").disabled = !info.can.altText;
+    this.require<HTMLButtonElement>("picdelete").disabled = !info.can.remove;
+    const replace = this.require<HTMLInputElement>("picreplace");
+    replace.disabled = !info.can.replace;
+    replace.closest("label")?.toggleAttribute("aria-disabled", !info.can.replace);
+    const menu = this.control("picturemenu");
+    if (menu) {
+      for (const item of Array.from(menu.querySelectorAll<HTMLButtonElement>("[data-pm-wrap]"))) {
+        item.setAttribute("aria-checked", String(item.dataset.pmWrap === info.wrap));
+        item.disabled = !info.can.wrap;
+      }
+      menu.querySelector<HTMLButtonElement>('[data-pm="alt"]')!.disabled = !info.can.altText;
+      menu.querySelector<HTMLButtonElement>('[data-pm="replace"]')!.disabled = !info.can.replace;
+      menu.querySelector<HTMLButtonElement>('[data-pm="delete"]')!.disabled = !info.can.remove;
+    }
+  }
+
+  /** Run one picture change as a ribbon command; a refusal says so on the status line. */
+  private pictureCommand(label: string, change: (live: DocxEditor) => boolean, command: RibbonCommand): void {
+    const live = this.live;
+    if (!live) return;
+    let refused = false;
+    this.run(label, () => {
+      refused = !change(live);
+      if (refused) this.setStatus(this.translateText(RIBBON_STATUS_TEXTS.pictureRefused));
+    }, () => refused ? undefined : command);
+  }
+
+  private applyPictureDialog(result: PictureDialogResult): void {
+    // Wrapping and position first (a picture made to float keeps its size), then the size, then the words.
+    if (result.wrap) this.pictureCommand("picture wrap", (l) => l.setPictureWrap(result.wrap!), cmd("pictureWrap", { wrap: result.wrap }));
+    if (result.layout) {
+      const layout = result.layout;
+      this.pictureCommand("picture layout", (l) => l.setPictureLayout(layout), cmd("pictureLayout", { layout: { ...layout } as unknown as Record<string, unknown> }));
+    }
+    if (result.size) {
+      const { widthPoints, heightPoints } = result.size;
+      this.pictureCommand("picture size", (l) => l.setPictureSize(widthPoints, heightPoints, false),
+        cmd("pictureSize", { width: widthPoints, height: heightPoints, lockAspect: false }));
+    }
+    if (result.altText) {
+      const { altText, title } = result.altText;
+      this.pictureCommand("alt text", (l) => l.setPictureAltText(altText, title), cmd("pictureAltText", { altText, title }));
+    }
+  }
+
+  openPictureDialog(tab: "size" | "layout" | "alt" = "size"): boolean {
+    if (!this.live || this.pictureDialog.open || this.columnsDialog.open || this.listDialog.open || this.paragraphDialog.open) return false;
+    this.closePopovers();
+    return this.pictureDialog.show(tab as PictureDialogTab);
+  }
+
+  private wirePicture(): void {
+    this.pictureUnit = this.options.measurementUnit ?? "in";
+    this.pictureDialog = new PictureDialog(this.require<HTMLDialogElement>("picturedialog"), {
+      read: () => this.live?.selectedPicture() ?? null,
+      apply: (result) => this.applyPictureDialog(result),
+    }, this.pictureUnit);
+
+    const wrap = this.require<HTMLSelectElement>("picwrap");
+    wrap.addEventListener("change", () => {
+      const value = wrap.value as PictureWrap;
+      if (value) this.pictureCommand("picture wrap", (l) => l.setPictureWrap(value), cmd("pictureWrap", { wrap: value }));
+    });
+    for (const [name, side] of [["picheight", "height"], ["picwidth", "width"]] as const) {
+      const input = this.require<HTMLInputElement>(name);
+      input.addEventListener("change", () => {
+        const twips = parseLength(input.value, this.pictureUnit);
+        if (twips === null || twips <= 0) {
+          this.pictureChanged(this.live?.selectedPicture() ?? null);
+          return;
+        }
+        const points = Math.round((twips / 20) * 100) / 100;
+        this.pictureCommand("picture size",
+          (l) => side === "height" ? l.setPictureSize(undefined, points) : l.setPictureSize(points, undefined),
+          cmd("pictureSize", { [side]: points }));
+      });
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") { event.preventDefault(); input.dispatchEvent(new Event("change")); }
+      });
+    }
+    this.require("picreset").addEventListener("click", () =>
+      this.pictureCommand("reset picture size", (l) => l.resetPictureSize(), cmd("resetPictureSize")));
+    this.require("picmore").addEventListener("click", () => this.openPictureDialog("size"));
+    this.require("picposition").addEventListener("click", () => this.openPictureDialog("layout"));
+    this.require("picalt").addEventListener("click", () => this.openPictureDialog("alt"));
+    this.require("picdelete").addEventListener("click", () =>
+      this.pictureCommand("delete picture", (l) => l.removePicture(), cmd("deletePicture")));
+    const replace = this.require<HTMLInputElement>("picreplace");
+    replace.addEventListener("change", async () => {
+      const chosen = replace.files?.[0];
+      replace.value = "";
+      const live = this.live;
+      if (!chosen || !live) return;
+      const ok = await live.replacePictureFile(chosen);
+      if (ok) { this.history?.edited(); this.scheduleDirtyCheck(); }
+      this.setStatus(ok ? `${this.translateText("Changed the picture to")} ${chosen.name}` : this.translateText(RIBBON_STATUS_TEXTS.pictureRefused));
+    });
+
+    // The right-click menu on a picture (the editor selected it on the button press).
+    const menu = this.require("picturemenu");
+    const surface = this.require("editor");
+    surface.addEventListener("contextmenu", (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target?.closest("img, [data-docx-vector-frame]") || !this.live?.selectedPicture()) return;
+      event.preventDefault();
+      this.closePopovers();
+      this.pictureChanged(this.live.selectedPicture());
+      menu.setAttribute("data-open", "");
+      const view = this.element.ownerDocument.defaultView;
+      const width = view?.innerWidth ?? 1024, height = view?.innerHeight ?? 768;
+      const box = menu.getBoundingClientRect();
+      menu.style.left = `${Math.max(4, Math.min(event.clientX, width - box.width - 4))}px`;
+      menu.style.top = `${Math.max(4, Math.min(event.clientY, height - box.height - 4))}px`;
+      menu.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+    });
+    menu.addEventListener("mousedown", (event) => event.preventDefault());
+    menu.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") { event.preventDefault(); menu.removeAttribute("data-open"); return; }
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+      event.preventDefault();
+      const items = Array.from(menu.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
+      const at = items.indexOf(event.target as HTMLButtonElement);
+      items[(at + (event.key === "ArrowDown" ? 1 : items.length - 1)) % items.length]?.focus();
+    });
+    menu.addEventListener("click", (event) => {
+      const item = (event.target as HTMLElement).closest<HTMLButtonElement>("button");
+      if (!item || item.disabled) return;
+      menu.removeAttribute("data-open");
+      const wrapTo = item.dataset.pmWrap as PictureWrap | undefined;
+      if (wrapTo) {
+        this.pictureCommand("picture wrap", (l) => l.setPictureWrap(wrapTo), cmd("pictureWrap", { wrap: wrapTo }));
+        return;
+      }
+      switch (item.dataset.pm) {
+        case "size": this.openPictureDialog("size"); break;
+        case "alt": this.openPictureDialog("alt"); break;
+        case "replace": replace.click(); break;
+        case "delete": this.pictureCommand("delete picture", (l) => l.removePicture(), cmd("deletePicture")); break;
+      }
+    });
+  }
+
   /** Layout > Page setup > Columns (One, Two, Three, More Columns…) and its dialog. */
   private wireColumns(): void {
     this.columnsDialog = new ColumnsDialog(this.require<HTMLDialogElement>("columnsdialog"), {
@@ -1528,12 +1704,16 @@ class RibbonSurface implements RibbonEditor {
     this.paragraphDialog.setUnit(unit);
     this.listDialog.setUnit(unit);
     this.columnsDialog.setUnit(unit);
+    this.pictureDialog.setUnit(unit);
+    this.pictureUnit = unit;
+    this.pictureChanged(this.live?.selectedPicture() ?? null);
   }
 
   private wire(): void {
     this.wireParagraphDialog();
     this.wireListDialog();
     this.wireColumns();
+    this.wirePicture();
     const ribbon = this.require("ribbon");
 
     // (the File tab opens a menu instead: wireFileMenu)
@@ -2690,6 +2870,7 @@ class RibbonSurface implements RibbonEditor {
   }
 
   private closePopovers(): void {
+    this.control("picturemenu")?.removeAttribute("data-open");
     this.control("pastemenu")?.removeAttribute("data-open");
     this.control("pastemore")?.setAttribute("aria-expanded", "false");
     this.control("casemenu")?.removeAttribute("data-open");
@@ -2706,6 +2887,8 @@ class RibbonSurface implements RibbonEditor {
 
   private maybeClosePopovers(event: MouseEvent): void {
     const target = event.target as Node;
+    const picMenu = this.control("picturemenu");
+    if (picMenu?.hasAttribute("data-open") && !picMenu.contains(target)) picMenu.removeAttribute("data-open");
     for (const [popName, buttonName] of [["gridpicker", "table"], ["linkpop", "link"], ["filemenu", "filebutton"], ["pastemenu", "pastemore"], ["casemenu", "changecase"], ["findoptmenu", "findoptions"], ["findspecialmenu", "findspecial"]] as const) {
       const pop = this.control(popName);
       if (!pop?.hasAttribute("data-open")) continue;

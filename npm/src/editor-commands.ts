@@ -12,7 +12,7 @@
  * matching ribbon control is.
  */
 import type { DocxEditor, EditorAlignment, EditorPageSetup, EditorParagraphFormat, FormatKey, PasteFormatting } from "./editor.js";
-import type { ListFormat, ListLevelSpec, NumberFormat, TableBorderSpec, TableOfContentsOptions } from "./types.js";
+import type { FloatingImageLayout, ListFormat, ListLevelSpec, NumberFormat, TableBorderSpec, TableOfContentsOptions } from "./types.js";
 import { TrackedChangeMode } from "./types.js";
 import { FIND_OPTION_KEYS, type FindOptions } from "./find-query.js";
 
@@ -49,7 +49,7 @@ export interface EditorCommandInfo {
   /** The name `exec` takes, e.g. `"bold"`. */
   name: string;
   /** Where it belongs, as the ribbon groups its controls: `"font"`, `"paragraph"`, `"insert"`,
-   *  `"layout"`, `"table"`, `"review"`, `"edit"`, `"view"`, `"query"`. A query only reads the
+   *  `"layout"`, `"table"`, `"picture"`, `"review"`, `"edit"`, `"view"`, `"query"`. A query only reads the
    *  document. */
   group: string;
   /** What it does, in a sentence. */
@@ -163,6 +163,7 @@ function must(ok: boolean, command: string, why: string): void {
 }
 
 const COLUMN_SCOPES = ["section", "document", "forward", "selection"] as const;
+const PICTURE_WRAPS = ["inline", "square", "tight", "through", "topAndBottom", "behind", "inFront"] as const;
 const ALIGNMENTS: readonly EditorAlignment[] = ["left", "center", "right", "justify"];
 const PASTE_FORMATTINGS: readonly PasteFormatting[] = ["merge", "keep", "text"];
 const LIST_FORMATS: readonly ListFormat[] = [
@@ -548,6 +549,54 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   },
   deleteParagraph: { group: "edit", description: "Delete the paragraph (or table) at the caret.", args: {}, run: (e) => e.deleteBlock() },
 
+  // ── picture ──
+  insertPicture: {
+    group: "insert", description: "Insert a picture at the caret, in line with the text: base64 bytes of a PNG, JPEG, GIF, BMP, TIFF or WebP; width in points (the height keeps the shape).",
+    args: { base64: "string", "altText?": "string", "width?": "number" },
+    run: (e, a) => {
+      const width = a.optNumber("width");
+      const altText = a.optString("altText");
+      must(e.insertImage(a.string("base64"), { ...(altText !== undefined ? { altText } : {}), ...(width !== undefined ? { widthPoints: width } : {}) }),
+        "insertPicture", "the picture goes at the caret in an editable paragraph; check the bytes");
+    },
+  },
+  selectPicture: {
+    group: "picture", description: "Select a picture of the body, as a click on it does (index 0 = the first).",
+    args: { "index?": "number" },
+    run: (e, a) => must(e.selectPicture(Math.trunc(a.optNumber("index") ?? 0)), "selectPicture", "there is no such picture"),
+  },
+  pictureSize: {
+    group: "picture", description: "Size the selected picture in points: one side keeps the shape (lockAspect, the default); both set both.",
+    args: { "width?": "number", "height?": "number", "lockAspect?": "boolean" },
+    run: (e, a) => must(e.setPictureSize(a.optNumber("width"), a.optNumber("height"), a.optBool("lockAspect") ?? true),
+      "pictureSize", "select a picture first; give a width or a height"),
+  },
+  resetPictureSize: {
+    group: "picture", description: "Give the selected picture its own size again.", args: {},
+    run: (e) => must(e.resetPictureSize(), "resetPictureSize", "select a picture whose own size is known"),
+  },
+  pictureWrap: {
+    group: "picture", description: "Word's Wrap Text for the selected picture.",
+    args: { wrap: PICTURE_WRAPS.join("|") },
+    run: (e, a) => must(e.setPictureWrap(a.oneOf("wrap", PICTURE_WRAPS)), "pictureWrap",
+      "select a picture; this one's wrapping cannot be changed"),
+  },
+  pictureLayout: {
+    group: "picture", description: "Position and wrap the selected picture (floating): a FloatingImageLayout object, offsets in EMUs.",
+    args: { layout: "object" },
+    run: (e, a) => must(e.setPictureLayout(a.object("layout") as FloatingImageLayout), "pictureLayout",
+      "select a picture whose position can be changed; check the layout"),
+  },
+  pictureAltText: {
+    group: "picture", description: "The selected picture's alt text (description) and title.",
+    args: { altText: "string", "title?": "string" },
+    run: (e, a) => must(e.setPictureAltText(a.string("altText"), a.optString("title")), "pictureAltText", "select a picture first"),
+  },
+  deletePicture: {
+    group: "picture", description: "Delete the selected picture.", args: {},
+    run: (e) => must(e.removePicture(), "deletePicture", "select a picture first"),
+  },
+
   // ── view ──
   zoom: { group: "view", description: "Set the zoom (1 = 100%).", args: { scale: "number" }, run: (e, a) => e.setZoom(a.number("scale")) },
   pageWidth: { group: "view", description: "Zoom so the page is as wide as the window (kept as it resizes).", args: {}, run: (e) => e.fitPageWidth() },
@@ -577,6 +626,10 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   styles: {
     group: "query", description: "The document's paragraph styles.", args: {}, returns: "[{ id, name, … }]",
     run: (e) => e.styles(),
+  },
+  picture: {
+    group: "query", description: "The selected picture: id, wrap, size in points, alt text, title, layout, what can change.",
+    args: {}, returns: "object, or null", run: (e) => e.selectedPicture(),
   },
   pageInfo: { group: "query", description: "In page view, the caret's page and the page count.", args: {}, returns: "{ page, total }, or null", run: (e) => e.pageInfo() },
   version: { group: "query", description: "The document's version: it goes up with every committed edit.", args: {}, returns: "number, or null", run: (e) => e.version },

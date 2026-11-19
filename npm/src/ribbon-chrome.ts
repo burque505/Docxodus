@@ -29,7 +29,7 @@
  */
 
 /** Bumped whenever RIBBON_CSS changes, so a stale injected stylesheet is replaced. */
-export const RIBBON_STYLE_VERSION = "14";
+export const RIBBON_STYLE_VERSION = "15";
 export const RIBBON_STYLE_ATTR = "data-docxodus-ribbon-styles";
 
 /** Width of the comment gutter the surface reserves beside the sheet, in px. */
@@ -355,6 +355,7 @@ export const RIBBON_CSS = `
   outline-offset: 1px;
 }
 .dxr [data-dxr="fontsize"] { width: 58px; }
+.dxr [data-dxr="picheight"], .dxr [data-dxr="picwidth"] { width: 64px; }
 .dxr [data-dxr="showmarks"] { font-size: 17px; font-weight: 700; line-height: 1; }
 .dxr [data-dxr="fontfamily"] { width: 138px; }
 .dxr [data-dxr="style"] { width: 148px; }
@@ -990,6 +991,7 @@ export const RIBBON_HTML = `
     <button type="button" class="dxr-tab" role="tab" data-tab="view" aria-selected="false">View</button>
     <button type="button" class="dxr-tab" role="tab" data-tab="table" data-contextual aria-selected="false" hidden>Table</button>
     <button type="button" class="dxr-tab" role="tab" data-tab="headerfooter" data-contextual aria-selected="false" hidden>Header &amp; Footer</button>
+    <button type="button" class="dxr-tab" role="tab" data-tab="picture" data-contextual aria-selected="false" hidden>Picture Format</button>
   </div>
 
   <div class="dxr-ribbon" data-dxr="ribbon" aria-disabled="true">
@@ -1461,6 +1463,53 @@ export const RIBBON_HTML = `
       </div>
     </div>
 
+    <!-- PICTURE FORMAT (contextual) ──────────────────────────────────────────
+         Word's Picture Format tab while a picture is selected: Wrap Text, size, alt text,
+         change and delete; More… is the Size / Text Wrapping and Position / Alt Text dialog. -->
+    <div class="dxr-panel" data-panel="picture">
+      <div class="dxr-group">
+        <span class="dxr-glabel">Arrange</span>
+        <div class="dxr-row">
+          <select data-dxr="picwrap" title="How the text flows around the picture">
+            <option value="inline">In Line with Text</option>
+            <option value="square">Square</option>
+            <option value="tight">Tight</option>
+            <option value="through">Through</option>
+            <option value="topAndBottom">Top and Bottom</option>
+            <option value="behind">Behind Text</option>
+            <option value="inFront">In Front of Text</option>
+          </select>
+        </div>
+        <div class="dxr-row">
+          <button type="button" data-dxr="picposition" title="Where the picture sits and how far the text keeps from it">Position&#8230;</button>
+        </div>
+      </div>
+      <div class="dxr-group">
+        <span class="dxr-glabel">Size</span>
+        <div class="dxr-row">
+          <label class="dxr-toggle">Height <input data-dxr="picheight" type="text" autocomplete="off" title="The picture's height (the width keeps the shape)" /></label>
+          <label class="dxr-toggle">Width <input data-dxr="picwidth" type="text" autocomplete="off" title="The picture's width (the height keeps the shape)" /></label>
+        </div>
+        <div class="dxr-row">
+          <button type="button" data-dxr="picreset" title="Give the picture its own size again">Reset size</button>
+          <button type="button" data-dxr="picmore" title="Size, wrapping, position and alt text">More&#8230;</button>
+        </div>
+      </div>
+      <div class="dxr-group">
+        <span class="dxr-glabel">Accessibility</span>
+        <div class="dxr-row">
+          <button type="button" data-dxr="picalt" title="Describe the picture for people who cannot see it">Alt Text&#8230;</button>
+        </div>
+      </div>
+      <div class="dxr-group">
+        <span class="dxr-glabel">Picture</span>
+        <div class="dxr-row">
+          <label class="dxr-btn" tabindex="0" title="Put another picture in this one's place, at the same size">Change&#8230;<input data-dxr="picreplace" type="file" accept="image/png,image/jpeg,image/gif,image/bmp,image/webp,image/tiff" hidden /></label>
+          <button type="button" data-dxr="picdelete" class="dxr-danger" title="Delete the picture">Delete</button>
+        </div>
+      </div>
+    </div>
+
     <!-- HEADER & FOOTER (contextual) ────────────────────────────────────────
          Word's Header & Footer Tools: the two option checkboxes, page-number fields,
          navigation between the stories, and Close. -->
@@ -1651,6 +1700,7 @@ export const RIBBON_HTML = `
  * translate the ribbon with `setLabels`.
  */
 export const RIBBON_STATUS_TEXTS = {
+  pictureRefused: "This picture cannot be changed that way",
   breakRefused: "A break goes in a body paragraph, not in a table, header or footer, nor while changes are tracked",
   columnsRefused: "Columns go in the body, each at least half an inch wide, and a new section cannot start while changes are tracked",
 } as const;

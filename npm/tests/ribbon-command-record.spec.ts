@@ -116,12 +116,12 @@ test('every command a control reports is one exec knows, with arguments it takes
         'commentprev', 'commentnext', 'commentdelete', 'commentresolve', 'fontcolorbtn', 'shadebtn', 'gotoheader', 'gotofooter',
         'delblock'].includes((el as HTMLElement).dataset.dxr ?? '');
     for (const b of Array.from(host.querySelectorAll<HTMLButtonElement>('.dxr-panel button, .dxr-rail button'))) {
-      if (skip(b) || b.disabled || b.closest('[data-panel="table"], [data-panel="headerfooter"]')) continue;
+      if (skip(b) || b.disabled || b.closest('[data-panel="table"], [data-panel="headerfooter"], [data-panel="picture"]')) continue;
       host.querySelector<HTMLElement>('[data-anchor][contenteditable="true"]')?.focus();
       try { b.click(); } catch { /* (a command that throws reports nothing) */ }
     }
     for (const s of Array.from(host.querySelectorAll<HTMLSelectElement>('.dxr-panel select'))) {
-      if (skip(s) || s.closest('[data-panel="table"], [data-panel="headerfooter"]')) continue;
+      if (skip(s) || s.closest('[data-panel="table"], [data-panel="headerfooter"], [data-panel="picture"]')) continue;
       const option = Array.from(s.options).find((o) => o.value !== '' && o.value !== s.value);
       if (!option) continue;
       s.value = option.value;
