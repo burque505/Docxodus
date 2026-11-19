@@ -50,6 +50,7 @@ import {
   RIBBON_CSS,
   RIBBON_HINT_HTML,
   RIBBON_HTML,
+  RIBBON_STATUS_TEXTS,
   RIBBON_STYLE_ATTR,
   RIBBON_STYLE_VERSION,
 } from "./ribbon-chrome.js";
@@ -539,6 +540,8 @@ class RibbonSurface implements RibbonEditor {
   private listDefaults: ListLevelSpec[] | undefined;
   private headlineCaseLists: HeadlineCaseLists | undefined;
   private showMarks = false;
+  // (whether the last break insertBreakAt tried was refused: read by breakCommand)
+  private breakRefused = false;
   // The chrome's text in the host's language (setLabels), and the English each text had.
   private labels: Record<string, string> = {};
   private readonly englishText = new WeakMap<Text, { english: string; written: string }>();
@@ -1501,7 +1504,7 @@ class RibbonSurface implements RibbonEditor {
     delegate<HTMLElement>("button[data-list]", (b) => `list ${b.dataset.list}`, (b) =>
       this.live!.toggleList(b.dataset.list as "bullet" | "decimal"), (b) => cmd("list", { kind: b.dataset.list! }));
     delegate<HTMLElement>("button[data-pagebreak]", () => "page break", () =>
-      this.live!.insertBreak("page"), () => cmd("insertBreak", { kind: "page" }));
+      this.insertBreakAt("page"), () => () => this.breakCommand("page"));
     const tableCommands: Record<string, RibbonCommand> = {
       rowAbove: cmd("insertRow", { where: "above" }),
       rowBelow: cmd("insertRow", { where: "below" }),
@@ -1862,10 +1865,7 @@ class RibbonSurface implements RibbonEditor {
       const [top, bottom, left, right] = v.split(",").map((n) => parseInt(n, 10));
       return { marginTopTwips: top, marginBottomTwips: bottom, marginLeftTwips: left, marginRightTwips: right };
     };
-    this.wireSelect("breaks", "break", (v) => {
-      if (v === "page" || v === "column") this.live!.insertBreak(v);
-      else this.live!.insertSectionBreak(v as SectionStart);
-    }, (v) => v === "page" || v === "column" ? cmd("insertBreak", { kind: v }) : cmd("sectionBreak", { start: v }));
+    this.wireSelect("breaks", "break", (v) => this.insertBreakAt(v), (v) => () => this.breakCommand(v));
     this.wireSelect("sectionstart", "section start", (v) => pageSetup({ sectionStart: v as SectionStart }),
       (v) => cmd("pageSetup", { sectionStart: v }));
     this.wireSelect("margins", "margins", (v) => pageSetup(margins(v)), (v) => cmd("pageSetup", margins(v)));
@@ -2304,6 +2304,25 @@ class RibbonSurface implements RibbonEditor {
     field.title = error ?? "";
   }
 
+  /**
+   * A page, column or section break at the caret (Layout > Breaks, the Page break button,
+   * Ctrl+Enter). The engine refuses one in a table, header or footer, or while changes are
+   * tracked: the status line says so, and {@link breakCommand} keeps it out of a recording.
+   */
+  private insertBreakAt(kind: string): void {
+    const live = this.live!;
+    this.breakRefused = !(kind === "page" || kind === "column"
+      ? live.insertBreak(kind)
+      : live.insertSectionBreak(kind as SectionStart));
+    if (this.breakRefused) this.setStatus(this.translateText(RIBBON_STATUS_TEXTS.breakRefused));
+  }
+
+  /** The recorded command for the break {@link insertBreakAt} just made (none when it was refused). */
+  private breakCommand(kind: string): RibbonCommand | undefined {
+    if (this.breakRefused) return undefined;
+    return kind === "page" || kind === "column" ? cmd("insertBreak", { kind }) : cmd("sectionBreak", { start: kind });
+  }
+
   /** A text in the ribbon's language (see `setLabels`), for text the ribbon writes later. */
   private translateText(text: string): string {
     return this.labels[text] ?? text;
@@ -2514,7 +2533,7 @@ class RibbonSurface implements RibbonEditor {
       case "j": align("justify"); return;
       case "]": event.preventDefault(); this.run("grow font", () => this.live!.adjustFontSize(1), cmd("growFont")); return;
       case "[": event.preventDefault(); this.run("shrink font", () => this.live!.adjustFontSize(-1), cmd("shrinkFont")); return;
-      case "enter": event.preventDefault(); this.run("page break", () => this.live!.insertBreak("page"), cmd("insertBreak", { kind: "page" })); return;
+      case "enter": event.preventDefault(); this.run("page break", () => this.insertBreakAt("page"), () => this.breakCommand("page")); return;
       default: return;
     }
   }

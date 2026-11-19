@@ -1639,6 +1639,14 @@ export const RIBBON_HTML = `
 </div>
 `;
 
+/**
+ * Status-line texts the ribbon writes from code (not in {@link RIBBON_HTML}), for hosts that
+ * translate the ribbon with `setLabels`.
+ */
+export const RIBBON_STATUS_TEXTS = {
+  breakRefused: "A break goes in a body paragraph, not in a table, header or footer, nor while changes are tracked",
+} as const;
+
 /** The default hint copy, shown above the document in full chrome. */
 export const RIBBON_HINT_HTML =
   "Click any paragraph, heading, table cell, footnote, header or footer to edit it. " +
