@@ -6678,16 +6678,37 @@ export class DocxEditor {
 
   /** The rendered pictures of a block, outermost only (a vector frame's own parts are not). */
   private picturesIn(block: HTMLElement): HTMLElement[] {
-    return Array.from(block.querySelectorAll<HTMLElement>(PICTURE_SELECTOR))
+    const own = Array.from(block.querySelectorAll<HTMLElement>(PICTURE_SELECTOR))
       .filter((p) => !p.parentElement?.closest(PICTURE_SELECTOR));
+    // Page view lifts floating drawings out to the page box; a hidden marker keeps their place.
+    const homes = Array.from(block.querySelectorAll<HTMLElement>("[data-docx-anchor-home-of]"));
+    if (homes.length === 0) return own;
+    const doc = block.ownerDocument;
+    const lifted = homes.flatMap((home) => {
+      const drawing = doc.querySelector<HTMLElement>(`[data-docx-anchor-home="${home.dataset.docxAnchorHomeOf}"]`);
+      return drawing ? Array.from(drawing.querySelectorAll<HTMLElement>(PICTURE_SELECTOR))
+        .filter((p) => !p.parentElement?.closest(PICTURE_SELECTOR)) : [];
+    });
+    const at = (p: HTMLElement): Node => this.pictureHome(p) ?? p;
+    return [...own, ...lifted].sort((a, b) =>
+      at(a) === at(b) ? 0 : at(a).compareDocumentPosition(at(b)) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
+  }
+
+  /** The hidden marker standing in a paragraph for a picture page view lifted out of it, or null. */
+  private pictureHome(picture: HTMLElement): HTMLElement | null {
+    const id = picture.closest<HTMLElement>("[data-docx-anchor-home]")?.dataset.docxAnchorHome;
+    if (!id) return null;
+    const home = picture.ownerDocument.querySelector<HTMLElement>(`[data-docx-anchor-home-of="${id}"]`);
+    return home && this.container.contains(home) ? home : null;
   }
 
   /** A picture's place in its block: its content offset (pictures take none) and its rank among
    *  the pictures at that offset, which is how the engine's occurrences line up with it. */
   private picturePlace(picture: HTMLElement, block: HTMLElement): { offset: number; rank: number } {
     const offsetOf = (p: HTMLElement): number => {
-      const parent = p.parentNode!;
-      return contentOffsetOf(block, parent, Array.prototype.indexOf.call(parent.childNodes, p));
+      const node = this.pictureHome(p) ?? p;
+      const parent = node.parentNode!;
+      return contentOffsetOf(block, parent, Array.prototype.indexOf.call(parent.childNodes, node));
     };
     const offset = offsetOf(picture);
     const same = this.picturesIn(block).filter((p) => offsetOf(p) === offset);
@@ -6710,7 +6731,7 @@ export class DocxEditor {
     const target = event.target instanceof Element ? event.target : null;
     if (this.pictureOverlay?.owns(target)) return true;
     const picture = target?.closest<HTMLElement>(PICTURE_SELECTOR) ?? null;
-    const block = picture ? this.editableBlockOf(picture) : null;
+    const block = picture ? this.editableBlockOf(this.pictureHome(picture) ?? picture) : null;
     if (!picture || !block || (event.button !== 0 && event.button !== 2)) {
       // A click elsewhere in the document drops the selection; one in the ribbon or a dialog keeps it.
       if (this.selectedPictureId && event.button === 0 && target && this.container.contains(target)) this.deselectPicture();
@@ -6754,7 +6775,7 @@ export class DocxEditor {
     const sel = window.getSelection();
     if (sel) {
       const range = document.createRange();
-      range.setStartAfter(picture);
+      range.setStartAfter(this.pictureHome(picture) ?? picture);
       range.collapse(true);
       sel.removeAllRanges();
       sel.addRange(range);
@@ -6786,7 +6807,8 @@ export class DocxEditor {
       const sel = window.getSelection();
       if (!sel) return;
       const range = document.createRange();
-      if (before) range.setStartBefore(picture); else range.setStartAfter(picture);
+      const at = this.pictureHome(picture) ?? picture;
+      if (before) range.setStartBefore(at); else range.setStartAfter(at);
       range.collapse(true);
       sel.removeAllRanges();
       sel.addRange(range);
