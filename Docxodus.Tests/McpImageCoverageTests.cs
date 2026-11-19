@@ -42,7 +42,7 @@ public sealed class McpImageCoverageTests : IDisposable
         var capabilities = Call("docxodus_images", new { action = "capabilities" }).GetProperty("capabilities");
         Assert.Contains("embed_linked", capabilities.GetProperty("operations").EnumerateArray().Select(value => value.GetString()));
         Assert.Contains("tight", capabilities.GetProperty("mutableWrapModes").EnumerateArray().Select(value => value.GetString()));
-        Assert.Equal(7, capabilities.GetProperty("trackedOperations").GetArrayLength());
+        Assert.Equal(8, capabilities.GetProperty("trackedOperations").GetArrayLength());
         Assert.Contains(capabilities.GetProperty("markups").EnumerateArray(),
             markup => markup.GetProperty("markup").GetString() == "legacy_vml");
         Assert.True(Assert.Single(capabilities.GetProperty("formats").EnumerateArray(),

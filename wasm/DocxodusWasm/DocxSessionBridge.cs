@@ -863,6 +863,10 @@ public static partial class DocxSessionBridge
         DocxSessionOps.SetImageMetadata(h, imageId, altText, title);
 
     [JSExport]
+    public static string SetImagePlacement(int h, string imageId, string placement, string? layoutJson) =>
+        DocxSessionOps.SetImagePlacement(h, imageId, placement, layoutJson);
+
+    [JSExport]
     public static string SetImageFloatingLayout(int h, string imageId, string layoutJson) =>
         DocxSessionOps.SetImageFloatingLayout(h, imageId, layoutJson);
 
