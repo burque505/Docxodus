@@ -137,6 +137,8 @@ internal static class BlockMetadataOps
             FooterRefs = footerRefs,
             PageNumberStart = pageNumberStart,
             PageNumberFormat = pageNumberFormat,
+            SectionStart = (string?)sectPr.Element(W.type)?.Attribute(W.val) is { Length: > 0 } sectionStart
+                ? sectionStart : "nextPage",
         };
     }
 

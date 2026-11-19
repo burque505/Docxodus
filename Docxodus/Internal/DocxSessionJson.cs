@@ -762,6 +762,8 @@ internal static class DocxSessionJson
             MarginRightTwips = TryGetIntNullable(root, "marginRightTwips"),
             HeaderDistanceTwips = TryGetIntNullable(root, "headerDistanceTwips"),
             FooterDistanceTwips = TryGetIntNullable(root, "footerDistanceTwips"),
+            SectionStart = root.TryGetProperty("sectionStart", out var start) && start.ValueKind == JsonValueKind.String
+                ? start.GetString() : null,
         };
     }
 
@@ -3013,6 +3015,7 @@ internal static class DocxSessionJson
           .Append(",\"titlePage\":").Append(info.TitlePage ? "true" : "false")
           .Append(",\"evenAndOddHeaders\":").Append(info.EvenAndOddHeaders ? "true" : "false")
           .Append(",\"columns\":").Append(info.Columns)
+          .Append(",\"sectionStart\":").Append(JsonString(info.SectionStart))
           .Append(",\"headerPartUris\":[");
         for (int i = 0; i < info.HeaderPartUris.Count; i++)
         {

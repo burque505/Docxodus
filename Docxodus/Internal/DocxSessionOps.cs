@@ -911,6 +911,14 @@ internal static class DocxSessionOps
         MutationPreconditions? preconditions = null) =>
         Mutate(handle, preconditions, anchorId, s => s.SetPageSetup(anchorId, op ?? new PageSetupOp()));
 
+    public static string InsertSectionBreak(int handle, string anchorId, int characterOffset, string sectionStart,
+        MutationPreconditions? preconditions = null) =>
+        Mutate(handle, preconditions, anchorId, s => s.InsertSectionBreak(anchorId, characterOffset, sectionStart));
+
+    public static string InsertBreak(int handle, string anchorId, int characterOffset, string kind,
+        MutationPreconditions? preconditions = null) =>
+        Mutate(handle, preconditions, anchorId, s => s.InsertBreak(anchorId, characterOffset, kind));
+
     // ─── Reference fields (issue #607) ──────────────────────────────────
 
     public static string InsertTableOfContents(

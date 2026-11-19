@@ -134,6 +134,40 @@
       }
     },
     {
+      "op": "insertSectionBreak",
+      "facade": "InsertSectionBreak",
+      "result": "EditResult",
+      "args": [
+        { "name": "anchorId", "type": "anchor", "required": true },
+        { "name": "characterOffset", "type": "int", "required": true },
+        { "name": "sectionStart", "type": "string", "required": false, "default": "nextPage" }
+      ],
+      "transports": {
+        "wasm": { "method": "InsertSectionBreak" },
+        "npm": { "method": "insertSectionBreak" },
+        "python": { "absent": "not exposed yet: a new op (Word's Layout > Breaks) that wasm and npm carry first" },
+        "stdio": { "absent": "not exposed yet: a new op (Word's Layout > Breaks) that wasm and npm carry first" },
+        "mcp": { "absent": "not exposed yet: a new op (Word's Layout > Breaks) that wasm and npm carry first" }
+      }
+    },
+    {
+      "op": "insertBreak",
+      "facade": "InsertBreak",
+      "result": "EditResult",
+      "args": [
+        { "name": "anchorId", "type": "anchor", "required": true },
+        { "name": "characterOffset", "type": "int", "required": true },
+        { "name": "kind", "type": "string", "required": false, "default": "page" }
+      ],
+      "transports": {
+        "wasm": { "method": "InsertBreak" },
+        "npm": { "method": "insertBreak" },
+        "python": { "absent": "not exposed yet: a new op (Word's Layout > Breaks) that wasm and npm carry first" },
+        "stdio": { "absent": "not exposed yet: a new op (Word's Layout > Breaks) that wasm and npm carry first" },
+        "mcp": { "absent": "not exposed yet: a new op (Word's Layout > Breaks) that wasm and npm carry first" }
+      }
+    },
+    {
       "op": "getSectionInfo",
       "facade": "GetSectionInfo",
       "result": "SectionInfo?",
