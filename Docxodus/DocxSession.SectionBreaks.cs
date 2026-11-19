@@ -44,40 +44,48 @@ public sealed partial class DocxSession
         if (!SectionStarts.Contains(sectionStart, StringComparer.Ordinal))
             return EditResult.Fail(EditErrorCode.InvalidPageSetup,
                 $"unknown section start '{sectionStart}': use {string.Join(", ", SectionStarts)}", anchorId);
-        return SplitWithBreak(anchorId, characterOffset, "InsertSectionBreak", (paragraph, body) =>
+        return SplitWithBreak(anchorId, characterOffset, "InsertSectionBreak",
+            (paragraph, body) => EndSectionAt(paragraph, body, sectionStart));
+    }
+
+    /// <summary>
+    /// Make <paramref name="paragraph"/>'s mark end its section: it gets a copy of the properties
+    /// that governed it, and the section after it (governed by the old properties) starts as
+    /// <paramref name="sectionStart"/> says. A page-number restart stays with the earlier section.
+    /// </summary>
+    private static void EndSectionAt(XElement paragraph, XElement body, string sectionStart)
+    {
+        var governing = Internal.BlockMetadataOps.FindGoverningSectPr(paragraph);
+        if (governing is null)
         {
-            var governing = Internal.BlockMetadataOps.FindGoverningSectPr(paragraph);
-            if (governing is null)
-            {
-                governing = new XElement(W.sectPr);
-                body.Add(governing);
-                UnidHelper.AssignToSelfAndDescendants(governing);
-            }
+            governing = new XElement(W.sectPr);
+            body.Add(governing);
+            UnidHelper.AssignToSelfAndDescendants(governing);
+        }
 
-            var ending = new XElement(governing);
-            ending.Elements(W.sectPrChange).Remove();
-            foreach (var el in ending.DescendantsAndSelf())
-            {
-                el.Attributes().Where(a => a.Name.Namespace == W.w && a.Name.LocalName.StartsWith("rsid", StringComparison.Ordinal)).Remove();
-                el.Attributes(PtOpenXml.Unid).Remove();
-            }
-            UnidHelper.AssignToSelfAndDescendants(ending);
-            var pPr = paragraph.Element(W.pPr);
-            if (pPr is null)
-            {
-                pPr = new XElement(W.pPr);
-                paragraph.AddFirst(pPr);
-            }
-            SetPPrChildInOrder(pPr, ending);
+        var ending = new XElement(governing);
+        ending.Elements(W.sectPrChange).Remove();
+        foreach (var el in ending.DescendantsAndSelf())
+        {
+            el.Attributes().Where(a => a.Name.Namespace == W.w && a.Name.LocalName.StartsWith("rsid", StringComparison.Ordinal)).Remove();
+            el.Attributes(PtOpenXml.Unid).Remove();
+        }
+        UnidHelper.AssignToSelfAndDescendants(ending);
+        var pPr = paragraph.Element(W.pPr);
+        if (pPr is null)
+        {
+            pPr = new XElement(W.pPr);
+            paragraph.AddFirst(pPr);
+        }
+        SetPPrChildInOrder(pPr, ending);
 
-            // The new section numbers on from the one before it.
-            if (governing.Element(W.pgNumType) is { } pgNumType && pgNumType.Attribute(W.start) is { } start)
-            {
-                start.Remove();
-                if (!pgNumType.Attributes().Any(a => a.Name.Namespace == W.w)) pgNumType.Remove();
-            }
-            WriteSectionStart(governing, sectionStart);
-        });
+        // The new section numbers on from the one before it.
+        if (governing.Element(W.pgNumType) is { } pgNumType && pgNumType.Attribute(W.start) is { } start)
+        {
+            start.Remove();
+            if (!pgNumType.Attributes().Any(a => a.Name.Namespace == W.w)) pgNumType.Remove();
+        }
+        WriteSectionStart(governing, sectionStart);
     }
 
     /// <summary>

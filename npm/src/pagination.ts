@@ -2848,6 +2848,8 @@ export class PaginationEngine {
       container.dataset.paginationColumns = "true";
       container.style.columnCount = String(columnCount);
       container.style.columnGap = `${columnGapPt}pt`;
+      // Word's "Line between" (w:cols/@w:sep): a thin rule down the middle of each gap.
+      if (section.dataset.colSep === "true") container.style.columnRule = "0.75pt solid currentColor";
       if (sequential) {
         container.dataset.paginationSequentialColumns = "true";
         container.style.columnFill = "auto";

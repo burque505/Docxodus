@@ -918,6 +918,13 @@ internal static class DocxSessionOps
         MutationPreconditions? preconditions = null) =>
         Mutate(handle, preconditions, anchorId, s => s.InsertSectionBreak(anchorId, characterOffset, sectionStart));
 
+    public static string SetColumns(int handle, string anchorId, int characterOffset, string opJson,
+        string? applyTo = null, string? endAnchorId = null, int endOffset = 0,
+        MutationPreconditions? preconditions = null) =>
+        Mutate(handle, preconditions, anchorId, s => s.SetColumns(anchorId, characterOffset,
+            DocxSessionJson.ParseColumnsOp(opJson), string.IsNullOrEmpty(applyTo) ? "section" : applyTo,
+            string.IsNullOrEmpty(endAnchorId) ? null : endAnchorId, endOffset));
+
     public static string InsertBreak(int handle, string anchorId, int characterOffset, string kind,
         MutationPreconditions? preconditions = null) =>
         Mutate(handle, preconditions, anchorId, s => s.InsertBreak(anchorId, characterOffset, kind));

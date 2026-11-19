@@ -197,6 +197,8 @@ export type {
   PageNumberField,
   PageNumberingOp,
   PageSetupOp,
+  ColumnsOp,
+  ColumnsApplyTo,
   ParagraphBorderEdge,
   ParagraphFormatOp,
   RevisionDiagnostic,

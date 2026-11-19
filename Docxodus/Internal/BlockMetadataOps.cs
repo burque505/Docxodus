@@ -129,6 +129,10 @@ internal static class BlockMetadataOps
             TitlePage = titlePage,
             EvenAndOddHeaders = evenAndOddHeaders,
             Columns = colCount,
+            ColumnSpaceTwips = Twips(cols?.Attribute(W.space)) ?? 720,
+            ColumnSeparator = (string?)cols?.Attribute(W.sep) is { } sep && WordprocessingMLUtil.OnOffValue(sep) == true,
+            ColumnsEqualWidth = !(cols?.Elements(W.col).Any() == true
+                && (string?)cols.Attribute(W.equalWidth) is { } equal && WordprocessingMLUtil.OnOffValue(equal) == false),
             // The URI lists keep their original meaning — this section's OWN references — so only
             // the (new) *Refs lists carry inherited stories.
             HeaderPartUris = ownHeaderRefs.Select(r => r.PartUri).ToList(),
