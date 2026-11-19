@@ -1924,6 +1924,7 @@ export interface DocxodusWasmExports {
     SetPageSetup?: (handle: number, anchor: string, opJson: string) => string;
     /** Section break / page or column break at an offset. Optional: absent on older WASM bundles. */
     InsertSectionBreak?: (handle: number, anchor: string, offset: number, sectionStart: string) => string;
+    SetColumns?: (handle: number, anchor: string, offset: number, opJson: string, applyTo: string, endAnchor: string, endOffset: number) => string;
     InsertBreak?: (handle: number, anchor: string, offset: number, kind: string) => string;
     InsertFootnote: (handle: number, anchor: string, characterOffset: number, markdown: string) => string;
     InsertCrossReference: (
@@ -2965,6 +2966,23 @@ export interface PageNumberingOp {
 }
 
 /**
+ * Text columns for {@link DocxSession.setColumns} (Word's Layout > Columns). Every field is
+ * optional: an omitted one is left as it is. A count makes the columns equal.
+ */
+export interface ColumnsOp {
+  /** Number of equal columns, 1 to 45. */
+  count?: number;
+  /** Space between columns, in twips. */
+  spaceTwips?: number;
+  /** Draw a line between the columns. */
+  separator?: boolean;
+}
+
+/** Word's "Apply to" for columns: the caret's section, every section, a new section from the
+ *  caret on, or a new section around the selected text. */
+export type ColumnsApplyTo = "section" | "document" | "forward" | "selection";
+
+/**
  * Page geometry for {@link DocxSession.setPageSetup} — the `w:pgSz` / `w:pgMar` of the governing
  * `w:sectPr`, i.e. what Word's *Page Setup* dialog writes. Every field is tri-state: an omitted
  * field leaves that attribute exactly as it is. All values are twips (1440 = 1 inch). Read the
@@ -3803,6 +3821,12 @@ export interface SectionInfo {
    *  value. Toggle with {@link DocxSession.setHeaderFooterKindEnabled}. */
   evenAndOddHeaders: boolean;
   columns: number;
+  /** Space between columns (`w:cols/@w:space`) in twips; 720 when the section does not say. */
+  columnSpaceTwips?: number;
+  /** Word's "Line between" columns (`w:cols/@w:sep`). */
+  columnSeparator?: boolean;
+  /** False when the columns have widths of their own (Word's Left and Right presets). */
+  columnsEqualWidth?: boolean;
   /** How the section starts (`w:type`); `"nextPage"` when the element is absent. */
   sectionStart: SectionStart;
   headerPartUris: string[];

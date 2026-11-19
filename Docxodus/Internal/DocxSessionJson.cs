@@ -768,6 +768,29 @@ internal static class DocxSessionJson
     }
 
     /// <summary>
+    /// Parse a <see cref="ColumnsOp"/> from <c>{ count?, spaceTwips?, separator? }</c>. An omitted
+    /// field stays null ("leave it as it is").
+    /// </summary>
+    public static ColumnsOp ParseColumnsOp(string json)
+    {
+        if (string.IsNullOrEmpty(json)) return new ColumnsOp();
+        using var doc = JsonDocument.Parse(json);
+        return ParseColumnsOp(doc.RootElement);
+    }
+
+    /// <summary>Element overload — the stdio host already holds a parsed request body.</summary>
+    public static ColumnsOp ParseColumnsOp(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object) return new ColumnsOp();
+        return new ColumnsOp
+        {
+            Count = TryGetIntNullable(root, "count"),
+            SpaceTwips = TryGetIntNullable(root, "spaceTwips"),
+            Separator = TryGetBoolNullable(root, "separator"),
+        };
+    }
+
+    /// <summary>
     /// Parse the browser editor's render profile — one JSON object instead of a positional
     /// argument per setting, so adding a setting no longer changes a bridge signature:
     /// <c>{ cssPrefix?, fabricateClasses?, paginated?, scale?, renderTrackedChanges?, comments? }</c>.
@@ -3015,6 +3038,9 @@ internal static class DocxSessionJson
           .Append(",\"titlePage\":").Append(info.TitlePage ? "true" : "false")
           .Append(",\"evenAndOddHeaders\":").Append(info.EvenAndOddHeaders ? "true" : "false")
           .Append(",\"columns\":").Append(info.Columns)
+          .Append(",\"columnSpaceTwips\":").Append(info.ColumnSpaceTwips)
+          .Append(",\"columnSeparator\":").Append(info.ColumnSeparator ? "true" : "false")
+          .Append(",\"columnsEqualWidth\":").Append(info.ColumnsEqualWidth ? "true" : "false")
           .Append(",\"sectionStart\":").Append(JsonString(info.SectionStart))
           .Append(",\"headerPartUris\":[");
         for (int i = 0; i < info.HeaderPartUris.Count; i++)

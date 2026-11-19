@@ -183,6 +183,29 @@ public sealed record FormatOp
 }
 
 /// <summary>
+/// Text columns for <see cref="DocxSession.SetColumns"/> — the <c>w:cols</c> of a section, which
+/// is what Word's Layout ▸ Columns menu and its More Columns dialog write. Every field is
+/// tri-state: <c>null</c> leaves it as it is.
+/// </summary>
+/// <remarks>
+/// A count makes the columns equal (any widths of their own, <c>w:col</c>, are dropped, as Word
+/// does). Validation (<see cref="EditErrorCode.InvalidPageSetup"/>): 1 to 45 columns, a space that
+/// is not negative, and every column at least half an inch (720 twips) wide on the section's
+/// page.
+/// </remarks>
+public sealed record ColumnsOp
+{
+    /// <summary>Number of equal columns (<c>w:cols/@w:num</c>), 1 to 45.</summary>
+    public int? Count { get; init; }
+
+    /// <summary>Space between columns in twips (<c>w:cols/@w:space</c>).</summary>
+    public int? SpaceTwips { get; init; }
+
+    /// <summary>Draw a line between the columns (<c>w:cols/@w:sep</c>).</summary>
+    public bool? Separator { get; init; }
+}
+
+/// <summary>
 /// Page geometry for <see cref="DocxSession.SetPageSetup"/> — the <c>w:pgSz</c> and
 /// <c>w:pgMar</c> of the governing <c>w:sectPr</c>, which is what Word's <i>Page Setup</i> dialog
 /// writes. Every field is tri-state: <c>null</c> leaves that attribute exactly as it is. All values
@@ -1299,6 +1322,20 @@ public sealed record SectionInfo
 
     /// <summary>Number of text columns. Defaults to 1 if no <c>w:cols</c> is set.</summary>
     required public int Columns { get; init; }
+
+    /// <summary>The space between columns (<c>w:cols/@w:space</c>), in twips; 720 (half an inch,
+    /// Word's default) when the section does not say. Read counterpart of
+    /// <see cref="ColumnsOp.SpaceTwips"/>.</summary>
+    public int ColumnSpaceTwips { get; init; } = 720;
+
+    /// <summary>Word's "Line between": a rule is drawn between the columns
+    /// (<c>w:cols/@w:sep</c>). Read counterpart of <see cref="ColumnsOp.Separator"/>.</summary>
+    public bool ColumnSeparator { get; init; }
+
+    /// <summary>False when the section gives its columns widths of their own (<c>w:col</c>
+    /// elements with <c>w:equalWidth="0"</c>, Word's Left and Right presets); setting a count
+    /// with <see cref="DocxSession.SetColumns"/> makes them equal again.</summary>
+    public bool ColumnsEqualWidth { get; init; } = true;
 
     /// <summary>URIs of the header parts referenced by this section, in declaration order.</summary>
     required public IReadOnlyList<string> HeaderPartUris { get; init; }

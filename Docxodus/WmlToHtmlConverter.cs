@@ -7479,8 +7479,13 @@ namespace Docxodus
                         var colGap = PageGeometryValue(colGapPt);
                         div.Add(new XAttribute("data-cols", colsNum));
                         div.Add(new XAttribute("data-col-gap", colGap));
+                        // Word's "Line between" (w:cols/@w:sep).
+                        var colSep = (string?)cols.Attribute(W.sep) is { } sepValue
+                            && WordprocessingMLUtil.OnOffValue(sepValue) == true;
+                        if (colSep) div.Add(new XAttribute("data-col-sep", "true"));
                         div.Add(new XAttribute("style",
-                            $"column-count: {colsNum}; column-gap: {colGap}pt;"));
+                            $"column-count: {colsNum}; column-gap: {colGap}pt;"
+                            + (colSep ? " column-rule: 0.75pt solid currentColor;" : "")));
                     }
 
                     // The section's page numbering (w:pgNumType), which is what an unswitched

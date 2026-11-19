@@ -633,6 +633,16 @@ public static partial class DocxSessionBridge
     public static string SetPageSetup(int h, string anchor, string opJson) =>
         DocxSessionOps.SetPageSetup(h, anchor, opJson);
 
+    /// <summary>Bridge for <see cref="DocxSession.SetColumns"/> — Word's Layout ▸ Columns.
+    /// <paramref name="opJson"/> is <c>{ count?, spaceTwips?, separator? }</c>;
+    /// <paramref name="applyTo"/> is <c>section</c>, <c>forward</c>, <c>selection</c> or
+    /// <c>document</c>; the end anchor and offset are the selection's end (empty for the others).
+    /// Returns an <c>EditResult</c> JSON.</summary>
+    [JSExport]
+    public static string SetColumns(int h, string anchor, int offset, string opJson, string applyTo,
+        string endAnchor, int endOffset) =>
+        DocxSessionOps.SetColumns(h, anchor, offset, opJson, applyTo, endAnchor, endOffset);
+
     /// <summary>Bridge for <see cref="DocxSession.InsertSectionBreak"/>: split the paragraph at
     /// <paramref name="offset"/> with a section break; <paramref name="sectionStart"/> is
     /// nextPage | continuous | evenPage | oddPage | nextColumn.</summary>

@@ -47,6 +47,8 @@ import type {
   PageNumberField,
   PageNumberingOp,
   PageSetupOp,
+  ColumnsOp,
+  ColumnsApplyTo,
   SectionStart,
   TableOfAuthoritiesOptions,
   TableOfContentsOptions,
@@ -1242,6 +1244,28 @@ export class DocxSession {
     return JSON.parse(
       this.wasm.SetPageSetup(this.handle, anchorId, JSON.stringify(op))
     ) as EditResult;
+  }
+
+  /**
+   * Word's Layout > Columns: set the text columns. `applyTo` is Word's "Apply to": `section`
+   * (the one `anchorId` is in), `document` (every section), `forward` (a continuous section break
+   * at `characterOffset`, columns from there on) or `selection` (continuous breaks around the text
+   * from `anchorId`/`characterOffset` to `end`, columns only there). A count makes the columns
+   * equal. Columns that would be narrower than half an inch fail with `invalid_page_setup`;
+   * `forward` and `selection` are refused while changes are tracked. One undo step.
+   */
+  setColumns(
+    anchorId: string,
+    op: ColumnsOp,
+    applyTo: ColumnsApplyTo = "section",
+    characterOffset = 0,
+    end?: { anchorId: string; characterOffset: number },
+  ): EditResult {
+    if (!this.wasm.SetColumns) {
+      throw new Error("SetColumns is not available in this WASM build");
+    }
+    return JSON.parse(this.wasm.SetColumns(this.handle, anchorId, characterOffset, JSON.stringify(op),
+      applyTo, end?.anchorId ?? "", end?.characterOffset ?? 0)) as EditResult;
   }
 
   /**
