@@ -29,7 +29,7 @@
  */
 
 /** Bumped whenever RIBBON_CSS changes, so a stale injected stylesheet is replaced. */
-export const RIBBON_STYLE_VERSION = "13";
+export const RIBBON_STYLE_VERSION = "14";
 export const RIBBON_STYLE_ATTR = "data-docxodus-ribbon-styles";
 
 /** Width of the comment gutter the surface reserves beside the sheet, in px. */
@@ -1243,6 +1243,13 @@ export const RIBBON_HTML = `
           </select>
         </div>
         <div class="dxr-row">
+          <select data-dxr="columns" title="Split the text into columns (with text selected, only the selection)">
+            <option value="">Columns&#8230;</option>
+            <option value="1">One</option>
+            <option value="2">Two</option>
+            <option value="3">Three</option>
+            <option value="more">More columns&#8230;</option>
+          </select>
           <select data-dxr="pagesize" title="Paper size for this section">
             <option value="">Size&#8230;</option>
             <option value="12240,15840">Letter — 8.5 &times; 11&quot;</option>
@@ -1645,6 +1652,7 @@ export const RIBBON_HTML = `
  */
 export const RIBBON_STATUS_TEXTS = {
   breakRefused: "A break goes in a body paragraph, not in a table, header or footer, nor while changes are tracked",
+  columnsRefused: "Columns go in the body, each at least half an inch wide, and a new section cannot start while changes are tracked",
 } as const;
 
 /** The default hint copy, shown above the document in full chrome. */

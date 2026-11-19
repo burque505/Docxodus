@@ -52,6 +52,8 @@ import type {
   ListLevelSpec,
   NumberFormat,
   PageSetupOp,
+  ColumnsOp,
+  ColumnsApplyTo,
   ParagraphFormatting,
   RevisionListEntry,
   RevisionIdentity,
@@ -260,6 +262,8 @@ export interface DocxEditorExports {
     /** Word's Layout > Breaks (optional: absent on older bundles). */
     InsertSectionBreak?: (handle: number, anchor: string, offset: number, sectionStart: string) => string;
     InsertBreak?: (handle: number, anchor: string, offset: number, kind: string) => string;
+    /** Word's Layout > Columns (optional: absent on older bundles). */
+    SetColumns?: (handle: number, anchor: string, offset: number, opJson: string, applyTo: string, endAnchor: string, endOffset: number) => string;
     SetHeaderFooterKindEnabled?: (handle: number, anchor: string, kind: string, enabled: boolean) => string;
     /** Introspection (optional). */
     ListStyles?: (handle: number) => string;
@@ -5425,9 +5429,13 @@ export class DocxEditor {
         if (index >= 0) caret = { index, offset };
       }
     }
+    const sectionsBefore = this.sectionSignature();
     if (!step(this.handle)) return;
     this.invalidateBlockMoveTargets();
     this.reconcile();
+    // A section's columns, start and page live in its w:sectPr, which the paragraph diff cannot
+    // see either: when an undone or redone step changed them, the whole flow renders again.
+    if (this.sectionSignature() !== sectionsBefore) this.remount();
     // A list's levels live in the numbering part, not in any paragraph, so the paragraph diff
     // cannot see an undone or redone level change: when the numbers shown no longer match the
     // document's, the whole flow renders again.
@@ -6207,6 +6215,32 @@ export class DocxEditor {
 
   /** True when a list item's number on the page differs from the number the document gives it
    *  (bullets, whose glyph the engine does not report, are not compared). */
+  /** The body's sections as the engine has them now (columns, start, page), one entry per
+   *  section the view shows, for telling whether a step changed any. */
+  private sectionSignature(): string {
+    if (this.closed) return "";
+    const bridge = this.exports.DocxSessionBridge;
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const block of this.editableList()) {
+      if (this.isBandBlock(block)) continue;
+      const key = block.dataset.paginationSection
+        ?? block.closest<HTMLElement>("[data-section-index]")?.dataset.sectionIndex ?? "0";
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const fullId = this.anchorIdOf(block);
+      if (!fullId) continue;
+      try {
+        const i = JSON.parse(bridge.GetSectionInfo(this.handle, fullId)) as SectionInfo | null;
+        if (i) out.push(JSON.stringify([i.columns, i.columnSpaceTwips, i.columnSeparator, i.sectionStart,
+          i.pageWidthTwips, i.pageHeightTwips, i.marginTopTwips, i.marginBottomTwips, i.marginLeftTwips, i.marginRightTwips]));
+      } catch {
+        // (an engine without section info: nothing to compare)
+      }
+    }
+    return out.join(";");
+  }
+
   private listNumbersStale(): boolean {
     const bridge = this.exports.DocxSessionBridge;
     for (const block of this.editableList()) {
@@ -7211,6 +7245,61 @@ export class DocxEditor {
     if (!res.success) return false;
     // Geometry is whole-document context (sheet width, page boxes).
     this.remount(this.activeBlock ? this.blockIndex(this.activeBlock) : -1, false);
+    return true;
+  }
+
+  /**
+   * Word's Layout > Columns: set the text columns ({@link ColumnsOp}). `applyTo` is Word's
+   * "Apply to"; left out, it is `selection` when text is selected (continuous section breaks go
+   * in around it, as Word does) and `section` (the caret's) otherwise. `forward` puts a
+   * continuous break at the caret. False, changing nothing, where the engine refuses: columns
+   * narrower than half an inch, a header, footer or text box, or a new section while changes
+   * are tracked.
+   */
+  setColumns(op: ColumnsOp, applyTo?: ColumnsApplyTo): boolean {
+    this.assertOpen();
+    const bridge = this.exports.DocxSessionBridge;
+    if (typeof bridge.SetColumns !== "function") return false;
+    const blocks = this.selectedBlocks();
+    const first = blocks[0];
+    if (!first || this.isBandBlock(first)) return false;
+    const sel = typeof window !== "undefined" ? window.getSelection() : null;
+    const selected = !!sel && sel.rangeCount > 0 && !sel.isCollapsed
+      && blocks.some((b) => b.contains(sel.getRangeAt(0).startContainer) || b.contains(sel.getRangeAt(0).endContainer));
+    const scope: ColumnsApplyTo = applyTo ?? (selected ? "selection" : "section");
+    const last = blocks[blocks.length - 1];
+
+    // Offsets are measured before the blocks are synced (syncing re-renders nothing here, but
+    // the spans read the live DOM).
+    const firstSpan = selected ? this.blockSpanForSelection(first) : null;
+    const lastSpan = selected && last !== first ? this.blockSpanForSelection(last) : firstSpan;
+    const caret = trimmedSplitOffset(first, caretOffsetIn(first) ?? 0);
+    let startId = this.anchorIdOf(first);
+    if (!startId) return false;
+    startId = this.syncBlock(first, startId);
+    if (!startId) return false;
+    let endId = startId;
+    if (last !== first) {
+      const id = this.anchorIdOf(last);
+      endId = id ? this.syncBlock(last, id) ?? "" : "";
+      if (!endId) return false;
+    }
+
+    let startOffset = 0, endAnchor = "", endOffset = 0;
+    if (scope === "forward") startOffset = caret;
+    else if (scope === "selection") {
+      if (!selected) return false;
+      startOffset = firstSpan?.start ?? 0;
+      endAnchor = endId;
+      endOffset = last === first
+        ? (firstSpan ? firstSpan.start + firstSpan.length : 0)
+        : (lastSpan ? lastSpan.start + lastSpan.length : 0);
+    }
+    const res = this.parseEdit(bridge.SetColumns(this.handle, startId, startOffset, JSON.stringify(op),
+      scope, endAnchor, endOffset));
+    if (!res.success) return false;
+    // Columns and any new sections are section wrappers, which only the full render lays out.
+    this.remount(this.blockIndex(first), false);
     return true;
   }
 

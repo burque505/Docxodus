@@ -43,7 +43,7 @@ import type { RibbonHistoryBinding } from './ribbon-history.js';
 export type { RibbonHistoryBinding, RibbonHistoryOptions } from './ribbon-history.js';
 import type { BandWhich } from "./editor-headerfooter.js";
 import { TrackedChangeMode } from "./types.js";
-import type { ListFormat, ListLevelSpec, NumberFormat, SectionStart } from "./types.js";
+import type { ColumnsApplyTo, ColumnsOp, ListFormat, ListLevelSpec, NumberFormat, SectionStart } from "./types.js";
 import {
   COMMON_FONTS,
   HIGHLIGHT_COLORS,
@@ -59,6 +59,7 @@ import type { MeasurementUnit } from "./ribbon-paragraph-dialog.js";
 import type { CaseMode, HeadlineCaseLists } from "./change-case.js";
 import { FIND_OPTION_KEYS, findOptionApplies, normalizeFindOptions, specialFindCodes, specialReplaceCodes, type FindOptions } from "./find-query.js";
 import { LIST_DIALOG_CSS, LIST_DIALOG_HTML, ListDialog } from "./ribbon-list-dialog.js";
+import { COLUMNS_DIALOG_CSS, COLUMNS_DIALOG_HTML, ColumnsDialog } from "./ribbon-columns-dialog.js";
 export type { MeasurementUnit } from "./ribbon-paragraph-dialog.js";
 
 // Re-exported so the IIFE bundle built from this module (window.DocxodusEditor)
@@ -331,6 +332,8 @@ export interface RibbonEditor {
   setMeasurementUnit(unit: MeasurementUnit): void;
   /** Open the List Levels dialog on the caret's list; false when no document is open. */
   openListDialog(): boolean;
+  /** Open the Columns dialog (Word's More Columns) on the caret's section; false when no document is open. */
+  openColumnsDialog(): boolean;
   /** The levels new lists start from (see the `listDefaults` option). */
   setListDefaults(levels: ListLevelSpec[]): void;
   /** Headline Case's word lists (see the `headlineCaseLists` option); null for the built-in ones. */
@@ -438,7 +441,7 @@ function ensureStyles(doc: Document): void {
   existing?.remove();
   const style = doc.createElement("style");
   style.setAttribute(RIBBON_STYLE_ATTR, RIBBON_STYLE_VERSION);
-  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS;
+  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS;
   (doc.head ?? doc.documentElement).appendChild(style);
 }
 
@@ -536,6 +539,9 @@ class RibbonSurface implements RibbonEditor {
   private recentEntries: RibbonRecentEntry[] = [];
   private fileMenuItems: RibbonFileMenuItem[] = [];
   private paragraphDialog!: ParagraphDialog;
+  private columnsDialog!: ColumnsDialog;
+  // (the selection the Columns dialog opened on: its fields take the focus, OK puts it back)
+  private columnsRange: Range | null = null;
   private listDialog!: ListDialog;
   private listDefaults: ListLevelSpec[] | undefined;
   private headlineCaseLists: HeadlineCaseLists | undefined;
@@ -581,7 +587,7 @@ class RibbonSurface implements RibbonEditor {
     root.className = "dxr";
     root.dataset.state = "idle";
     root.dataset.frame = this.options.frame ?? "flush";
-    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML;
+    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML;
     for (const el of Array.from(root.querySelectorAll<HTMLElement>("[data-dxr]"))) {
       el.id = this.idPrefix + el.dataset.dxr;
     }
@@ -1453,6 +1459,53 @@ class RibbonSurface implements RibbonEditor {
     }
   }
 
+  /** Layout > Page setup > Columns (One, Two, Three, More Columns…) and its dialog. */
+  private wireColumns(): void {
+    this.columnsDialog = new ColumnsDialog(this.require<HTMLDialogElement>("columnsdialog"), {
+      read: () => this.live?.sectionInfo() ?? null,
+      hasSelection: () => !!this.columnsRange && !this.columnsRange.collapsed,
+      apply: (op, applyTo) => {
+        const range = this.columnsRange;
+        this.columnsRange = null;
+        if (range) {
+          const sel = window.getSelection();
+          sel?.removeAllRanges();
+          sel?.addRange(range);
+        }
+        this.applyColumns(op, applyTo);
+      },
+    }, this.options.measurementUnit ?? "in");
+    const menu = this.require<HTMLSelectElement>("columns");
+    menu.addEventListener("change", () => {
+      const v = menu.value;
+      menu.value = "";
+      if (!this.live || !v) return;
+      if (v === "more") { this.openColumnsDialog(); return; }
+      this.applyColumns({ count: Number(v) });
+    });
+  }
+
+  /** Set columns as the Columns list or dialog asked; a refusal says why on the status line and
+   *  is not recorded. */
+  private applyColumns(op: ColumnsOp, applyTo?: ColumnsApplyTo): void {
+    let refused = false;
+    this.run("columns", () => {
+      refused = !this.live!.setColumns(op, applyTo);
+      if (refused) this.setStatus(this.translateText(RIBBON_STATUS_TEXTS.columnsRefused));
+    }, () => refused ? undefined : cmd("columns", { ...op, ...(applyTo ? { applyTo } : {}) }));
+    this.syncLayoutState();
+  }
+
+  openColumnsDialog(): boolean {
+    if (!this.live || this.columnsDialog.open || this.listDialog.open || this.paragraphDialog.open) return false;
+    this.closePopovers();
+    const sel = window.getSelection();
+    const range = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
+    const surface = this.control("editor");
+    this.columnsRange = range && surface?.contains(range.commonAncestorContainer) ? range.cloneRange() : null;
+    return this.columnsDialog.show();
+  }
+
   openListDialog(): boolean {
     if (!this.live || this.listDialog.open || this.paragraphDialog.open) return false;
     this.closePopovers();
@@ -1474,11 +1527,13 @@ class RibbonSurface implements RibbonEditor {
   setMeasurementUnit(unit: MeasurementUnit): void {
     this.paragraphDialog.setUnit(unit);
     this.listDialog.setUnit(unit);
+    this.columnsDialog.setUnit(unit);
   }
 
   private wire(): void {
     this.wireParagraphDialog();
     this.wireListDialog();
+    this.wireColumns();
     const ribbon = this.require("ribbon");
 
     // (the File tab opens a menu instead: wireFileMenu)

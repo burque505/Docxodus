@@ -162,6 +162,7 @@ function must(ok: boolean, command: string, why: string): void {
   if (!ok) throw new EditorCommandError("refused", command, `${command}: ${why}`);
 }
 
+const COLUMN_SCOPES = ["section", "document", "forward", "selection"] as const;
 const ALIGNMENTS: readonly EditorAlignment[] = ["left", "center", "right", "justify"];
 const PASTE_FORMATTINGS: readonly PasteFormatting[] = ["merge", "keep", "text"];
 const LIST_FORMATS: readonly ListFormat[] = [
@@ -394,6 +395,22 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   },
 
   // ── layout ──
+  columns: {
+    group: "layout",
+    description: "Set the text columns: how many (equal), the space between in twips, a line between; applyTo is Word's Apply to (selection when text is selected, else section).",
+    args: { "count?": "number", "spaceTwips?": "number", "separator?": "boolean", "applyTo?": COLUMN_SCOPES.join("|") },
+    run: (e, a) => {
+      const op: { count?: number; spaceTwips?: number; separator?: boolean } = {};
+      const count = a.optNumber("count");
+      if (count !== undefined) op.count = Math.round(count);
+      const space = a.optNumber("spaceTwips");
+      if (space !== undefined) op.spaceTwips = Math.round(space);
+      const separator = a.optBool("separator");
+      if (separator !== undefined) op.separator = separator;
+      must(e.setColumns(op, a.optOneOf("applyTo", COLUMN_SCOPES)), "columns",
+        "columns go in the body, each at least half an inch wide; a new section is refused while changes are tracked");
+    },
+  },
   pageSetup: {
     group: "layout",
     description: "Set the section's page: margins and size in twips (1440 an inch), landscape or not; what is left out stays.",
