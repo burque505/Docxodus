@@ -1048,7 +1048,7 @@ class RibbonSurface implements RibbonEditor {
         continue;
       }
       const el = node as Element;
-      for (const attr of ["title", "aria-label", "placeholder"]) {
+      for (const attr of ["title", "aria-label", "placeholder", "label"]) {
         const now = el.getAttribute(attr);
         if (now === null) continue;
         const seen = this.englishAttrs.get(el) ?? {};
