@@ -191,7 +191,10 @@ du -sh "$WASM_DIST"
 # 5928 KiB. 8 KiB more covers that spread between runners. Assembly roots, dependencies and
 # the AOT profile are unchanged.
 # Both together: 5928 + 64 + 8 KiB.
-WIRE_BUDGET_BYTES=$((6000 * 1024))
+# 2026-11-19 (dAHKxodus fork): section breaks, page/column breaks and the fork's M5 editor ops
+# measured 6,145,117 bytes, 1,117 over 6000 KiB; 16 KiB more covers it and the next small ops.
+# Assembly roots, dependencies and the AOT profile are unchanged.
+WIRE_BUDGET_BYTES=$((6016 * 1024))
 WIRE_BYTES=$(cat "$WASM_DIST/_framework/.wire-size")
 rm -f "$WASM_DIST/_framework/.wire-size"
 echo ""

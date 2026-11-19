@@ -57,6 +57,7 @@ import type {
   RevisionIdentity,
   RevisionAuthorNameInfo,
   SectionInfo,
+  SectionStart,
   StyleInfo,
   TableBorderSpec,
   TableOfContentsOptions,
@@ -256,6 +257,9 @@ export interface DocxEditorExports {
     SetRepeatHeaderRow?: (handle: number, cellAnchor: string, repeat: boolean) => string;
     /** Section page setup and header/footer flags (optional). */
     SetPageSetup?: (handle: number, anchor: string, opJson: string) => string;
+    /** Word's Layout > Breaks (optional: absent on older bundles). */
+    InsertSectionBreak?: (handle: number, anchor: string, offset: number, sectionStart: string) => string;
+    InsertBreak?: (handle: number, anchor: string, offset: number, kind: string) => string;
     SetHeaderFooterKindEnabled?: (handle: number, anchor: string, kind: string, enabled: boolean) => string;
     /** Introspection (optional). */
     ListStyles?: (handle: number) => string;
@@ -1557,6 +1561,42 @@ const FORMATTING_MARKS_CSS = `
   font-weight: normal; font-style: normal; text-decoration: none; pointer-events: none; user-select: none;
 }
 `;
+/** The continuous view's section-break line, as Word's Draft view draws it: a double dotted rule
+ *  across the top of every section after the first, naming how that section starts. A host can
+ *  translate the labels through the `--docx-section-break-*` custom properties (quoted strings).
+ *  Page view lays sections out on their own pages and draws no line. */
+const SECTION_BREAK_CSS = `
+[data-section-index]:not([data-section-index="0"])::before {
+  content: var(--docx-section-break-nextPage, "Section break (Next page)");
+  display: block; margin: 8px 0 10px; padding-top: 2px; border-top: 3px double #8fa9cc;
+  color: #4a7fc1; font: 11px/1.4 system-ui, sans-serif; font-style: normal; font-weight: normal;
+  text-align: center; text-indent: 0; letter-spacing: normal; text-transform: none;
+  pointer-events: none; user-select: none;
+}
+[data-section-index][data-section-type="continuous"]:not([data-section-index="0"])::before {
+  content: var(--docx-section-break-continuous, "Section break (Continuous)");
+}
+[data-section-index][data-section-type="evenPage"]:not([data-section-index="0"])::before {
+  content: var(--docx-section-break-evenPage, "Section break (Even page)");
+}
+[data-section-index][data-section-type="oddPage"]:not([data-section-index="0"])::before {
+  content: var(--docx-section-break-oddPage, "Section break (Odd page)");
+}
+[data-section-index][data-section-type="nextColumn"]:not([data-section-index="0"])::before {
+  content: var(--docx-section-break-nextColumn, "Section break (Next column)");
+}
+.page-box [data-section-index]::before, .docx-paginated [data-section-index]::before { content: none !important; }
+`;
+const sectionBreakStyledDocuments = new WeakSet<Document>();
+function ensureSectionBreakStyles(doc: Document): void {
+  if (sectionBreakStyledDocuments.has(doc)) return;
+  sectionBreakStyledDocuments.add(doc);
+  const style = doc.createElement("style");
+  style.dataset.docxodusSectionBreaks = "true";
+  style.textContent = SECTION_BREAK_CSS;
+  (doc.head ?? doc.documentElement).appendChild(style);
+}
+
 const formattingMarksStyledDocuments = new WeakSet<Document>();
 function ensureFormattingMarksStyles(doc: Document): void {
   if (formattingMarksStyledDocuments.has(doc)) return;
@@ -3696,6 +3736,8 @@ export class DocxEditor {
       this.insertLineBreakAtCaret(el);
       return;
     }
+    // Ctrl+Enter is the page break (Word's), which the host's shortcut handles.
+    if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) return;
     if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
       ev.preventDefault();
       // Splits at the caret — in a cell this stacks a second paragraph within the same
@@ -6000,6 +6042,8 @@ export class DocxEditor {
 
   private applyFormattingMarks(): void {
     const on = !!this.options.showFormattingMarks;
+    ensureSectionBreakStyles(this.container.ownerDocument);
+    this.container.classList.toggle("docx-paginated", !!this.options.paginated);
     if (on) ensureFormattingMarksStyles(this.container.ownerDocument);
     this.container.classList.toggle("docx-show-marks", on);
   }
@@ -6423,6 +6467,50 @@ export class DocxEditor {
     // Image parts are not in the block-render shell, so a single-block swap would drop the
     // picture; the full render is the only path that shows it.
     this.refreshAfter(block, idx, true, /* forceRemount */ true);
+    return true;
+  }
+
+  /**
+   * Word's Ctrl+Enter / Ctrl+Shift+Enter: a page or column break at the caret. The break ends
+   * the text before the caret; the rest goes on as a paragraph of its own, where the caret lands.
+   * False (nothing changed) in a table, a text box, a header or footer, or while changes are
+   * tracked.
+   */
+  insertBreak(kind: "page" | "column" = "page"): boolean {
+    return this.splitWithBreak((bridge, id, offset) => bridge.InsertBreak?.(this.handle, id, offset, kind), false);
+  }
+
+  /**
+   * Word's Layout > Breaks > Section Breaks: end the section at the caret. The new section keeps
+   * the page setup, headers and footers of the one it came from and starts as `start` says.
+   * False (nothing changed) where {@link insertBreak} is refused.
+   */
+  insertSectionBreak(start: SectionStart = "nextPage"): boolean {
+    return this.splitWithBreak((bridge, id, offset) => bridge.InsertSectionBreak?.(this.handle, id, offset, start), true);
+  }
+
+  private splitWithBreak(
+    call: (bridge: DocxEditorExports["DocxSessionBridge"], fullId: string, offset: number) => string | undefined,
+    sections: boolean,
+  ): boolean {
+    const block = this.activeBlock;
+    if (this.closed || !block || this.isBandBlock(block)) return false;
+    let fullId = this.anchorIdOf(block);
+    if (!fullId) return false;
+    const idx = this.blockIndex(block);
+    const raw = caretOffsetIn(block);
+    fullId = this.syncBlock(block, fullId);
+    if (!fullId) return false;
+    const offset = trimmedSplitOffset(block, raw ?? (block.textContent ?? "").length);
+    const json = call(this.exports.DocxSessionBridge, fullId, offset);
+    if (json === undefined) return false;
+    const res = this.parseEdit(json);
+    if (!res.success) return false;
+    // A section break changes the section wrappers (and page view's page sizes), which only
+    // the full render lays out; a page or column break is two paragraphs, which reconcile does.
+    this.refreshAfter(block, idx + 1, false, sections);
+    const created = res.created?.[0];
+    if (created) this.options.onEdit?.({ anchorId: created.id, unid: created.unid });
     return true;
   }
 
@@ -7800,6 +7888,15 @@ export class DocxEditor {
     const oldTokens = oldNodes.map(DocxEditor.domTokenOf);
     const oldKinds = oldNodes.map(DocxEditor.domKindOf);
     const bodyDiff = diffUnits(oldTokens, plan.body);
+    // A section break added or taken away (Undo of Layout > Breaks, a merge across a break)
+    // changes the section wrappers, which only the full render lays out.
+    if (plan.body.some((u) => u.section !== undefined)) {
+      const planSections = new Set(plan.body.map((u) => u.section ?? 0)).size;
+      const shownSections = this.editRoot.querySelectorAll("[data-section-index]").length;
+      if (shownSections > 0 && planSections !== shownSections) {
+        return this.bail(`sections changed: ${shownSections} shown, ${planSections} in the document`);
+      }
+    }
     if (needsRemount(bodyDiff, plan.body, oldKinds)) {
       // Name the shape, not just the verdict: "churn" and "a list item moved in or out" are very
       // different findings when a repaint unexpectedly costs a whole-document render.
@@ -8235,6 +8332,7 @@ export class DocxEditor {
    * block's content-hashed unid changes across the save/reproject a remount performs.
    */
   private remount(focusIndex = -1, caretAtEnd = false): void {
+    this.container.classList.toggle("docx-paginated", !!this.options.paginated);
     this.teardownBlockDrag();
     this.refreshAnchorMap();
     const fullHtml = this.renderFullHtml();

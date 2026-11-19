@@ -43,7 +43,7 @@ import type { RibbonHistoryBinding } from './ribbon-history.js';
 export type { RibbonHistoryBinding, RibbonHistoryOptions } from './ribbon-history.js';
 import type { BandWhich } from "./editor-headerfooter.js";
 import { TrackedChangeMode } from "./types.js";
-import type { ListFormat, ListLevelSpec, NumberFormat } from "./types.js";
+import type { ListFormat, ListLevelSpec, NumberFormat, SectionStart } from "./types.js";
 import {
   COMMON_FONTS,
   HIGHLIGHT_COLORS,
@@ -403,7 +403,7 @@ const CONTROL_NAMES = [
   "style", "delblock", "findtoggle", "replacetoggle",
   "table", "picturefile", "link", "unlink", "insertcomment", "gotoheader", "gotofooter", "pagenummenu",
   "hr", "hrThick", "hrDouble", "rulepos", "hrClear",
-  "margins", "orientation", "pagesize", "pagesetupnote", "spacebefore", "spaceafter",
+  "margins", "orientation", "pagesize", "breaks", "sectionstart", "pagesetupnote", "spacebefore", "spaceafter",
   "specialindent", "specialindentval", "pgfmt", "pgstart", "pgclear", "paginated", "headerfooter",
   "toc", "footnote", "endnote", "pagenum", "totalpages",
   "comment", "commentdelete", "commentprev", "commentnext", "commentresolve", "showcomments",
@@ -1501,7 +1501,7 @@ class RibbonSurface implements RibbonEditor {
     delegate<HTMLElement>("button[data-list]", (b) => `list ${b.dataset.list}`, (b) =>
       this.live!.toggleList(b.dataset.list as "bullet" | "decimal"), (b) => cmd("list", { kind: b.dataset.list! }));
     delegate<HTMLElement>("button[data-pagebreak]", () => "page break", () =>
-      this.live!.pageBreakBefore(true), () => cmd("pageBreakBefore", { on: true }));
+      this.live!.insertBreak("page"), () => cmd("insertBreak", { kind: "page" }));
     const tableCommands: Record<string, RibbonCommand> = {
       rowAbove: cmd("insertRow", { where: "above" }),
       rowBelow: cmd("insertRow", { where: "below" }),
@@ -1862,6 +1862,12 @@ class RibbonSurface implements RibbonEditor {
       const [top, bottom, left, right] = v.split(",").map((n) => parseInt(n, 10));
       return { marginTopTwips: top, marginBottomTwips: bottom, marginLeftTwips: left, marginRightTwips: right };
     };
+    this.wireSelect("breaks", "break", (v) => {
+      if (v === "page" || v === "column") this.live!.insertBreak(v);
+      else this.live!.insertSectionBreak(v as SectionStart);
+    }, (v) => v === "page" || v === "column" ? cmd("insertBreak", { kind: v }) : cmd("sectionBreak", { start: v }));
+    this.wireSelect("sectionstart", "section start", (v) => pageSetup({ sectionStart: v as SectionStart }),
+      (v) => cmd("pageSetup", { sectionStart: v }));
     this.wireSelect("margins", "margins", (v) => pageSetup(margins(v)), (v) => cmd("pageSetup", margins(v)));
     this.wireSelect("orientation", "orientation", (v) => pageSetup({ landscape: v === "landscape" }),
       (v) => cmd("pageSetup", { landscape: v === "landscape" }));
@@ -2508,7 +2514,7 @@ class RibbonSurface implements RibbonEditor {
       case "j": align("justify"); return;
       case "]": event.preventDefault(); this.run("grow font", () => this.live!.adjustFontSize(1), cmd("growFont")); return;
       case "[": event.preventDefault(); this.run("shrink font", () => this.live!.adjustFontSize(-1), cmd("shrinkFont")); return;
-      case "enter": event.preventDefault(); this.run("page break", () => this.live!.pageBreakBefore(true), cmd("pageBreakBefore", { on: true })); return;
+      case "enter": event.preventDefault(); this.run("page break", () => this.live!.insertBreak("page"), cmd("insertBreak", { kind: "page" })); return;
       default: return;
     }
   }

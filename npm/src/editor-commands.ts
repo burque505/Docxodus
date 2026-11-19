@@ -169,6 +169,7 @@ const LIST_FORMATS: readonly ListFormat[] = [
   "decimalParenthesis", "lowerLetterParenthesis", "upperLetterParenthesis", "lowerRomanParenthesis",
   "upperRomanParenthesis",
 ];
+const SECTION_STARTS = ["nextPage", "continuous", "evenPage", "oddPage", "nextColumn"] as const;
 const PAGE_SETUP_TWIPS = [
   "marginTopTwips", "marginBottomTwips", "marginLeftTwips", "marginRightTwips", "pageWidthTwips", "pageHeightTwips",
 ] as const;
@@ -399,18 +400,33 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     args: {
       "marginTopTwips?": "number", "marginBottomTwips?": "number", "marginLeftTwips?": "number", "marginRightTwips?": "number",
       "pageWidthTwips?": "number", "pageHeightTwips?": "number", "landscape?": "boolean",
+      "sectionStart?": SECTION_STARTS.join("|"),
     },
     run: (e, a) => {
-      const op: Record<string, number | boolean> = {};
+      const op: Record<string, number | boolean | string> = {};
       for (const key of PAGE_SETUP_TWIPS) {
         const v = a.optNumber(key);
         if (v !== undefined) op[key] = Math.round(v);
       }
       const landscape = a.optBool("landscape");
       if (landscape !== undefined) op.landscape = landscape;
+      const sectionStart = a.optOneOf("sectionStart", SECTION_STARTS);
+      if (sectionStart !== undefined) op.sectionStart = sectionStart;
       if (Object.keys(op).length === 0) throw new EditorCommandError("bad_arguments", "pageSetup", "pageSetup: give at least one setting");
       must(e.setPageSetup(op as EditorPageSetup), "pageSetup", "this engine build cannot change the page setup");
     },
+  },
+  insertBreak: {
+    group: "layout", description: "Insert a page break (Ctrl+Enter) or a column break (Ctrl+Shift+Enter) at the caret.",
+    args: { "kind?": "page|column" },
+    run: (e, a) => must(e.insertBreak(a.optOneOf("kind", ["page", "column"] as const) ?? "page"), "insertBreak",
+      "a break goes in a body paragraph, not in a table, header or footer, nor while changes are tracked"),
+  },
+  sectionBreak: {
+    group: "layout", description: "End the section at the caret; the new one starts on the next page, continuously, or on an even or odd page.",
+    args: { "start?": SECTION_STARTS.join("|") },
+    run: (e, a) => must(e.insertSectionBreak(a.optOneOf("start", SECTION_STARTS) ?? "nextPage"), "sectionBreak",
+      "a section break goes in a body paragraph, not in a table, header or footer, nor while changes are tracked"),
   },
   pageNumbering: {
     group: "layout", description: "Number the section's pages in a format, or restart them at a value.",

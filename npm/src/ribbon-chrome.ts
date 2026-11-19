@@ -1140,7 +1140,7 @@ export const RIBBON_HTML = `
       <div class="dxr-group">
         <span class="dxr-glabel">Pages</span>
         <div class="dxr-row">
-          <button type="button" data-pagebreak title="Start this block on a new page (Ctrl+Enter)">Page break</button>
+          <button type="button" data-pagebreak title="Insert a page break at the caret (Ctrl+Enter)">Page break</button>
         </div>
       </div>
       <div class="dxr-group">
@@ -1200,6 +1200,32 @@ export const RIBBON_HTML = `
 
     <!-- LAYOUT ────────────────────────────────────────────────────────────── -->
     <div class="dxr-panel" data-panel="layout">
+      <div class="dxr-group">
+        <span class="dxr-glabel">Breaks</span>
+        <div class="dxr-row">
+          <select data-dxr="breaks" title="Insert a page or section break at the caret">
+            <option value="">Breaks&#8230;</option>
+            <optgroup label="Page breaks">
+              <option value="page">Page (Ctrl+Enter)</option>
+            </optgroup>
+            <optgroup label="Section breaks">
+              <option value="nextPage">Next page</option>
+              <option value="continuous">Continuous</option>
+              <option value="evenPage">Even page</option>
+              <option value="oddPage">Odd page</option>
+            </optgroup>
+          </select>
+        </div>
+        <div class="dxr-row">
+          <select data-dxr="sectionstart" title="How this section starts after the one before it">
+            <option value="">Section start&#8230;</option>
+            <option value="nextPage">New page</option>
+            <option value="continuous">Continuous</option>
+            <option value="evenPage">Even page</option>
+            <option value="oddPage">Odd page</option>
+          </select>
+        </div>
+      </div>
       <div class="dxr-group">
         <span class="dxr-glabel">Page setup</span>
         <div class="dxr-row">
