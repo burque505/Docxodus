@@ -34,7 +34,12 @@ const HANDLE_AT: Record<Handle, [number, number]> = {
 export interface PictureOverlayHost {
   /** The user let go of a handle: the picture's new size as ratios of its present one. */
   resize(widthRatio: number, heightRatio: number): void;
+  /** The user dragged a floating picture and let go: how far it went, in screen pixels. */
+  move(dxPixels: number, dyPixels: number): void;
 }
+
+/** How far the pointer must go before a press on a picture becomes a move. */
+const MOVE_THRESHOLD = 3;
 
 /** The smallest a drag makes a picture, in screen pixels. */
 const MIN_PIXELS = 8;
@@ -118,6 +123,39 @@ export class PictureOverlay {
       if (++frames < 10 && this.target) this.frame = requestAnimationFrame(tick);
     };
     this.frame = requestAnimationFrame(tick);
+  }
+
+  /**
+   * A press on a floating picture moves it: a dotted outline follows the pointer, and letting go
+   * reports the distance once (one undo step). A press that hardly moves is just a click.
+   */
+  startMove(ev: MouseEvent): void {
+    const target = this.target;
+    if (!target || ev.button !== 0 || this.overlay.hasAttribute("data-readonly")) return;
+    const start = target.getBoundingClientRect();
+    const view = this.doc.defaultView;
+    let dx = 0, dy = 0, moving = false;
+    const move = (e: MouseEvent): void => {
+      dx = e.clientX - ev.clientX;
+      dy = e.clientY - ev.clientY;
+      if (!moving && Math.hypot(dx, dy) < MOVE_THRESHOLD) return;
+      if (!moving) { moving = true; this.overlay.setAttribute("data-dragging", ""); }
+      e.preventDefault();
+      Object.assign(this.ghost.style, { left: `${dx}px`, top: `${dy}px`, width: `${start.width}px`, height: `${start.height}px` });
+    };
+    const end = (e: MouseEvent): void => {
+      view?.removeEventListener("mousemove", move, true);
+      view?.removeEventListener("mouseup", end, true);
+      view?.removeEventListener("blur", cancel);
+      this.overlay.removeAttribute("data-dragging");
+      if (!moving || e.type !== "mouseup") return;
+      e.preventDefault();
+      this.host.move(dx, dy);
+    };
+    const cancel = (): void => { moving = false; end(new MouseEvent("blur")); };
+    view?.addEventListener("mousemove", move, true);
+    view?.addEventListener("mouseup", end, true);
+    view?.addEventListener("blur", cancel);
   }
 
   private startDrag(h: Handle, ev: PointerEvent): void {

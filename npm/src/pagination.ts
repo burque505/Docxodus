@@ -619,8 +619,9 @@ export const DRAWING_HOST_ATTRIBUTE = "data-docx-anchor-host";
  * {@link measureRenderedSource} looks up promoted drawings only for elements that have them.
  */
 export const HOSTS_PROMOTED_DRAWING_ATTRIBUTE = "data-docx-hosts-promoted-drawing";
-/** Numbers the hidden markers left where promoted drawings stood in their paragraphs. */
-let drawingHomeCounter = 0;
+/** Where page view found each drawing it lifted out of its paragraph into the page box:
+ *  the node that held it and its index there. */
+export const liftedDrawingHomes = new WeakMap<HTMLElement, { parent: Node; index: number }>();
 
 /**
  * Marks a block taller than its page that the paginator placed alone on a page. Word starts an
@@ -8239,16 +8240,10 @@ export class PaginationEngine {
         pageNumber,
       );
 
-      // An empty, hidden marker keeps the drawing's place in its paragraph, so an editor can
-      // still tell which paragraph (and where in it) a promoted picture belongs to.
-      if (anchor.parentNode && !anchor.dataset.docxAnchorHome) {
-        const home = anchor.ownerDocument.createElement('span');
-        const id = `dah${++drawingHomeCounter}`;
-        home.dataset.docxAnchorHomeOf = id;
-        home.hidden = true;
-        anchor.dataset.docxAnchorHome = id;
-        anchor.parentNode.insertBefore(home, anchor);
-      }
+      // Remember the drawing's place in its paragraph (not in the DOM, so layout and export are
+      // unchanged), so an editor can still tell where a promoted picture belongs.
+      if (anchor.parentNode && !liftedDrawingHomes.has(anchor))
+        liftedDrawingHomes.set(anchor, { parent: anchor.parentNode, index: Array.prototype.indexOf.call(anchor.parentNode.childNodes, anchor) });
       this.promoteSourceContent(anchor, pageBox);
       anchor.style.position = 'absolute';
       anchor.style.left = `${left}pt`;

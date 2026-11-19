@@ -17,7 +17,7 @@
  * full fidelity, and save() is lossless for them.
  */
 
-import { paginateHtml } from "./pagination.js";
+import { liftedDrawingHomes, paginateHtml } from "./pagination.js";
 import { applyUnroundedNormalLineHeights } from "./line-metrics.js";
 import { DocumentViewport } from "./viewport.js";
 import type { ColumnWidth } from "./viewport.js";
@@ -6660,6 +6660,7 @@ export class DocxEditor {
     if (!this.pictureOverlay) {
       this.pictureOverlay = new PictureOverlay(this.container.ownerDocument, {
         resize: (wr, hr) => this.resizePictureBy(wr, hr),
+        move: (dx, dy) => this.movePictureBy(dx, dy),
       });
     }
     return this.pictureOverlay;
@@ -6680,35 +6681,50 @@ export class DocxEditor {
   private picturesIn(block: HTMLElement): HTMLElement[] {
     const own = Array.from(block.querySelectorAll<HTMLElement>(PICTURE_SELECTOR))
       .filter((p) => !p.parentElement?.closest(PICTURE_SELECTOR));
-    // Page view lifts floating drawings out to the page box; a hidden marker keeps their place.
-    const homes = Array.from(block.querySelectorAll<HTMLElement>("[data-docx-anchor-home-of]"));
-    if (homes.length === 0) return own;
+    // Page view lifts floating drawings out to the page box; it remembers where each stood.
+    const lifted = Array.from(this.container.querySelectorAll<HTMLElement>("[data-docx-drawing-anchor]"))
+      .filter((anchor) => { const home = liftedDrawingHomes.get(anchor); return !!home && block.contains(home.parent); })
+      .flatMap((anchor) => Array.from(anchor.querySelectorAll<HTMLElement>(PICTURE_SELECTOR))
+        .filter((p) => !p.parentElement?.closest(PICTURE_SELECTOR)));
+    if (lifted.length === 0) return own;
     const doc = block.ownerDocument;
-    const lifted = homes.flatMap((home) => {
-      const drawing = doc.querySelector<HTMLElement>(`[data-docx-anchor-home="${home.dataset.docxAnchorHomeOf}"]`);
-      return drawing ? Array.from(drawing.querySelectorAll<HTMLElement>(PICTURE_SELECTOR))
-        .filter((p) => !p.parentElement?.closest(PICTURE_SELECTOR)) : [];
-    });
-    const at = (p: HTMLElement): Node => this.pictureHome(p) ?? p;
-    return [...own, ...lifted].sort((a, b) =>
-      at(a) === at(b) ? 0 : at(a).compareDocumentPosition(at(b)) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
+    const point = (p: HTMLElement): Range => {
+      const r = doc.createRange();
+      const home = this.pictureHome(p);
+      if (home) r.setStart(home.parent, home.index); else r.setStartBefore(p);
+      return r;
+    };
+    return [...own, ...lifted].sort((a, b) => point(a).compareBoundaryPoints(Range.START_TO_START, point(b)));
   }
 
-  /** The hidden marker standing in a paragraph for a picture page view lifted out of it, or null. */
-  private pictureHome(picture: HTMLElement): HTMLElement | null {
-    const id = picture.closest<HTMLElement>("[data-docx-anchor-home]")?.dataset.docxAnchorHome;
-    if (!id) return null;
-    const home = picture.ownerDocument.querySelector<HTMLElement>(`[data-docx-anchor-home-of="${id}"]`);
-    return home && this.container.contains(home) ? home : null;
+  /** Where a picture page view lifted out of its paragraph stood in it, or null. */
+  private pictureHome(picture: HTMLElement): { parent: Node; index: number } | null {
+    for (let el: HTMLElement | null = picture; el && el !== this.container; el = el.parentElement) {
+      const home = liftedDrawingHomes.get(el);
+      if (home) return home.parent.isConnected && this.container.contains(home.parent) ? home : null;
+    }
+    return null;
+  }
+
+  /** A collapsed range just before (or after) a picture, at its place in its paragraph. */
+  private rangeAtPicture(picture: HTMLElement, before: boolean): Range {
+    const range = picture.ownerDocument.createRange();
+    const home = this.pictureHome(picture);
+    if (home) range.setStart(home.parent, Math.min(home.index, home.parent.childNodes.length));
+    else if (before) range.setStartBefore(picture);
+    else range.setStartAfter(picture);
+    range.collapse(true);
+    return range;
   }
 
   /** A picture's place in its block: its content offset (pictures take none) and its rank among
    *  the pictures at that offset, which is how the engine's occurrences line up with it. */
   private picturePlace(picture: HTMLElement, block: HTMLElement): { offset: number; rank: number } {
     const offsetOf = (p: HTMLElement): number => {
-      const node = this.pictureHome(p) ?? p;
-      const parent = node.parentNode!;
-      return contentOffsetOf(block, parent, Array.prototype.indexOf.call(parent.childNodes, node));
+      const home = this.pictureHome(p);
+      if (home) return contentOffsetOf(block, home.parent, home.index);
+      const parent = p.parentNode!;
+      return contentOffsetOf(block, parent, Array.prototype.indexOf.call(parent.childNodes, p));
     };
     const offset = offsetOf(picture);
     const same = this.picturesIn(block).filter((p) => offsetOf(p) === offset);
@@ -6731,15 +6747,71 @@ export class DocxEditor {
     const target = event.target instanceof Element ? event.target : null;
     if (this.pictureOverlay?.owns(target)) return true;
     const picture = target?.closest<HTMLElement>(PICTURE_SELECTOR) ?? null;
-    const block = picture ? this.editableBlockOf(this.pictureHome(picture) ?? picture) : null;
+    const block = picture ? this.editableBlockOf(this.pictureHome(picture)?.parent ?? picture) : null;
     if (!picture || !block || (event.button !== 0 && event.button !== 2)) {
       // A click elsewhere in the document drops the selection; one in the ribbon or a dialog keeps it.
       if (this.selectedPictureId && event.button === 0 && target && this.container.contains(target)) this.deselectPicture();
       return false;
     }
     if (event.button === 0) event.preventDefault();
-    if (this.selectedPictureId && this.pictureOverlay?.picture === picture) return true;
-    return this.selectPictureElement(picture, block);
+    const selected = (this.selectedPictureId && this.pictureOverlay?.picture === picture)
+      || this.selectPictureElement(picture, block);
+    // A floating picture page view placed can be dragged somewhere else straight away.
+    const shown = this.pictureOverlay?.picture;
+    if (selected && event.button === 0 && shown && this.movablePicture(shown)) this.pictureOverlay!.startMove(event);
+    return selected;
+  }
+
+  /** Where a floating picture in page view stands (its page box and the paragraph it is
+   *  anchored in), when it can be moved by dragging; null otherwise (continuous view places
+   *  floating pictures by CSS float, not by position). */
+  private movablePicture(picture: HTMLElement): { page: HTMLElement; paragraph: HTMLElement } | null {
+    const page = picture.closest<HTMLElement>("[data-page-number][data-section-index]");
+    if (!page || !this.container.contains(page)) return null;
+    const occurrence = this.selectedPictureId ? this.listImages().find((i) => i.id === this.selectedPictureId) : undefined;
+    if (occurrence?.placement !== "floating" || !pictureInfoOf(occurrence).can.layout) return null;
+    // Page view draws a top-and-bottom picture in its paragraph's flow, wherever its position says:
+    // a drag would change the document without moving it on screen.
+    const mode = occurrence.floatingLayout?.wrapMode;
+    if (mode === "top_and_bottom" || mode === "unknown") return null;
+    // A lifted picture is measured from the paragraph its hidden marker stands in.
+    const homeParent = this.pictureHome(picture)?.parent;
+    const at = homeParent ? (homeParent instanceof Element ? homeParent : homeParent.parentElement) : picture;
+    const paragraph = at?.closest<HTMLElement>("p, h1, h2, h3, h4, h5, h6, [data-anchor]");
+    return paragraph ? { page, paragraph } : null;
+  }
+
+  /**
+   * Move the selected floating picture by a dragged distance: across from the page's edge, and
+   * down from its own paragraph (so it still travels with its text), as Word keeps it. One undo step.
+   */
+  private movePictureBy(dxPixels: number, dyPixels: number): boolean {
+    const picture = this.pictureOverlay?.picture;
+    const id = this.selectedPictureId;
+    const occurrence = id ? this.listImages().find((i) => i.id === id) : undefined;
+    const where = picture ? this.movablePicture(picture) : null;
+    if (!picture || !occurrence?.floatingLayout || !where) return false;
+    const info = pictureInfoOf(occurrence);
+    const rect = picture.getBoundingClientRect();
+    const pixelsPerPoint = info.widthPoints && rect.width > 0 ? rect.width / info.widthPoints : 0;
+    if (!(pixelsPerPoint > 0)) return false;
+    // Across from the page's edge; down from the same paragraph box page view measures from.
+    const left = (rect.left + dxPixels - where.page.getBoundingClientRect().left) / pixelsPerPoint;
+    const top = (rect.top + dyPixels - where.paragraph.getBoundingClientRect().top) / pixelsPerPoint;
+    const emu = (points: number): number => Math.round(points * 12700);
+    const base = writableLayout(occurrence.floatingLayout);
+    // Text wraps round a square, tight or through picture as round a float at a column edge,
+    // so across the page it goes to whichever edge it was dropped nearer; down, it goes where it was dropped.
+    const pageRect = where.page.getBoundingClientRect();
+    const across: Partial<FloatingImageLayout> = base.wrapMode === "square" || base.wrapMode === "tight" || base.wrapMode === "through"
+      ? { horizontalRelativeFrom: "column", horizontalOffsetEmu: null,
+          horizontalAlignment: rect.left + dxPixels + rect.width / 2 <= pageRect.left + pageRect.width / 2 ? "left" : "right" }
+      : { horizontalRelativeFrom: "page", horizontalOffsetEmu: emu(left), horizontalAlignment: null };
+    const layout: FloatingImageLayout = {
+      ...base, ...across,
+      verticalRelativeFrom: "paragraph", verticalOffsetEmu: emu(top), verticalAlignment: null,
+    };
+    return this.changePicture((bridge, imageId) => bridge.SetImageFloatingLayout?.(this.handle, imageId, JSON.stringify(layout)));
   }
 
   private selectPictureElement(picture: HTMLElement, block: HTMLElement): boolean {
@@ -6770,15 +6842,13 @@ export class DocxEditor {
     const info = pictureInfoOf(occurrence);
     this.overlay().show(picture, info.can.size);
     this.overlay().follow();
+    if (this.movablePicture(picture)) picture.style.cursor = "move";
     // The caret waits just after the picture, so typing goes on from there.
     if (document.activeElement !== block) block.focus({ preventScroll: true });
     const sel = window.getSelection();
     if (sel) {
-      const range = document.createRange();
-      range.setStartAfter(this.pictureHome(picture) ?? picture);
-      range.collapse(true);
       sel.removeAllRanges();
-      sel.addRange(range);
+      sel.addRange(this.rangeAtPicture(picture, false));
     }
     this.options.onPictureChange?.(info);
   }
@@ -6806,12 +6876,8 @@ export class DocxEditor {
     const caretBy = (before: boolean): void => {
       const sel = window.getSelection();
       if (!sel) return;
-      const range = document.createRange();
-      const at = this.pictureHome(picture) ?? picture;
-      if (before) range.setStartBefore(at); else range.setStartAfter(at);
-      range.collapse(true);
       sel.removeAllRanges();
-      sel.addRange(range);
+      sel.addRange(this.rangeAtPicture(picture, before));
     };
     switch (ev.key) {
       case "Delete":
