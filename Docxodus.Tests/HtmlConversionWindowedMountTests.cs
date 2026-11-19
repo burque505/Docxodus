@@ -340,6 +340,42 @@ public class HtmlConversionWindowedMountTests
         Assert.Same(boxes[2], boxes[3]);
     }
 
+    [Fact]
+    public void WM006_IdenticallyFormattedSectionsKeepAWrapperEach()
+    {
+        // Three sections with the same page setup, as Word writes a Next Page break: the full
+        // render keeps them apart, so the chrome must too, or the mount files their blocks under
+        // the first and the continuous view loses its section breaks.
+        Wp.Paragraph Closing(string text) => new(
+            new Wp.ParagraphProperties(new Wp.SectionProperties(new Wp.PageSize { Width = 12240, Height = 15840 })),
+            new Wp.Run(new Wp.Text(text)));
+        using var ms = new MemoryStream();
+        using (var doc = WordprocessingDocument.Create(ms, DocumentFormat.OpenXml.WordprocessingDocumentType.Document))
+        {
+            var main = doc.AddMainDocumentPart();
+            main.Document = new Wp.Document(new Wp.Body(
+                new Wp.Paragraph(new Wp.Run(new Wp.Text("one"))), Closing("ends one"),
+                new Wp.Paragraph(new Wp.Run(new Wp.Text("two"))), Closing("ends two"),
+                Closing("ends three"),
+                new Wp.Paragraph(new Wp.Run(new Wp.Text("last"))),
+                new Wp.SectionProperties(new Wp.PageSize { Width = 12240, Height = 15840 })));
+        }
+        var handle = SessionRegistry.OpenSession(ms.ToArray(), new DocxSessionSettings());
+        try
+        {
+            var full = Sections(Parse(DocxSessionOps.RenderEditorHtml(handle, Profile)));
+            var chrome = Sections(Parse(DocxSessionOps.RenderEditorChromeHtml(handle, Profile)));
+            Assert.Equal(4, full.Count);
+            Assert.Equal(full.Count, chrome.Count);
+            for (int i = 0; i < full.Count; i++)
+                Assert.Equal(AttributeSignature(full[i]), AttributeSignature(chrome[i]));
+        }
+        finally
+        {
+            SessionRegistry.CloseSession(handle);
+        }
+    }
+
     private static XElement Parse(string html)
     {
         if (html.TrimStart().StartsWith('{')) throw new Xunit.Sdk.XunitException(html);

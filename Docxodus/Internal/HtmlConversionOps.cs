@@ -296,9 +296,12 @@ internal static class HtmlConversionOps
                 var carrier = Carrier();
                 if (sectPr is not null)
                 {
-                    var properties = new XElement(sectPr);
-                    properties.DescendantsAndSelf().Attributes(PtOpenXml.Unid).Remove();
-                    carrier.Add(new XElement(W.pPr, properties));
+                    // The copy keeps its Unids: the continuous render merges adjacent sections whose
+                    // properties serialize alike, and in the full render a section's own Unid is what
+                    // keeps identically formatted sections apart. Stripped, every run of identical
+                    // sections came out as one wrapper and the mount put their blocks in the first.
+                    // (The block it came from is replaced, so the Unids stay unique.)
+                    carrier.Add(new XElement(W.pPr, new XElement(sectPr)));
                 }
                 carrier.Add(references);
                 child.ReplaceWith(carrier);
