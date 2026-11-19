@@ -127,7 +127,8 @@ export class PictureOverlay {
 
   /**
    * A press on a floating picture moves it: a dotted outline follows the pointer, and letting go
-   * reports the distance once (one undo step). A press that hardly moves is just a click.
+   * reports the distance once (one undo step). A press that hardly moves is just a click;
+   * Escape while dragging puts it back.
    */
   startMove(ev: MouseEvent): void {
     const target = this.target;
@@ -143,18 +144,38 @@ export class PictureOverlay {
       e.preventDefault();
       Object.assign(this.ghost.style, { left: `${dx}px`, top: `${dy}px`, width: `${start.width}px`, height: `${start.height}px` });
     };
-    const end = (e: MouseEvent): void => {
+    // The browser's own image drag would swallow the release: never let it start.
+    const noNativeDrag = (e: Event): void => e.preventDefault();
+    const finish = (drop: boolean): void => {
       view?.removeEventListener("mousemove", move, true);
-      view?.removeEventListener("mouseup", end, true);
+      view?.removeEventListener("pointermove", move as (e: Event) => void, true);
+      view?.removeEventListener("mouseup", release, true);
+      view?.removeEventListener("pointerup", release, true);
+      view?.removeEventListener("pointercancel", cancel, true);
+      view?.removeEventListener("dragstart", noNativeDrag, true);
+      view?.removeEventListener("keydown", escape, true);
       view?.removeEventListener("blur", cancel);
       this.overlay.removeAttribute("data-dragging");
-      if (!moving || e.type !== "mouseup") return;
-      e.preventDefault();
-      this.host.move(dx, dy);
+      if (drop && moving) this.host.move(dx, dy);
     };
-    const cancel = (): void => { moving = false; end(new MouseEvent("blur")); };
+    const release = (e: MouseEvent): void => {
+      if (moving) e.preventDefault();
+      finish(true);
+    };
+    const cancel = (): void => finish(false);
+    const escape = (e: KeyboardEvent): void => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      finish(false);
+    };
     view?.addEventListener("mousemove", move, true);
-    view?.addEventListener("mouseup", end, true);
+    view?.addEventListener("pointermove", move as (e: Event) => void, true);
+    view?.addEventListener("mouseup", release, true);
+    view?.addEventListener("pointerup", release, true);
+    view?.addEventListener("pointercancel", cancel, true);
+    view?.addEventListener("dragstart", noNativeDrag, true);
+    view?.addEventListener("keydown", escape, true);
     view?.addEventListener("blur", cancel);
   }
 

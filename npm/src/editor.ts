@@ -3711,7 +3711,9 @@ export class DocxEditor {
       if (number && first && !first.querySelector(NOTE_NUMBER_SELECTOR)) {
         first.prepend(number.cloneNode(true));
       }
+      const lifted = this.options.paginated ? this.liftedDrawingsOf(oldEl) : [];
       oldEl.replaceWith(...newNodes);
+      if (lifted.length > 0) this.reliftDrawings(lifted, newNodes);
       return true;
     } catch {
       return false;
@@ -8191,6 +8193,67 @@ export class DocxEditor {
   }
 
   /** Re-render one block from the live session by EditResult ref, swapping it in place. */
+  /** The drawings page view lifted out of `block` into its page box, in their paragraph order. */
+  private liftedDrawingsOf(block: HTMLElement): HTMLElement[] {
+    const doc = block.ownerDocument;
+    const point = (el: HTMLElement): Range => {
+      const home = liftedDrawingHomes.get(el)!;
+      const r = doc.createRange();
+      r.setStart(home.parent, Math.min(home.index, home.parent.childNodes.length));
+      return r;
+    };
+    return Array.from(this.container.querySelectorAll<HTMLElement>("[data-docx-drawing-anchor]"))
+      .filter((el) => { const home = liftedDrawingHomes.get(el); return !!home && block.contains(home.parent) && !block.contains(el); })
+      .sort((a, b) => point(a).compareBoundaryPoints(Range.START_TO_START, point(b)));
+  }
+
+  /**
+   * A block re-rendered in page view brings its floating drawings back inside it, while the copies
+   * page view lifted out of the old block stay in the page box. Put the fresh drawings where the old
+   * ones stood (the next full layout places them exactly) and drop the old ones; when they no longer
+   * pair up, lay the page out again.
+   */
+  private reliftDrawings(lifted: HTMLElement[], fresh: Node[]): void {
+    const drawings = fresh.flatMap((node) => node.nodeType === 1
+      ? Array.from((node as HTMLElement).querySelectorAll<HTMLElement>("[data-docx-drawing-anchor]")) : [])
+      .filter((el) => !el.parentElement?.closest("[data-docx-drawing-anchor]"));
+    // Same drawings, same placement (a text edit): reuse where page view put them (the host it
+    // records is page view's own note, not placement). Anything else
+    // (undo of a move, a new wrap) needs the layout run again.
+    const placement = (el: HTMLElement): string => Array.from(el.attributes)
+      .filter((a) => a.name.startsWith("data-docx-anchor-") && a.name !== "data-docx-anchor-host").map((a) => `${a.name}=${a.value}`).sort().join(";");
+    if (drawings.length !== lifted.length || drawings.some((d, i) => placement(d) !== placement(lifted[i]))) {
+      for (const old of lifted) old.remove();
+      if (!this.pendingDrawingLayout) {
+        this.pendingDrawingLayout = true;
+        queueMicrotask(() => {
+          this.pendingDrawingLayout = false;
+          if (this.closed) return;
+          // Lay the pages out again, the caret staying where it was.
+          const block = this.activeBlock?.isConnected ? this.activeBlock : null;
+          const anchorId = block ? this.anchorIdOf(block) : null;
+          const offset = block ? caretOffsetIn(block) : null;
+          this.remount(-1, false);
+          const back = anchorId ? this.blockForAnchorId(anchorId) : null;
+          if (back) {
+            this.activeBlock = back;
+            back.focus({ preventScroll: true });
+            placeCaretAtOffset(back, offset ?? 0);
+          }
+        });
+      }
+      return;
+    }
+    drawings.forEach((drawing, i) => {
+      const old = lifted[i];
+      const parent = drawing.parentNode!;
+      liftedDrawingHomes.set(drawing, { parent, index: Array.prototype.indexOf.call(parent.childNodes, drawing) });
+      for (const attr of Array.from(old.attributes)) drawing.setAttribute(attr.name, attr.value);
+      old.replaceWith(drawing);
+    });
+  }
+  private pendingDrawingLayout = false;
+
   private swapBlock(oldEl: HTMLElement, oldUnid: string, ref?: AnchorRef): HTMLElement | null {
     const inBand = this.isBandBlock(oldEl);
     const anchorId = ref?.id ?? this.anchorIdOf(oldEl);

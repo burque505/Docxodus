@@ -82,3 +82,51 @@ test(`page view: dragging a ${wrap} picture moves it, in one undo step`, async (
   await expect.poll(async () => Math.abs((await img.boundingBox())!.x - before.x)).toBeLessThan(2);
 });
 }
+
+test('page view: typing in the paragraph of a dragged in-front picture keeps one picture, in place', async ({ page }) => {
+  await page.goto('/test-harness.html');
+  await page.waitForFunction(() => (window as any).DocxodusReady === true, { timeout: 30000 });
+  await page.evaluate(() => {
+    const host = document.createElement('div'); host.id = 'pi-host'; host.style.height = '700px';
+    document.body.appendChild(host);
+    const r = (window as any).DocxodusEditor.mountRibbon(host, { paginated: true });
+    r.setExports((window as any).Docxodus); r.openBlank('p.docx'); r.loader.done(); (window as any).__ribbon = r;
+  });
+  const png = await page.evaluate(() => { const c = document.createElement('canvas'); c.width = 96; c.height = 48; const g = c.getContext('2d')!; g.fillStyle = '#c33'; g.fillRect(0, 0, 96, 48); return c.toDataURL('image/png').split(',')[1]; });
+  const text = page.locator(`${HOST} [data-anchor][contenteditable="true"]`).first();
+  await text.click();
+  await page.keyboard.type('Some words before and after.');
+  await page.keyboard.press('Home');
+  await page.evaluate((b) => (window as any).__ribbon.exec('insertPicture', { base64: b }), png);
+  await page.locator(`${HOST} img`).first().click();
+  await page.locator(`${HOST} .dxr-tab[data-tab="picture"]`).click();
+  await page.locator(`${HOST} [data-dxr="picwrap"]`).selectOption('inFront');
+  await expect.poll(async () => (await page.evaluate(() => (window as any).__ribbon.exec('picture')))?.wrap).toBe('inFront');
+  const img = page.locator(`${HOST} img`);
+  const before = (await img.first().boundingBox())!;
+  await page.mouse.move(before.x + 20, before.y + 20);
+  await page.mouse.down();
+  await page.mouse.move(before.x + 220, before.y + 140, { steps: 6 });
+  await page.mouse.up();
+  await expect.poll(async () => (await img.first().boundingBox())!.y - before.y).toBeGreaterThan(100);
+  const moved = (await img.first().boundingBox())!;
+  await expect(page.locator('.docx-picture-overlay[data-dragging]')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  // Type at the end of the picture's own paragraph, then start a new one.
+  const box = (await text.boundingBox())!;
+  await page.mouse.click(box.x + box.width - 5, box.y + 5);
+  await page.keyboard.press('End');
+  await page.keyboard.type(' More');
+  await page.waitForTimeout(300);
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(300);
+  await page.keyboard.type('Next');
+  await page.waitForTimeout(500);
+  await expect(img).toHaveCount(1);
+  const after = (await img.first().boundingBox())!;
+  expect(Math.abs(after.x - moved.x)).toBeLessThan(3);
+  expect(Math.abs(after.y - moved.y)).toBeLessThan(25);
+  for (let i = 0; i < 4; i++) await page.evaluate(() => (window as any).__ribbon.exec('undo'));
+  await expect(img).toHaveCount(1);
+  expect(await page.evaluate(() => (window as any).__ribbon.editor.listImages().length)).toBe(1);
+});
