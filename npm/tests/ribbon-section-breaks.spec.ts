@@ -117,6 +117,36 @@ test.describe('Section breaks', () => {
     await expect(exec(page, 'insertBreak', { kind: 'page' })).rejects.toThrow();
     expect(await blocks(page).count()).toBe(before);
   });
+
+  test('a refused break says why on the status line and is not recorded', async ({ page }) => {
+    await mount(page, ['Before']);
+    await page.evaluate(() => {
+      (window as any).__recorded = [];
+      // (the ribbon's onCommand: what a host's macro recorder sees)
+      const ribbon = (window as any).__ribbon;
+      ribbon.options.onCommand = (_l: string, _ms: number, c: unknown) => (window as any).__recorded.push(c ?? null);
+    });
+    await exec(page, 'table', { rows: 2, columns: 2 });
+    const cell = page.locator('#sb-host td [data-anchor][contenteditable="true"]').first();
+    const status = page.locator('#sb-host [data-dxr="status"]');
+    const before = await blocks(page).count();
+    await cell.click();
+    await page.evaluate(() => (window as any).__ribbon.selectTab('layout'));
+    await cell.click();
+    await page.locator('#sb-host [data-dxr="breaks"]').selectOption('nextPage');
+    await expect(status).toHaveText(/not in a table/);
+    await page.evaluate(() => (window as any).__ribbon.setStatus(''));
+    await cell.click();
+    await page.keyboard.press('Control+Enter');
+    await expect(status).toHaveText(/not in a table/);
+    expect(await blocks(page).count()).toBe(before);
+    expect(await page.evaluate(() => (window as any).__recorded.slice(-2))).toEqual([null, null]);
+
+    // (and one that goes in is recorded as before)
+    await blocks(page).first().click();
+    await page.keyboard.press('Control+Enter');
+    expect(await page.evaluate(() => (window as any).__recorded.at(-1))).toEqual({ name: 'insertBreak', args: { kind: 'page' } });
+  });
 });
 
 test.describe('Page break', () => {
