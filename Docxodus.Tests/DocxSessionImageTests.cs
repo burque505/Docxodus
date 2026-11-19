@@ -970,6 +970,154 @@ public class DocxSessionImageTests
         Assert.Equal(-23456, layout.GetProperty("verticalOffsetEmu").GetInt64());
     }
 
+    [Fact]
+    public void IM040_SetImagePlacement_InlineToFloatingAndBack_KeepsPictureAndIsOneUndoStep()
+    {
+        using var session = new DocxSession(DocxSessionTests.BuildDS001_SimpleTwoParagraphs());
+        Assert.True(session.InsertImage(Paragraphs(session)[0], 2, Png(4, 5),
+            new ImageInsertOptions { AltText = "alt", Title = "title", WidthPoints = 40 }).Success);
+        var before = Assert.Single(session.ListImages());
+        Assert.Equal(ImagePlacement.Inline, before.Placement);
+        Assert.True(before.Operations.SetPlacement.CanMutate);
+
+        var floated = session.SetImagePlacement(before.Id, ImagePlacement.Floating);
+        Assert.True(floated.Success, floated.Error?.Message);
+        var after = Assert.Single(session.ListImages());
+        Assert.Equal(ImagePlacement.Floating, after.Placement);
+        Assert.True(after.FloatingLayoutSupported, after.UnsupportedReason);
+        Assert.Equal(ImageWrapMode.Square, after.FloatingLayout!.WrapMode);
+        Assert.Equal(ImageHorizontalReference.Column, after.FloatingLayout.HorizontalRelativeFrom);
+        Assert.Equal(ImageVerticalReference.Paragraph, after.FloatingLayout.VerticalRelativeFrom);
+        Assert.Equal("alt", after.AltText);
+        Assert.Equal("title", after.Title);
+        Assert.Equal(before.RenderedWidthPoints!.Value, after.RenderedWidthPoints!.Value, 6);
+        Assert.Equal(before.RenderedHeightPoints!.Value, after.RenderedHeightPoints!.Value, 6);
+        Assert.Equal(before.Span, after.Span);
+        Assert.Equal(before.AnchorId, after.AnchorId);
+        AssertSchemaValid(session.Save(true));
+        AssertSchemaValid(session.Save(false));
+        AssertAnchorChildOrder(session.Save(false));
+
+        // Back inline: no position or wrap left behind.
+        var inline = session.SetImagePlacement(after.Id, ImagePlacement.Inline);
+        Assert.True(inline.Success, inline.Error?.Message);
+        var back = Assert.Single(session.ListImages());
+        Assert.Equal(ImagePlacement.Inline, back.Placement);
+        Assert.Null(back.FloatingLayout);
+        Assert.Equal("alt", back.AltText);
+        var saved = session.Save(false);
+        AssertSchemaValid(saved);
+        using (var stream = new MemoryStream(saved))
+        using (var document = WordprocessingDocument.Open(stream, false))
+        {
+            var main = document.MainDocumentPart!.GetXDocument();
+            Assert.Empty(main.Descendants(WP + "anchor"));
+            Assert.Single(main.Descendants(WP + "inline"));
+        }
+
+        // Each switch is one undo step.
+        Assert.True(session.Undo());
+        Assert.Equal(ImagePlacement.Floating, Assert.Single(session.ListImages()).Placement);
+        Assert.True(session.Undo());
+        Assert.Equal(ImagePlacement.Inline, Assert.Single(session.ListImages()).Placement);
+    }
+
+    [Fact]
+    public void IM041_SetImagePlacement_WithLayout_WritesItAndBehindTextIsWrapNoneBehindDoc()
+    {
+        using var session = new DocxSession(DocxSessionTests.BuildDS001_SimpleTwoParagraphs());
+        Assert.True(session.InsertImage(Paragraphs(session)[0], 0, Png(2, 2)).Success);
+        var image = Assert.Single(session.ListImages());
+        var layout = new FloatingImageLayout
+        {
+            HorizontalRelativeFrom = ImageHorizontalReference.Margin,
+            HorizontalOffsetEmu = null,
+            HorizontalAlignment = ImageHorizontalAlignment.Center,
+            WrapMode = ImageWrapMode.None,
+            BehindDocument = true,
+        };
+        var result = session.SetImagePlacement(image.Id, ImagePlacement.Floating, layout);
+        Assert.True(result.Success, result.Error?.Message);
+        Assert.Equal(layout, Assert.Single(session.ListImages()).FloatingLayout);
+        AssertSchemaValid(session.Save(false));
+        AssertAnchorChildOrder(session.Save(false));
+
+        // The same placement with a layout is a layout change; without one, a no-op.
+        var square = layout with { WrapMode = ImageWrapMode.Square, BehindDocument = false };
+        Assert.True(session.SetImagePlacement(Assert.Single(session.ListImages()).Id,
+            ImagePlacement.Floating, square).Success);
+        Assert.Equal(square, Assert.Single(session.ListImages()).FloatingLayout);
+        Assert.True(session.SetImagePlacement(Assert.Single(session.ListImages()).Id,
+            ImagePlacement.Floating).Success);
+        Assert.Equal(square, Assert.Single(session.ListImages()).FloatingLayout);
+        Assert.True(session.Undo());
+        Assert.Equal(layout, Assert.Single(session.ListImages()).FloatingLayout);
+    }
+
+    [Fact]
+    public void IM042_SetImagePlacement_RefusesBadInputWithoutHistory()
+    {
+        using var session = new DocxSession(DocxSessionTests.BuildDS001_SimpleTwoParagraphs());
+        Assert.True(session.InsertImage(Paragraphs(session)[0], 0, Png(2, 2)).Success);
+        var image = Assert.Single(session.ListImages());
+
+        Assert.Equal(EditErrorCode.InvalidImageLayout, session.SetImagePlacement(image.Id,
+            ImagePlacement.Inline, new FloatingImageLayout()).Error!.Code);
+        Assert.Equal(EditErrorCode.ImageNotFound,
+            session.SetImagePlacement("img:body:nope", ImagePlacement.Floating).Error!.Code);
+        Assert.False(session.SetImagePlacement(image.Id, ImagePlacement.Floating,
+            new FloatingImageLayout { HorizontalOffsetEmu = null }).Success);
+        Assert.True(session.SetImagePlacement(image.Id, ImagePlacement.Inline).Success);
+
+        // Nothing above was an edit: the one undo step is still the insertion.
+        Assert.True(session.Undo());
+        Assert.Empty(session.ListImages());
+        Assert.False(session.Undo());
+    }
+
+    [Fact]
+    public void IM043_SetImagePlacementJson_RejectsUnknownPlacementAndBadLayout()
+    {
+        var handle = Docxodus.Internal.DocxSessionOps.OpenSession(DocxSession.CreateBlankDocxBytes(), null);
+        try
+        {
+            foreach (var (placement, layoutJson) in new[] { ("sideways", (string?)null), ("floating", "{not json") })
+            {
+                using var json = JsonDocument.Parse(Docxodus.Internal.DocxSessionOps.SetImagePlacement(
+                    handle, "img:body:none", placement, layoutJson));
+                Assert.False(json.RootElement.GetProperty("success").GetBoolean());
+            }
+        }
+        finally
+        {
+            Docxodus.Internal.DocxSessionOps.CloseSession(handle);
+        }
+    }
+
+    [Fact]
+    public void IM044_SetImagePlacement_StacksAboveOtherFloatingPictures_AndTracksInRenderInline()
+    {
+        using var session = new DocxSession(DocxSessionTests.BuildDS001_SimpleTwoParagraphs());
+        var anchor = Paragraphs(session)[0];
+        Assert.True(session.InsertImage(anchor, 0, Png(2, 2), new ImageInsertOptions
+        {
+            Placement = ImagePlacement.Floating,
+            FloatingLayout = new FloatingImageLayout { RelativeHeight = 251660000 },
+        }).Success);
+        Assert.True(session.InsertImage(anchor, 1, Png(3, 3)).Success);
+        var inline = session.ListImages().Single(image => image.Placement == ImagePlacement.Inline);
+
+        session.SetTrackedChanges(TrackedChangeMode.RenderInline);
+        var result = session.SetImagePlacement(inline.Id, ImagePlacement.Floating);
+        Assert.True(result.Success, result.Error?.Message);
+        var moved = session.ListImages().Single(image => image.Id == result.ImageId);
+        Assert.Equal(251660001u, moved.FloatingLayout!.RelativeHeight);
+        Assert.Contains("insert", session.ListRevisions().Select(revision => revision.Type));
+
+        Assert.True(session.RejectAllRevisions().Success);
+        Assert.Equal(inline, session.ListImages().Single(image => image.Id == inline.Id));
+    }
+
     private static void AssertSchemaValid(byte[] bytes) =>
         PackageValidation.AssertValid(bytes, DocumentFormat.OpenXml.FileFormatVersions.Office2007, IsRealValidationError);
 

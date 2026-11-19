@@ -41,6 +41,7 @@ import type {
   ImageInsertOptions,
   ImageOccurrence,
   FloatingImageLayout,
+  ImagePlacement,
   InlineSpan,
   NoteListEntry,
   NumberFormat,
@@ -1479,6 +1480,16 @@ export class DocxSession {
   setImageFloatingLayout(imageId: string, layout: FloatingImageLayout): EditResult {
     return JSON.parse(this.wasm.SetImageFloatingLayout(
       this.handle, imageId, JSON.stringify(layout))) as EditResult;
+  }
+
+  /**
+   * Switch a picture between inline (in line with text) and floating, as Word's Wrap Text does.
+   * Going floating, `layout` positions and wraps it (default: square wrap at the column/paragraph
+   * origin, stacked above the other floating pictures); going inline takes no layout.
+   */
+  setImagePlacement(imageId: string, placement: ImagePlacement, layout?: FloatingImageLayout): EditResult {
+    return JSON.parse(this.wasm.SetImagePlacement(
+      this.handle, imageId, placement, layout ? JSON.stringify(layout) : null)) as EditResult;
   }
 
   removeImage(imageId: string): EditResult {

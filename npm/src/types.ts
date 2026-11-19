@@ -1974,6 +1974,7 @@ export interface DocxodusWasmExports {
     SetImageDimensions: (handle: number, imageId: string, dimensionsJson: string) => string;
     SetImageMetadata: (handle: number, imageId: string, altText: string | null, title: string | null) => string;
     SetImageFloatingLayout: (handle: number, imageId: string, layoutJson: string) => string;
+    SetImagePlacement: (handle: number, imageId: string, placement: string, layoutJson: string | null) => string;
     RemoveImage: (handle: number, imageId: string) => string;
     ListContentControls: (handle: number, scopes: number) => string;
     FillContentControlText: (handle: number, anchorId: string, text: string, optionsJson: string) => string;

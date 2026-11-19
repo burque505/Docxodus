@@ -1113,6 +1113,34 @@ internal static class DocxSessionOps
     public static string SetImageMetadata(int handle, string imageId, string? altText, string? title) =>
         DocxSessionJson.Serialize(SessionRegistry.Get(handle).SetImageMetadata(imageId, altText, title));
 
+    /// <summary><paramref name="placement"/> is "inline" or "floating"; <paramref name="layoutJson"/>
+    /// (floating only) is optional, null or empty for the default square wrap.</summary>
+    public static string SetImagePlacement(int handle, string imageId, string placement, string? layoutJson)
+    {
+        ImagePlacement? parsed = placement switch
+        {
+            "inline" => ImagePlacement.Inline,
+            "floating" => ImagePlacement.Floating,
+            _ => null,
+        };
+        if (parsed is null)
+            return DocxSessionJson.Serialize(EditResult.Fail(EditErrorCode.InvalidImageLayout,
+                $"placement must be \"inline\" or \"floating\", not \"{placement}\""));
+        try
+        {
+            var layout = string.IsNullOrWhiteSpace(layoutJson) || layoutJson.Trim() == "null"
+                ? null : DocxSessionJson.ParseFloatingImageLayout(layoutJson);
+            return DocxSessionJson.Serialize(SessionRegistry.Get(handle).SetImagePlacement(
+                imageId, parsed.Value, layout));
+        }
+        catch (System.Exception ex) when (ex is System.Text.Json.JsonException or System.ArgumentException
+            or System.OverflowException)
+        {
+            return DocxSessionJson.Serialize(EditResult.Fail(EditErrorCode.InvalidImageLayout,
+                $"invalid floating layout JSON: {ex.Message}"));
+        }
+    }
+
     public static string SetImageFloatingLayout(int handle, string imageId, string layoutJson)
     {
         try

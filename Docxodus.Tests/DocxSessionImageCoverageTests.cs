@@ -42,7 +42,7 @@ public class DocxSessionImageCoverageTests
         Assert.Equal(new[] { ImageWrapMode.None, ImageWrapMode.Square, ImageWrapMode.Tight,
             ImageWrapMode.Through, ImageWrapMode.TopAndBottom }, capabilities.MutableWrapModes);
         Assert.Equal(new[] { "insert", "replace", "embed_linked", "set_dimensions", "set_metadata",
-            "set_floating_layout", "remove" }, capabilities.TrackedOperations);
+            "set_floating_layout", "remove", "set_placement" }, capabilities.TrackedOperations);
         var linked = Assert.Single(capabilities.Markups, markup => markup.Markup == "linked_picture");
         Assert.Contains("embed_linked", linked.Operations);
         Assert.DoesNotContain("replace", linked.Operations);
@@ -62,13 +62,13 @@ public class DocxSessionImageCoverageTests
         // The wire shape carries the matrix and the polygon, and the polygon parses back.
         using var json = JsonDocument.Parse(DocxSessionJson.SerializeImages(session.ListImages()));
         var operations = json.RootElement[0].GetProperty("operations").EnumerateArray().ToList();
-        Assert.Equal(new[] { "replace", "embed_linked", "set_dimensions", "set_metadata", "set_floating_layout", "remove" },
+        Assert.Equal(new[] { "replace", "embed_linked", "set_dimensions", "set_metadata", "set_floating_layout", "remove", "set_placement" },
             operations.Select(entry => entry.GetProperty("operation").GetString()));
         Assert.False(operations[1].GetProperty("canMutate").GetBoolean());
         Assert.Equal("picture is already embedded", operations[1].GetProperty("reason").GetString());
         using var capabilitiesJson = JsonDocument.Parse(DocxSessionJson.SerializeImageCapabilities(capabilities));
         Assert.Equal(6, capabilitiesJson.RootElement.GetProperty("markups").GetArrayLength());
-        Assert.Equal(7, capabilitiesJson.RootElement.GetProperty("trackedOperations").GetArrayLength());
+        Assert.Equal(8, capabilitiesJson.RootElement.GetProperty("trackedOperations").GetArrayLength());
         var parsed = DocxSessionJson.ParseFloatingImageLayout(
             """{"wrapMode":"through","wrapPolygon":{"points":[{"x":0,"y":0},{"x":21600,"y":0},{"x":10800,"y":21600}],"edited":true}}""");
         Assert.Equal(new ImageWrapPolygon(new[] { new ImageWrapPoint(0, 0), new ImageWrapPoint(21600, 0),

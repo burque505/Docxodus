@@ -134,7 +134,8 @@ public sealed record ImageOperationSupport(string Operation, bool CanMutate, str
 public sealed record ImageOperationMatrix(
     ImageOperationSupport Replace, ImageOperationSupport EmbedLinked,
     ImageOperationSupport SetDimensions, ImageOperationSupport SetMetadata,
-    ImageOperationSupport SetFloatingLayout, ImageOperationSupport Remove)
+    ImageOperationSupport SetFloatingLayout, ImageOperationSupport Remove,
+    ImageOperationSupport SetPlacement)
 {
     public IEnumerable<ImageOperationSupport> All
     {
@@ -146,6 +147,7 @@ public sealed record ImageOperationMatrix(
             yield return SetMetadata;
             yield return SetFloatingLayout;
             yield return Remove;
+            yield return SetPlacement;
         }
     }
 }
@@ -183,7 +185,7 @@ public sealed partial class DocxSession
     private static readonly XName VmlImageData = ImageV + "imagedata";
     private static readonly XName VmlShape = ImageV + "shape";
 
-    private enum ImageOperation { Replace, EmbedLinked, SetDimensions, SetMetadata, SetFloatingLayout, Remove }
+    private enum ImageOperation { Replace, EmbedLinked, SetDimensions, SetMetadata, SetFloatingLayout, Remove, SetPlacement }
 
     /// <summary>The markup shapes the matrix distinguishes. Overlays (linked media, a blip
     /// extension, placement, unmodeled layout tokens, revision containers) refine the answer per
@@ -211,13 +213,13 @@ public sealed partial class DocxSession
     private static readonly IReadOnlyList<ImageMarkupCapability> ImageMarkups = new[]
     {
         new ImageMarkupCapability("embedded_picture",
-            new[] { "replace", "set_dimensions", "set_metadata", "set_floating_layout", "remove" }, null),
+            new[] { "replace", "set_dimensions", "set_metadata", "set_floating_layout", "remove", "set_placement" }, null),
         new ImageMarkupCapability("linked_picture",
-            new[] { "embed_linked", "set_dimensions", "set_metadata", "set_floating_layout", "remove" },
+            new[] { "embed_linked", "set_dimensions", "set_metadata", "set_floating_layout", "remove", "set_placement" },
             "external media is never converted in place: replace is refused, and embed_linked takes "
             + "caller-supplied bytes to make the picture embedded"),
         new ImageMarkupCapability("extended_picture",
-            new[] { "set_dimensions", "set_metadata", "set_floating_layout", "remove" },
+            new[] { "set_dimensions", "set_metadata", "set_floating_layout", "remove", "set_placement" },
             "a blip extension carrying its own media (SVG art, an artistic-effect original) cannot "
             + "be replaced together with the raster fallback"),
         new ImageMarkupCapability("legacy_vml",
@@ -235,6 +237,7 @@ public sealed partial class DocxSession
     private static readonly IReadOnlyList<string> TrackedImageOperations = new[]
     {
         "insert", "replace", "embed_linked", "set_dimensions", "set_metadata", "set_floating_layout", "remove",
+        "set_placement",
     };
 
     public static ImageCapabilities GetImageCapabilities()
@@ -260,7 +263,7 @@ public sealed partial class DocxSession
                     "unrecognized bytes are rejected"),
             },
             new[] { "list", "insert", "replace", "embed_linked", "set_dimensions", "set_metadata",
-                "set_floating_layout", "remove" },
+                "set_floating_layout", "remove", "set_placement" },
             new[] { ImageWrapMode.None, ImageWrapMode.Square, ImageWrapMode.Tight,
                 ImageWrapMode.Through, ImageWrapMode.TopAndBottom },
             new[] { ImageHorizontalReference.Page, ImageHorizontalReference.Margin,
@@ -428,6 +431,75 @@ public sealed partial class DocxSession
             return ImageMutationSuccess(candidate, imageId);
         return MutateImage(candidate, imageId, ImageOperation.SetFloatingLayout,
             outer => ApplyFloatingLayout(outer.DescendantsAndSelf(WP.anchor).First(), normalized));
+    }
+
+    /// <summary>Switch a picture between inline (in line with text) and floating, as Word's Wrap
+    /// Text does. Extent, effect extent, docPr, frame locks and the graphic carry over, and so do the
+    /// wp14 identity attributes. Going floating, <paramref name="layout"/> (default: square wrap at
+    /// the column/paragraph origin) positions it; a null RelativeHeight-default layout stacks it
+    /// above the part's other floating pictures. Going inline drops position, wrap and relative
+    /// sizing. Setting the placement a picture already has with a layout is SetImageFloatingLayout.</summary>
+    public EditResult SetImagePlacement(string imageId, ImagePlacement placement, FloatingImageLayout? layout = null)
+    {
+        if (MutationRefusal() is { } refusal) return EditResult.Fail(refusal);
+        if (placement == ImagePlacement.Inline && layout is not null)
+            return EditResult.Fail(EditErrorCode.InvalidImageLayout, "an inline picture takes no floating layout");
+        if (layout is not null && ValidateFloatingLayout(layout) is { } layoutError) return layoutError;
+        if (ResolveMutableImage(imageId, ImageOperation.SetPlacement, out var candidate) is { } imageError) return imageError;
+        if (candidate.Info.Placement == placement)
+        {
+            if (layout is null) return ImageMutationSuccess(candidate, imageId);
+            return SetImageFloatingLayout(imageId, layout);
+        }
+        var effective = layout is null
+            ? new FloatingImageLayout { RelativeHeight = NextRelativeHeight(candidate.Owner) }
+            : NormalizeWrapPolygon(layout);
+        return MutateImage(candidate, imageId, ImageOperation.SetPlacement,
+            outer => SwapImageContainer(outer, placement, effective));
+    }
+
+    /// <summary>One above the highest relativeHeight among the part's floating drawings.</summary>
+    private static uint NextRelativeHeight(OwnedPartRelationships.Owner owner)
+    {
+        uint highest = new FloatingImageLayout().RelativeHeight - 1;
+        foreach (var anchor in owner.Part.GetXDocument().Descendants(WP.anchor))
+            if (uint.TryParse((string?)anchor.Attribute("relativeHeight"), NumberStyles.Integer,
+                    CultureInfo.InvariantCulture, out var value) && value > highest && value < uint.MaxValue)
+                highest = value;
+        return highest + 1;
+    }
+
+    private static void SwapImageContainer(XElement outer, ImagePlacement placement, FloatingImageLayout layout)
+    {
+        var drawing = outer.DescendantsAndSelf(W.drawing).First();
+        var container = drawing.Elements().First(element => element.Name == WP.inline || element.Name == WP.anchor);
+        XElement Copy(XName name) => container.Element(name) is { } element ? new XElement(element) : null!;
+        var extent = Copy(WP.extent) ?? throw new InvalidDataException("drawing has no wp:extent");
+        var effectExtent = Copy(WP.effectExtent);
+        var docPr = Copy(WP.docPr) ?? throw new InvalidDataException("drawing has no wp:docPr");
+        var framePr = Copy(WP.cNvGraphicFramePr);
+        var graphic = Copy(A.graphic) ?? throw new InvalidDataException("drawing has no a:graphic");
+        var identity = container.Attributes()
+            .Where(attribute => attribute.Name.Namespace == WP14.wp14 || attribute.IsNamespaceDeclaration)
+            .Select(attribute => new XAttribute(attribute)).ToList();
+        XElement replacement;
+        if (placement == ImagePlacement.Inline)
+        {
+            replacement = new XElement(WP.inline,
+                new XAttribute("distT", 0), new XAttribute("distB", 0),
+                new XAttribute("distL", 0), new XAttribute("distR", 0),
+                identity, extent, effectExtent, docPr, framePr, graphic);
+        }
+        else
+        {
+            replacement = new XElement(WP.anchor,
+                identity,
+                new XElement(WP.simplePos, new XAttribute("x", 0), new XAttribute("y", 0)),
+                BuildHorizontalPosition(layout), BuildVerticalPosition(layout),
+                extent, effectExtent, BuildWrap(layout), docPr, framePr, graphic);
+            ApplyFloatingAttributes(replacement, layout);
+        }
+        container.ReplaceWith(replacement);
     }
 
     public EditResult RemoveImage(string imageId)
@@ -916,7 +988,8 @@ public sealed partial class DocxSession
             Support(ImageOperation.SetDimensions, "set_dimensions"),
             Support(ImageOperation.SetMetadata, "set_metadata"),
             Support(ImageOperation.SetFloatingLayout, "set_floating_layout"),
-            Support(ImageOperation.Remove, "remove"));
+            Support(ImageOperation.Remove, "remove"),
+            Support(ImageOperation.SetPlacement, "set_placement"));
     }
 
     private static string? ImageOperationBlocker(ImageFacts facts, ImageOperation operation)
@@ -946,6 +1019,10 @@ public sealed partial class DocxSession
                 if (facts.Family == ImageFamily.AlternateContent) return "AlternateContent branches carry independent geometry";
                 if (facts.Placement != ImagePlacement.Floating) return "inline picture has no floating layout";
                 return facts.FloatingSupported ? null : facts.LayoutReason ?? "floating layout is read-only";
+            case ImageOperation.SetPlacement:
+                if (facts.Family == ImageFamily.LegacyVml) return "legacy VML positioning is not modeled";
+                if (facts.Family == ImageFamily.AlternateContent) return "AlternateContent branches carry independent geometry";
+                return facts.Placement is null ? "picture has no inline or floating container" : null;
             default:
                 return null;
         }
