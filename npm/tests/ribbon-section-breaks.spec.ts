@@ -92,6 +92,21 @@ test.describe('Section breaks', () => {
     expect(lines.every((l) => l === 'none' || l === 'normal')).toBe(true);
   });
 
+  test('a saved document opened again shows every Next page break, identical sections included', async ({ page }) => {
+    await mount(page, ['One', 'Two', 'Three', 'Four']);
+    for (const index of [3, 2, 1]) {
+      await caretAt(page, index, 0);
+      await exec(page, 'sectionBreak', { start: 'nextPage' });
+    }
+    await expect.poll(async () => (await sections(page)).length).toBe(4);
+    await page.evaluate(async () => {
+      const ribbon = (window as any).__ribbon;
+      await ribbon.openAsync(await ribbon.editor.save(), 'again.docx');
+    });
+    await expect.poll(async () => (await sections(page)).map((s) => s.line)).toEqual(
+      ['none', '"Section break (Next page)"', '"Section break (Next page)"', '"Section break (Next page)"']);
+  });
+
   test('a break is refused in a table and changes nothing', async ({ page }) => {
     await mount(page, ['Before']);
     await exec(page, 'table', { rows: 2, columns: 2 });
