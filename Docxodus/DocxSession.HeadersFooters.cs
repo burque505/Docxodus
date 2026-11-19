@@ -747,6 +747,9 @@ public sealed partial class DocxSession
         ArgumentNullException.ThrowIfNull(op);
         if (op.PageWidthTwips is { } pw && pw <= 0)
             return EditResult.Fail(EditErrorCode.InvalidPageSetup, "page width must be positive", anchorId);
+        if (op.SectionStart is { } ss && !SectionStarts.Contains(ss, StringComparer.Ordinal))
+            return EditResult.Fail(EditErrorCode.InvalidPageSetup,
+                $"unknown section start '{ss}': use {string.Join(", ", SectionStarts)}", anchorId);
         if (op.PageHeightTwips is { } ph && ph <= 0)
             return EditResult.Fail(EditErrorCode.InvalidPageSetup, "page height must be positive", anchorId);
         foreach (var (name, value) in new[]
@@ -863,6 +866,9 @@ public sealed partial class DocxSession
             changed |= SetAttr(target, W.header, S(header));
             changed |= SetAttr(target, W.footer, S(footer));
         }
+
+        if (op.SectionStart is { } sectionStart)
+            changed |= WriteSectionStart(sectPr, sectionStart);
 
         return changed;
     }

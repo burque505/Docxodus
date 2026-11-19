@@ -633,6 +633,19 @@ public static partial class DocxSessionBridge
     public static string SetPageSetup(int h, string anchor, string opJson) =>
         DocxSessionOps.SetPageSetup(h, anchor, opJson);
 
+    /// <summary>Bridge for <see cref="DocxSession.InsertSectionBreak"/>: split the paragraph at
+    /// <paramref name="offset"/> with a section break; <paramref name="sectionStart"/> is
+    /// nextPage | continuous | evenPage | oddPage | nextColumn.</summary>
+    [JSExport]
+    public static string InsertSectionBreak(int h, string anchor, int offset, string sectionStart) =>
+        DocxSessionOps.InsertSectionBreak(h, anchor, offset, sectionStart);
+
+    /// <summary>Bridge for <see cref="DocxSession.InsertBreak"/>: a page or column break at
+    /// <paramref name="offset"/>, the text after it going on as its own paragraph.</summary>
+    [JSExport]
+    public static string InsertBreak(int h, string anchor, int offset, string kind) =>
+        DocxSessionOps.InsertBreak(h, anchor, offset, kind);
+
     /// <summary>
     /// Create a footnote with body <paramref name="markdown"/> and cite it from the body paragraph
     /// <paramref name="anchor"/> at <paramref name="characterOffset"/> characters into its text.

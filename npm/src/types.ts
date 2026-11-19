@@ -364,7 +364,8 @@ export interface CompareOptions {
 /**
  * Which property container a FormatChanged revision describes.
  * `run` (the default) is an rPr-grade report (bold/italic/fontSize/…); the others are the
- * block-and-above scopes tracked by the block-format-change family: `paragraph` (pPr),
+ * block-and-above scopes tracked by the block-format-change family: `paragraph` (pPr, or the paragraph
+ * mark's run properties with `mark`-prefixed names such as `markFontSize`),
  * `tableCell`/`tableRow`/`table` (tcPr/trPr/tblPr+tblGrid), and `section` (sectPr).
  * Non-`run` scopes are only reported under Fine revision granularity.
  */
@@ -1921,6 +1922,9 @@ export interface DocxodusWasmExports {
      *  `anchor`; `opJson` is a serialized {@link PageSetupOp}. Optional: absent on older WASM
      *  bundles. */
     SetPageSetup?: (handle: number, anchor: string, opJson: string) => string;
+    /** Section break / page or column break at an offset. Optional: absent on older WASM bundles. */
+    InsertSectionBreak?: (handle: number, anchor: string, offset: number, sectionStart: string) => string;
+    InsertBreak?: (handle: number, anchor: string, offset: number, kind: string) => string;
     InsertFootnote: (handle: number, anchor: string, characterOffset: number, markdown: string) => string;
     InsertCrossReference: (
       handle: number,
@@ -3011,7 +3015,13 @@ export interface PageSetupOp {
   headerDistanceTwips?: number;
   /** Footer distance from the page's bottom edge (`w:pgMar/@w:footer`). */
   footerDistanceTwips?: number;
+  /** How the section starts (`w:type`) — Word's Page Setup > Layout > Section start.
+   *  `"nextPage"`, the default, removes the element. */
+  sectionStart?: SectionStart;
 }
+
+/** How a section starts relative to the one before it (`w:type`, ST_SectionMark). */
+export type SectionStart = "nextPage" | "continuous" | "evenPage" | "oddPage" | "nextColumn";
 
 /**
  * The browser editor's render profile, passed as one JSON object to the `RenderEditorHtml` /
@@ -3850,6 +3860,8 @@ export interface SectionInfo {
    *  value. Toggle with {@link DocxSession.setHeaderFooterKindEnabled}. */
   evenAndOddHeaders: boolean;
   columns: number;
+  /** How the section starts (`w:type`); `"nextPage"` when the element is absent. */
+  sectionStart: SectionStart;
   headerPartUris: string[];
   footerPartUris: string[];
   /** Header references in declaration order, each with its `w:type`. Describes exactly the

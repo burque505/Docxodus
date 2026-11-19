@@ -47,6 +47,7 @@ import type {
   PageNumberField,
   PageNumberingOp,
   PageSetupOp,
+  SectionStart,
   TableOfAuthoritiesOptions,
   TableOfContentsOptions,
   TableOfFiguresOptions,
@@ -1243,6 +1244,31 @@ export class DocxSession {
     return JSON.parse(
       this.wasm.SetPageSetup(this.handle, anchorId, JSON.stringify(op))
     ) as EditResult;
+  }
+
+  /**
+   * Word's Layout > Breaks > Section Breaks: split the body paragraph `anchorId` at
+   * `characterOffset` with a section break. The section before the break keeps a copy of the
+   * properties that governed it; the one after starts as `sectionStart` says. Refused inside a
+   * table or text box and while changes are tracked. One undo step; `created` holds the paragraph
+   * that starts the new section.
+   */
+  insertSectionBreak(anchorId: string, characterOffset: number, sectionStart: SectionStart = "nextPage"): EditResult {
+    if (!this.wasm.InsertSectionBreak) {
+      throw new Error("InsertSectionBreak is not available in this WASM build");
+    }
+    return JSON.parse(this.wasm.InsertSectionBreak(this.handle, anchorId, characterOffset, sectionStart)) as EditResult;
+  }
+
+  /**
+   * Word's Ctrl+Enter / Ctrl+Shift+Enter: a page or column break at `characterOffset` in the body
+   * paragraph `anchorId`; the text after it goes on as its own paragraph. One undo step.
+   */
+  insertBreak(anchorId: string, characterOffset: number, kind: "page" | "column" = "page"): EditResult {
+    if (!this.wasm.InsertBreak) {
+      throw new Error("InsertBreak is not available in this WASM build");
+    }
+    return JSON.parse(this.wasm.InsertBreak(this.handle, anchorId, characterOffset, kind)) as EditResult;
   }
 
   // ─── Footnotes / endnotes ────────────────────────────────────────────

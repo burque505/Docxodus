@@ -228,6 +228,13 @@ public sealed record PageSetupOp
 
     /// <summary>Footer distance from the page's bottom edge (<c>w:pgMar/@w:footer</c>).</summary>
     public int? FooterDistanceTwips { get; init; }
+
+    /// <summary>
+    /// How the section starts relative to the one before it (<c>w:type</c>) — Word's Page Setup ▸
+    /// Layout ▸ <i>Section start</i>: <c>nextPage</c>, <c>continuous</c>, <c>evenPage</c>,
+    /// <c>oddPage</c> or <c>nextColumn</c>. <c>nextPage</c>, the default, removes the element.
+    /// </summary>
+    public string? SectionStart { get; init; }
 }
 
 /// <summary>
@@ -1429,6 +1436,11 @@ public sealed record SectionInfo
     /// "explicitly decimal" to avoid writing an attribute the document never had.
     /// </summary>
     public NumberFormat? PageNumberFormat { get; init; }
+
+    /// <summary>How the section starts (<c>w:type/@w:val</c>): <c>nextPage</c> (also when the
+    /// element is absent), <c>continuous</c>, <c>evenPage</c>, <c>oddPage</c> or <c>nextColumn</c>.
+    /// Read counterpart of <see cref="PageSetupOp.SectionStart"/>.</summary>
+    public string SectionStart { get; init; } = "nextPage";
 }
 
 /// <summary>
