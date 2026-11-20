@@ -914,6 +914,9 @@ internal static class DocxSessionOps
         MutationPreconditions? preconditions = null) =>
         Mutate(handle, preconditions, anchorId, s => s.SetPageSetup(anchorId, op ?? new PageSetupOp()));
 
+    public static string RemoveSectionBreak(int handle, string anchorId, MutationPreconditions? preconditions = null) =>
+        Mutate(handle, preconditions, anchorId, s => s.RemoveSectionBreak(anchorId));
+
     public static string InsertSectionBreak(int handle, string anchorId, int characterOffset, string sectionStart,
         MutationPreconditions? preconditions = null) =>
         Mutate(handle, preconditions, anchorId, s => s.InsertSectionBreak(anchorId, characterOffset, sectionStart));

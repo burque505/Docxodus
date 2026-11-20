@@ -1305,6 +1305,15 @@ export class DocxSession {
     return JSON.parse(this.wasm.InsertSectionBreak(this.handle, anchorId, characterOffset, sectionStart)) as EditResult;
   }
 
+  /** Word's Delete on a section-break mark: remove the break on the body paragraph `anchorId`; the text
+   * before it joins the section after it. One undo step. */
+  removeSectionBreak(anchorId: string): EditResult {
+    if (!this.wasm.RemoveSectionBreak) {
+      throw new Error("RemoveSectionBreak is not available in this WASM build");
+    }
+    return JSON.parse(this.wasm.RemoveSectionBreak(this.handle, anchorId)) as EditResult;
+  }
+
   /**
    * Word's Ctrl+Enter / Ctrl+Shift+Enter: a page or column break at `characterOffset` in the body
    * paragraph `anchorId`; the text after it goes on as its own paragraph. One undo step.

@@ -29,7 +29,7 @@
  */
 
 /** Bumped whenever RIBBON_CSS changes, so a stale injected stylesheet is replaced. */
-export const RIBBON_STYLE_VERSION = "17";
+export const RIBBON_STYLE_VERSION = "18";
 export const RIBBON_STYLE_ATTR = "data-docxodus-ribbon-styles";
 
 /** Width of the comment gutter the surface reserves beside the sheet, in px. */
@@ -1217,6 +1217,7 @@ export const RIBBON_HTML = `
               <option value="evenPage">Even page</option>
               <option value="oddPage">Odd page</option>
             </optgroup>
+            <option value="removeSection">Remove section break</option>
           </select>
         </div>
         <div class="dxr-row">
@@ -1732,6 +1733,7 @@ export const RIBBON_STATUS_TEXTS = {
   breakRefused: "A break goes in a body paragraph, not in a table, header or footer, nor while changes are tracked",
   columnsRefused: "Columns go in the body, each at least half an inch wide, and a new section cannot start while changes are tracked",
   lineNumbersPageView: "Line numbers show in page view",
+  noSectionBreak: "There is no section break to remove: the document is one section",
 } as const;
 
 /** The default hint copy, shown above the document in full chrome. */

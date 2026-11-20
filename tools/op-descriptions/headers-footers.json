@@ -134,6 +134,21 @@
       }
     },
     {
+      "op": "removeSectionBreak",
+      "facade": "RemoveSectionBreak",
+      "result": "EditResult",
+      "args": [
+        { "name": "anchorId", "type": "anchor", "required": true }
+      ],
+      "transports": {
+        "wasm": { "method": "RemoveSectionBreak" },
+        "npm": { "method": "removeSectionBreak" },
+        "python": { "absent": "not exposed yet: a new op (Word's Delete on a section break) that wasm and npm carry first" },
+        "stdio": { "absent": "not exposed yet: a new op (Word's Delete on a section break) that wasm and npm carry first" },
+        "mcp": { "absent": "not exposed yet: a new op (Word's Delete on a section break) that wasm and npm carry first" }
+      }
+    },
+    {
       "op": "insertSectionBreak",
       "facade": "InsertSectionBreak",
       "result": "EditResult",

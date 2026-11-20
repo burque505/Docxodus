@@ -659,6 +659,12 @@ public static partial class DocxSessionBridge
         string endAnchor, int endOffset) =>
         DocxSessionOps.SetColumns(h, anchor, offset, opJson, applyTo, endAnchor, endOffset);
 
+    /// <summary>Bridge for <see cref="DocxSession.RemoveSectionBreak"/>: remove the section break
+    /// on the paragraph <paramref name="anchor"/> (Word's Delete on a section-break mark).</summary>
+    [JSExport]
+    public static string RemoveSectionBreak(int h, string anchor) =>
+        DocxSessionOps.RemoveSectionBreak(h, anchor);
+
     /// <summary>Bridge for <see cref="DocxSession.InsertSectionBreak"/>: split the paragraph at
     /// <paramref name="offset"/> with a section break; <paramref name="sectionStart"/> is
     /// nextPage | continuous | evenPage | oddPage | nextColumn.</summary>

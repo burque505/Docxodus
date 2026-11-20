@@ -1928,6 +1928,7 @@ export interface DocxodusWasmExports {
     SetPageSetup?: (handle: number, anchor: string, opJson: string) => string;
     /** Section break / page or column break at an offset. Optional: absent on older WASM bundles. */
     InsertSectionBreak?: (handle: number, anchor: string, offset: number, sectionStart: string) => string;
+    RemoveSectionBreak?: (handle: number, anchor: string) => string;
     SetColumns?: (handle: number, anchor: string, offset: number, opJson: string, applyTo: string, endAnchor: string, endOffset: number) => string;
     InsertBreak?: (handle: number, anchor: string, offset: number, kind: string) => string;
     InsertFootnote: (handle: number, anchor: string, characterOffset: number, markdown: string) => string;

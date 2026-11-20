@@ -221,4 +221,64 @@ public class DocxSessionSectionBreakTests
         Assert.NotNull(body.Elements(W.p).First().Element(W.pPr)!.Element(W.sectPr));
         Assert.Equal("continuous", (string?)body.Element(W.sectPr)!.Element(W.type)!.Attribute(W.val));
     }
+
+    private static string Columns(int n) =>
+        $"<w:sectPr><w:type w:val=\"continuous\"/><w:pgSz w:w=\"12240\" w:h=\"15840\"/><w:cols w:num=\"{n}\" w:space=\"720\"/></w:sectPr>";
+
+    [Fact]
+    public void SB009_RemoveSectionBreak_TheTextBeforeJoinsTheSectionAfter_OneUndoStep()
+    {
+        // abc ends a one-column section; def is in a three-column section.
+        using var session = Open("<w:p><w:pPr>" + Columns(1) + "</w:pPr><w:r><w:t>abc</w:t></w:r></w:p>"
+            + "<w:p><w:r><w:t>def</w:t></w:r></w:p>" + Columns(3));
+        var first = First(session);
+        Assert.Equal(1, session.GetSectionInfo(first)!.Columns);
+
+        var res = session.RemoveSectionBreak(first);
+
+        Assert.True(res.Success, res.Error?.Message);
+        Assert.Equal(new[] { "abc", "def" }, Paragraphs(session));
+        Assert.Empty(Body(session).Elements(W.p).Where(p => p.Element(W.pPr)?.Element(W.sectPr) is not null));
+        Assert.Equal(3, session.GetSectionInfo(First(session))!.Columns);
+
+        Assert.True(session.Undo());
+        Assert.Equal(1, session.GetSectionInfo(First(session))!.Columns);
+        Assert.Single(Body(session).Elements(W.p).Where(p => p.Element(W.pPr)?.Element(W.sectPr) is not null));
+    }
+
+    [Fact]
+    public void SB010_RemoveSectionBreak_AParagraphThatOnlyHeldTheBreakGoesWithIt()
+    {
+        using var session = Open("<w:p><w:r><w:t>abc</w:t></w:r></w:p><w:p><w:pPr>" + Columns(1) + "</w:pPr></w:p>"
+            + "<w:p><w:r><w:t>def</w:t></w:r></w:p>" + Columns(2));
+        var mark = session.Project().AnchorIndex.Values
+            .Where(t => t.Anchor.Scope == "body" && t.Anchor.Kind == "p")
+            .Select(t => t.Anchor.Id).ElementAt(1);
+
+        var res = session.RemoveSectionBreak(mark);
+
+        Assert.True(res.Success, res.Error?.Message);
+        Assert.Equal(mark, res.Removed.Single().Id);
+        Assert.Equal(new[] { "abc", "def" }, Paragraphs(session));
+        Assert.Equal(2, session.GetSectionInfo(First(session))!.Columns);
+        Assert.True(session.Undo());
+        Assert.Equal(new[] { "abc", "", "def" }, Paragraphs(session));
+    }
+
+    [Fact]
+    public void SB011_RemoveSectionBreak_Refusals_ChangeNothing()
+    {
+        using var plain = Open(OneParagraph);
+        var noBreak = plain.RemoveSectionBreak(First(plain));
+        Assert.False(noBreak.Success);
+        Assert.Equal(EditErrorCode.AnchorWrongKind, noBreak.Error!.Code);
+
+        using var tracked = Open("<w:p><w:pPr>" + Columns(1) + "</w:pPr><w:r><w:t>abc</w:t></w:r></w:p>"
+            + "<w:p><w:r><w:t>def</w:t></w:r></w:p>" + Columns(3), TrackedChangeMode.RenderInline);
+        long version = tracked.Version;
+        var refused = tracked.RemoveSectionBreak(First(tracked));
+        Assert.False(refused.Success);
+        Assert.Equal(EditErrorCode.TrackedOperationUnsupported, refused.Error!.Code);
+        Assert.Equal(version, tracked.Version);
+    }
 }

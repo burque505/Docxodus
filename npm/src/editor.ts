@@ -285,6 +285,7 @@ export interface DocxEditorExports {
     SetPageSetup?: (handle: number, anchor: string, opJson: string) => string;
     /** Word's Layout > Breaks (optional: absent on older bundles). */
     InsertSectionBreak?: (handle: number, anchor: string, offset: number, sectionStart: string) => string;
+    RemoveSectionBreak?: (handle: number, anchor: string) => string;
     InsertBreak?: (handle: number, anchor: string, offset: number, kind: string) => string;
     /** Word's Layout > Columns (optional: absent on older bundles). */
     SetColumns?: (handle: number, anchor: string, offset: number, opJson: string, applyTo: string, endAnchor: string, endOffset: number) => string;
@@ -1671,6 +1672,22 @@ const FORMATTING_MARKS_CSS = `
 .docx-show-marks [data-anchor][contenteditable="true"]::after {
   content: "¶"; position: absolute; color: #4a7fc1; font-weight: normal; font-style: normal;
   text-decoration: none; pointer-events: none; user-select: none; padding-left: 1px;
+}
+.docx-show-marks .page-box [data-section-break][contenteditable="true"]::after {
+  content: ":::::: " var(--docx-section-break-nextPage, "Section break (Next page)") " ::::::";
+  white-space: nowrap; font: 11px/1.4 system-ui, sans-serif; padding-left: 6px;
+}
+.docx-show-marks .page-box [data-section-break="continuous"][contenteditable="true"]::after {
+  content: ":::::: " var(--docx-section-break-continuous, "Section break (Continuous)") " ::::::";
+}
+.docx-show-marks .page-box [data-section-break="evenPage"][contenteditable="true"]::after {
+  content: ":::::: " var(--docx-section-break-evenPage, "Section break (Even page)") " ::::::";
+}
+.docx-show-marks .page-box [data-section-break="oddPage"][contenteditable="true"]::after {
+  content: ":::::: " var(--docx-section-break-oddPage, "Section break (Odd page)") " ::::::";
+}
+.docx-show-marks .page-box [data-section-break="nextColumn"][contenteditable="true"]::after {
+  content: ":::::: " var(--docx-section-break-nextColumn, "Section break (Next column)") " ::::::";
 }
 .docx-show-marks [data-docx-tab] { position: relative; }
 .docx-show-marks [data-docx-tab]::after {
@@ -3635,9 +3652,9 @@ export class DocxEditor {
     // truth. A remount (setPaginated, list/undo edits) rebuilds staging fresh from the live session.
     this.container.querySelector("#pagination-staging, .page-staging")?.remove();
     const pageRoot = target.querySelector<HTMLElement>("#pagination-container") ?? target;
-    this.watchLineNumbers(pageRoot);
     this.editRoot = pageRoot;
     if (this.options.editable) this.wireBlocks(pageRoot);
+    this.watchLineNumbers(pageRoot);
     this.stampPlanState();
     // The page boxes render their own header/footer margins as inert clones; the region turns
     // the clicked one into the live story in place (Word's edit-in-the-margin), so there is
@@ -3652,7 +3669,9 @@ export class DocxEditor {
    *  any change to the pages' text redraws them, once, after the typing pauses. */
   private watchLineNumbers(pageRoot: HTMLElement): void {
     this.unwatchLineNumbers();
-    if (typeof MutationObserver === "undefined" || !hasLineNumbers(pageRoot)) return;
+    this.sectionStarts.clear();
+    this.markSectionBreaks();
+    if (typeof MutationObserver === "undefined" || (!hasLineNumbers(pageRoot) && !this.hasSectionBreaks())) return;
     const isLayer = (node: Node): boolean =>
       node.nodeType === 1 && (node as Element).classList.contains("docx-line-numbers");
     const watch = {
@@ -3664,12 +3683,49 @@ export class DocxEditor {
         if (!relevant) return;
         window.clearTimeout(watch.timer);
         watch.timer = window.setTimeout(() => {
-          if (!this.closed && pageRoot.isConnected) drawLineNumbers(pageRoot);
+          if (this.closed || !pageRoot.isConnected) return;
+          this.markSectionBreaks();
+          if (hasLineNumbers(pageRoot)) drawLineNumbers(pageRoot);
         }, 120);
       }),
     };
     watch.observer.observe(pageRoot, { childList: true, subtree: true, characterData: true });
     this.lineNumberWatch = watch;
+  }
+
+  /** How each section starts (`w:type`), by section key, read once a mount. */
+  private readonly sectionStarts = new Map<string, string>();
+
+  private hasSectionBreaks(): boolean {
+    const keys = new Set(this.editableList().filter((b) => !this.isBandBlock(b)).map((b) => this.sectionKeyOf(b)));
+    return keys.size > 1;
+  }
+
+  /** In page view, mark the last paragraph of each section but the last with how the next section
+   *  starts (`data-section-break`): with Show ¶ it shows Word's "Section Break (…)" there. */
+  private markSectionBreaks(): void {
+    if (!this.options.paginated || this.closed) return;
+    const body = this.editableList().filter((b) => !this.isBandBlock(b) && !b.closest("td, th"));
+    for (let i = 0; i < body.length; i++) {
+      const block = body[i];
+      const next = body[i + 1];
+      const nextKey = next ? this.sectionKeyOf(next) : null;
+      if (!next || nextKey === this.sectionKeyOf(block)) {
+        if (block.hasAttribute("data-section-break")) block.removeAttribute("data-section-break");
+        continue;
+      }
+      let start = this.sectionStarts.get(nextKey!);
+      if (start === undefined) {
+        start = "nextPage";
+        const id = this.anchorIdOf(next);
+        try {
+          const info = id ? JSON.parse(this.exports.DocxSessionBridge.GetSectionInfo(this.handle, id)) as SectionInfo | null : null;
+          start = info?.sectionStart ?? "nextPage";
+        } catch { /* (an engine without section info) */ }
+        this.sectionStarts.set(nextKey!, start);
+      }
+      if (block.getAttribute("data-section-break") !== start) block.setAttribute("data-section-break", start);
+    }
   }
 
   private unwatchLineNumbers(): void {
@@ -3929,6 +3985,14 @@ export class DocxEditor {
         // In a table cell the paragraph joins the one before it in the same cell; at the cell's
         // first paragraph there is nothing to join (as in Word, the cell boundary stays).
         const prev = this.joinableNeighbour(el, -1);
+        // At a section's first paragraph (or in an empty one that only ends its section) Backspace
+        // removes the section break, as Word's Backspace over a break mark does.
+        const sectionBreak = !inTableCell && !this.isBandBlock(el) ? this.sectionBreakAround(el, -1) : null;
+        if (sectionBreak) {
+          ev.preventDefault();
+          this.removeBreak(sectionBreak, el);
+          return;
+        }
         if (inTableCell && !prev) {
           ev.preventDefault();
           return;
@@ -3952,6 +4016,14 @@ export class DocxEditor {
       const sel = typeof window !== "undefined" ? window.getSelection() : null;
       const at = sel?.isCollapsed ? caretOffsetIn(el) : null;
       if (at === null || /[^\s\u00a0]/.test(blockContentText(el).slice(at))) return;
+      // At a section's last paragraph Delete removes the break after it, as Word's Delete on a
+      // break mark does.
+      const sectionBreak = !inTableCell && !this.isBandBlock(el) ? this.sectionBreakAround(el, 1) : null;
+      if (sectionBreak) {
+        ev.preventDefault();
+        this.removeBreak(sectionBreak, el);
+        return;
+      }
       const next = this.joinableNeighbour(el, 1);
       if (!next || next.querySelector(NOTE_NUMBER_SELECTOR)) {
         if (inTableCell) ev.preventDefault();
@@ -3966,6 +4038,22 @@ export class DocxEditor {
       ev.preventDefault();
       this.mergeWithPrevious(el, next);
     }
+  }
+
+  /** The section break Backspace (`step` -1, at `el`'s start) or Delete (+1, at its end) would
+   *  remove: the one between `el` and the body paragraph before or after it when they are in
+   *  different sections, or the one `el` ends when it is an empty paragraph that only holds it. */
+  private sectionBreakAround(el: HTMLElement, step: -1 | 1): string | null {
+    const body = this.editableList().filter((b) => !this.isBandBlock(b) && !b.closest("td, th"));
+    const i = body.indexOf(el);
+    if (i < 0) return null;
+    const key = this.sectionKeyOf(el);
+    const next = body[i + 1];
+    const endsSection = !!next && this.sectionKeyOf(next) !== key;
+    if (endsSection && (step === 1 || /^[\s\u00a0]*$/.test(blockContentText(el)))) return this.sectionBreakAfter(el);
+    const prev = body[i - 1];
+    if (step === -1 && prev && this.sectionKeyOf(prev) !== key) return this.sectionBreakAfter(prev);
+    return null;
   }
 
   /** The editable paragraph before (`step` -1) or after (+1) `el` that Backspace or Delete may join
@@ -8063,6 +8151,63 @@ export class DocxEditor {
   private sectionKeyOf(block: HTMLElement): string {
     return block.closest<HTMLElement>("[data-pagination-section]")?.dataset.paginationSection
       ?? block.closest<HTMLElement>("[data-section-index]")?.dataset.sectionIndex ?? "0";
+  }
+
+  /** The section-break anchor that ends the section `block` is in (`sec:body:<unid>`), or null in
+   *  the last section (its properties end the body, not a break). */
+  private sectionBreakAfter(block: HTMLElement): string | null {
+    const id = this.anchorIdOf(block);
+    if (!id) return null;
+    try {
+      const info = JSON.parse(this.exports.DocxSessionBridge.GetSectionInfo(this.handle, id)) as SectionInfo | null;
+      if (!info?.sectionUnid) return null;
+      const last = this.editableList().filter((b) => !this.isBandBlock(b)).pop();
+      if (last && this.sectionKeyOf(last) === this.sectionKeyOf(block)) return null;
+      return `sec:body:${info.sectionUnid}`;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Remove the section break `breakAnchor` (Word's Delete on a section-break mark) and re-render;
+   *  the caret stays in `focusBlock`'s place. */
+  private removeBreak(breakAnchor: string, focusBlock: HTMLElement | null): boolean {
+    const bridge = this.exports.DocxSessionBridge;
+    if (typeof bridge.RemoveSectionBreak !== "function") return false;
+    const idx = focusBlock ? this.blockIndex(focusBlock) : -1;
+    const caret = focusBlock ? caretOffsetIn(focusBlock) ?? 0 : 0;
+    if (focusBlock) {
+      const id = this.anchorIdOf(focusBlock);
+      if (id && !this.syncBlock(focusBlock, id)) return false;
+    }
+    const res = this.parseEdit(bridge.RemoveSectionBreak(this.handle, breakAnchor));
+    if (!res.success) return false;
+    const removedFocus = !!focusBlock && (res.removed ?? []).some((a) => a.unid === focusBlock.getAttribute("data-anchor"));
+    this.remount(removedFocus ? Math.max(0, idx - 1) : idx, false);
+    const target = this.editableList()[removedFocus ? Math.max(0, idx - 1) : idx];
+    if (target) placeCaretAtOffset(target, removedFocus ? blockContentText(target).length : caret);
+    return true;
+  }
+
+  /**
+   * Layout > Breaks > Remove section break: remove the break that ends the caret's section (in the
+   * last section, the break before it). As in Word, the text before the break joins the section
+   * after it and takes that section's layout. False (nothing changed) when there is no break.
+   */
+  removeSectionBreak(): boolean {
+    this.assertOpen();
+    const block = this.activeBlock && !this.isBandBlock(this.activeBlock) ? this.activeBlock : null;
+    if (!block) return false;
+    let breakAnchor = this.sectionBreakAfter(block);
+    if (!breakAnchor) {
+      // The last section: the break before it ends the section before.
+      const body = this.editableList().filter((b) => !this.isBandBlock(b));
+      const key = this.sectionKeyOf(block);
+      const first = body.findIndex((b) => this.sectionKeyOf(b) === key);
+      const before = first > 0 ? body[first - 1] : null;
+      breakAnchor = before ? this.sectionBreakAfter(before) : null;
+    }
+    return breakAnchor ? this.removeBreak(breakAnchor, block) : false;
   }
 
   /** The line numbering of the section holding the caret, or null when it has none. */

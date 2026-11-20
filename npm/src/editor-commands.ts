@@ -461,6 +461,10 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     run: (e, a) => must(e.insertSectionBreak(a.optOneOf("start", SECTION_STARTS) ?? "nextPage"), "sectionBreak",
       "a section break goes in a body paragraph, not in a table, header or footer, nor while changes are tracked"),
   },
+  removeSectionBreak: {
+    group: "layout", description: "Remove the section break that ends the caret's section (in the last section, the one before it); the text before it takes the layout of the section after it.",
+    args: {}, run: (e) => must(e.removeSectionBreak(), "removeSectionBreak", "the document is one section: there is no section break to remove"),
+  },
   pageNumbering: {
     group: "layout", description: "Number the section's pages in a format, or restart them at a value.",
     args: { "format?": PAGE_NUMBER_FORMATS.join("|"), "start?": "number" },

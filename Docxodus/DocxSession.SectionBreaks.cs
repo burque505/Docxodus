@@ -159,6 +159,64 @@ public sealed partial class DocxSession
         };
     }
 
+    /// <summary>
+    /// Remove a section break — Word's Delete on a section-break mark. <paramref name="anchorId"/>
+    /// names the paragraph whose mark carries the break (or the break's own <c>sec</c> anchor). As
+    /// in Word, the text before the break joins the section after it and takes that section's
+    /// properties (size, margins, columns, line numbers, headers and footers); a paragraph that was
+    /// there only to hold the break, with no content of its own, goes with it.
+    /// </summary>
+    /// <remarks>
+    /// Refused for a paragraph that carries no break, for the body's last section (its properties
+    /// end the document, not a break: <see cref="EditErrorCode.AnchorWrongKind"/>), and while
+    /// changes are tracked (<see cref="EditErrorCode.TrackedOperationUnsupported"/>). One undo step.
+    /// <see cref="EditResult.Modified"/> holds the paragraph kept, <see cref="EditResult.Removed"/>
+    /// the paragraph removed.
+    /// </remarks>
+    public EditResult RemoveSectionBreak(string anchorId)
+    {
+        if (MutationRefusal() is { } refusal) return EditResult.Fail(refusal);
+        var target = FindAnchor(anchorId);
+        if (target is null)
+            return EditResult.Fail(EditErrorCode.AnchorNotFound, $"anchor not found: {anchorId}", anchorId);
+        var element = target.Resolve(_doc!);
+        if (element is null) return EditResult.Fail(EditErrorCode.AnchorNotFound, "element null", anchorId);
+        var paragraph = element.Name == W.sectPr ? element.Parent?.Parent : element;
+        var sectPr = paragraph?.Name == W.p ? paragraph.Element(W.pPr)?.Element(W.sectPr) : null;
+        if (paragraph is null || sectPr is null || target.Anchor.Scope != "body"
+            || paragraph.Ancestors(W.body).FirstOrDefault() is null)
+            return EditResult.Fail(EditErrorCode.AnchorWrongKind,
+                "RemoveSectionBreak requires a body paragraph that ends a section (the last section has no break)", anchorId);
+        if (_trackedChanges == TrackedChangeMode.RenderInline)
+            return TrackedStructureUnsupported("RemoveSectionBreak", anchorId);
+
+        var paragraphAnchor = AnchorForElement(paragraph);
+        bool empty = !paragraph.Elements().Any(e => e.Name != W.pPr);
+        using var transaction = BeginTransaction(fullPackage: false);
+        try
+        {
+            _history.RecordPreOp(TakeSnapshot());
+            sectPr.Remove();
+            var pPr = paragraph.Element(W.pPr);
+            if (pPr is not null && !pPr.HasElements && !pPr.Attributes().Any(a => a.Name.Namespace == W.w)) pPr.Remove();
+            InvalidateProjectionCache();
+            if (empty && paragraphAnchor is { } emptyAnchor)
+            {
+                var deleted = DeleteBlock(emptyAnchor.Id);
+                if (!deleted.Success) return deleted;
+                transaction.Commit();
+                return new EditResult { Success = true, Removed = new[] { emptyAnchor } };
+            }
+            transaction.Commit();
+            var kept = paragraphAnchor is { } a ? FindAnchor(a.Id)?.Anchor ?? a : target.Anchor;
+            return new EditResult { Success = true, Modified = new[] { kept } };
+        }
+        catch (Exception ex)
+        {
+            return FailInternal(ex, anchorId);
+        }
+    }
+
     /// <summary>Write a section's start (<c>w:type</c>); <c>nextPage</c>, the default, removes
     /// the element as Word does. True when the section changed.</summary>
     private static bool WriteSectionStart(XElement sectPr, string sectionStart)

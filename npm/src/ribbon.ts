@@ -2670,6 +2670,11 @@ class RibbonSurface implements RibbonEditor {
    */
   private insertBreakAt(kind: string): void {
     const live = this.live!;
+    if (kind === "removeSection") {
+      this.breakRefused = !live.removeSectionBreak();
+      if (this.breakRefused) this.setStatus(this.translateText(RIBBON_STATUS_TEXTS.noSectionBreak));
+      return;
+    }
     this.breakRefused = !(kind === "page" || kind === "column"
       ? live.insertBreak(kind)
       : live.insertSectionBreak(kind as SectionStart));
@@ -2679,6 +2684,7 @@ class RibbonSurface implements RibbonEditor {
   /** The recorded command for the break {@link insertBreakAt} just made (none when it was refused). */
   private breakCommand(kind: string): RibbonCommand | undefined {
     if (this.breakRefused) return undefined;
+    if (kind === "removeSection") return cmd("removeSectionBreak");
     return kind === "page" || kind === "column" ? cmd("insertBreak", { kind }) : cmd("sectionBreak", { start: kind });
   }
 
