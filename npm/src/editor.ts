@@ -6454,8 +6454,11 @@ export class DocxEditor {
         const l = theirs.find((x) => x.level === spec.level);
         return !!l && (Object.keys(spec) as Array<keyof ListLevelSpec>).every((k) => spec[k] === undefined || spec[k] === l[k as keyof ListLevelInfo]);
       });
-    if (same && typeof bridge.ContinueNumbering === "function") this.parseEdit(bridge.ContinueNumbering(this.handle, anchorId));
-    else this.parseEdit(bridge.SetListLevels(this.handle, anchorId, JSON.stringify(levels)));
+    // The levels first: ContinueNumbering joins only a list with the same number text (Word's rule).
+    const set = this.parseEdit(bridge.SetListLevels(this.handle, anchorId, JSON.stringify(levels)));
+    if (same && typeof bridge.ContinueNumbering === "function") {
+      this.parseEdit(bridge.ContinueNumbering(this.handle, set.modified?.[0]?.id ?? anchorId));
+    }
     if (remount) this.remount(here);
   }
 
