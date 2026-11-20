@@ -3083,10 +3083,14 @@ class RibbonSurface implements RibbonEditor {
       );
     }
 
-    // Reveal the contextual Table tab only while the caret is inside a table.
+    // Reveal the contextual Table tab only while the caret is inside a table. Typing in one of the
+    // ribbon's own boxes (the Table tab's Height and Width) takes the selection out of the document:
+    // the tab stays as it is then, or it would hide the box being typed in.
     const inTable = !!el?.closest("table");
+    const focus = doc.activeElement;
+    const inChrome = !el && !!focus && focus !== doc.body && this.element.contains(focus) && !this.surface.contains(focus);
     const tableTab = this.element.querySelector<HTMLElement>('.dxr-tab[data-tab="table"]');
-    if (tableTab) {
+    if (tableTab && !inChrome) {
       tableTab.hidden = !inTable;
       if (!inTable && tableTab.getAttribute("aria-selected") === "true") this.selectTab("home");
       if (inTable) {

@@ -47,12 +47,23 @@ test('the Alignment buttons set the cell\'s vertical alignment, shown on the but
 test('the Height and Width boxes set the row height and the column width', async ({ page }) => {
   await mount(page);
   const height = page.locator(`${HOST} [data-dxr="tblheight"]`);
-  await height.fill('0.5"');
-  await height.press('Enter');
+  // As a person does: click into the box, then type. The click takes the selection out of the
+  // document; the Table tab (and the box) must stay.
+  await height.click();
+  await page.waitForTimeout(150);
+  await expect(page.locator(`${HOST} .dxr-tab[data-tab="table"]`)).toBeVisible();
+  await expect(height).toBeVisible();
+  await page.keyboard.press('Control+a');
+  await page.keyboard.type('0.5"');
+  await page.keyboard.press('Enter');
   await expect.poll(async () => (await info(page))?.rowHeightTwips).toBe(720);
   const width = page.locator(`${HOST} [data-dxr="tblwidth"]`);
-  await width.fill('2"');
-  await width.press('Enter');
+  await width.click();
+  await page.waitForTimeout(150);
+  await expect(width).toBeVisible();
+  await page.keyboard.press('Control+a');
+  await page.keyboard.type('2"');
+  await page.keyboard.press('Enter');
   await expect.poll(async () => {
     const i = await info(page);
     return i?.columnWidthsTwips?.[i.columnIndex];
