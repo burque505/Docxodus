@@ -38,8 +38,8 @@ export const LINE_NUMBERS_DIALOG_HTML = `
       <div class="dxr-dgrid">
         <label>Apply to</label>
         <select data-ln="applyTo">
-          <option value="section">This section</option>
           <option value="document">Whole document</option>
+          <option value="section">This section</option>
         </select>
       </div>
     </div>
@@ -101,7 +101,7 @@ export class LineNumbersDialog {
     this.input("countBy").value = String(ln?.countBy ?? 1);
     this.input("distance").value = ln?.distanceTwips !== undefined ? formatLength(ln.distanceTwips, this.unit) : "";
     this.input(`restart-${ln?.restart ?? "newPage"}`).checked = true;
-    this.field<HTMLSelectElement>("applyTo").value = "section";
+    this.field<HTMLSelectElement>("applyTo").value = "document";
     this.enable();
     this.showError(null);
     this.dialog.returnValue = "";

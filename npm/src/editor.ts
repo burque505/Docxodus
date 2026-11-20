@@ -6478,8 +6478,7 @@ export class DocxEditor {
     const out: string[] = [];
     for (const block of this.editableList()) {
       if (this.isBandBlock(block)) continue;
-      const key = block.dataset.paginationSection
-        ?? block.closest<HTMLElement>("[data-section-index]")?.dataset.sectionIndex ?? "0";
+      const key = this.sectionKeyOf(block);
       if (seen.has(key)) continue;
       seen.add(key);
       const fullId = this.anchorIdOf(block);
@@ -8058,6 +8057,14 @@ export class DocxEditor {
     return true;
   }
 
+  /** Which body section a block is in: page view stamps it on the block or on the column wrapper
+   *  around it (a page box carries only its first section's index); the continuous view keeps blocks
+   *  inside their section's element. */
+  private sectionKeyOf(block: HTMLElement): string {
+    return block.closest<HTMLElement>("[data-pagination-section]")?.dataset.paginationSection
+      ?? block.closest<HTMLElement>("[data-section-index]")?.dataset.sectionIndex ?? "0";
+  }
+
   /** The line numbering of the section holding the caret, or null when it has none. */
   lineNumbering(): LineNumbering | null {
     return this.sectionInfo()?.lineNumbering ?? null;
@@ -8078,8 +8085,7 @@ export class DocxEditor {
       const seen = new Map<string, string>();
       for (const block of this.editableList()) {
         if (this.isBandBlock(block) || block.closest("td, th")) continue;
-        const key = block.dataset.paginationSection
-          ?? block.closest<HTMLElement>("[data-section-index]")?.dataset.sectionIndex ?? "0";
+        const key = this.sectionKeyOf(block);
         const id = this.anchorIdOf(block);
         if (id && !seen.has(key)) seen.set(key, id);
       }

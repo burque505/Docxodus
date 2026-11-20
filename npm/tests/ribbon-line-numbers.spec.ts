@@ -92,3 +92,47 @@ test('in the continuous view the status line says line numbers show in page view
   await page.evaluate(() => (window as any).__ribbon.editor.setPaginated(true));
   await expect.poll(() => numbers(page)).toEqual(['1', '2', '3']);
 });
+
+import { storedZip, xml, W_NS, R_NS } from './docx-zip.js';
+
+/** Plain text, then (continuous breaks) a two-column section, then plain text again. */
+function sectionsFixture(): Uint8Array {
+  const p = (t: string) => `<w:p><w:r><w:t>${t}</w:t></w:r></w:p>`;
+  const pg = '<w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>';
+  const body = p('First') + p('Second')
+    + `<w:p><w:pPr><w:sectPr>${pg}</w:sectPr></w:pPr></w:p>`
+    + p('Left column') + p('More text')
+    + `<w:p><w:pPr><w:sectPr><w:type w:val="continuous"/>${pg}<w:cols w:num="2" w:space="720"/></w:sectPr></w:pPr></w:p>`
+    + p('After') + p('Last')
+    + `<w:sectPr><w:type w:val="continuous"/>${pg}</w:sectPr>`;
+  const rel = `<Relationship Id="rId1" Type="${R_NS}/officeDocument" Target="word/document.xml"/>`;
+  return storedZip([
+    { name: '[Content_Types].xml', data: xml('<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>') },
+    { name: '_rels/.rels', data: xml(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${rel}</Relationships>`) },
+    { name: 'word/document.xml', data: xml(`<w:document xmlns:w="${W_NS}"><w:body>${body}</w:body></w:document>`) },
+  ]);
+}
+
+test('the menu numbers every section, wherever the caret is', async ({ page }) => {
+  await page.goto('/test-harness.html');
+  await page.waitForFunction(() => (window as any).DocxodusReady === true, { timeout: 30000 });
+  await page.evaluate((bytes) => {
+    const host = document.createElement('div');
+    host.id = 'lr-host';
+    host.style.height = '700px';
+    document.body.appendChild(host);
+    const r = (window as any).DocxodusEditor.mountRibbon(host, {});
+    r.setExports((window as any).Docxodus);
+    r.open(new Uint8Array(bytes), 'sections.docx');
+    r.loader.done();
+    (window as any).__ribbon = r;
+    r.editor.setPaginated(true);
+  }, Array.from(sectionsFixture()));
+  await page.locator(`${HOST} .page-box [data-anchor][contenteditable="true"]`, { hasText: 'Last' }).click();
+  await page.locator(`${HOST} .dxr-tab[data-tab="layout"]`).click();
+  await choose(page, 'continuous');
+  // First, Second, Left column, More text, After, Last: six lines, numbered straight through.
+  await expect.poll(() => numbers(page)).toEqual(['1', '2', '3', '4', '5', '6']);
+  await choose(page, 'newSection');
+  await expect.poll(() => numbers(page)).toEqual(['1', '2', '1', '2', '1', '2']);
+});

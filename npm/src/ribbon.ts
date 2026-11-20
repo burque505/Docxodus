@@ -1759,12 +1759,15 @@ class RibbonSurface implements RibbonEditor {
         this.run("suppress line numbers", () => this.live!.setSuppressLineNumbers(true), cmd("suppressLineNumbers", { on: true }));
         return;
       }
-      if (v === "none") { this.applyLineNumbering({ countBy: 0 }); return; }
-      // Word keeps the section's count-by, start and distance and changes only when numbering restarts.
+      // The menu numbers the whole document: columns on selected text and continuous breaks make
+      // sections nobody sees, and numbering only the caret's one looked arbitrary. (The options
+      // dialog still offers This section.)
+      if (v === "none") { this.applyLineNumbering({ countBy: 0 }, "document"); return; }
+      // As Word, keep the count-by, start and distance and change only when numbering restarts.
       const current = this.live.lineNumbering();
       this.applyLineNumbering({ countBy: current?.countBy ?? 1, start: current?.start ?? 1,
         ...(current?.distanceTwips !== undefined ? { distanceTwips: current.distanceTwips } : {}),
-        restart: v as "newPage" | "newSection" | "continuous" });
+        restart: v as "newPage" | "newSection" | "continuous" }, "document");
     });
   }
 
