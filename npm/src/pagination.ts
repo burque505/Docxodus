@@ -5,6 +5,7 @@
  * and flows it across fixed-size page containers based on document dimensions.
  */
 
+import { drawLineNumbers, hasLineNumbers } from "./line-numbers.js";
 import { formatPageNumber } from "./page-number-format.js";
 import { alignBaselinesToWord, alignExactLineBaselines, applyUnroundedNormalLineHeights, insetClipBounds, isMixedLineMetric, prepareMixedLineHeights, preserveExactLineInk } from "./line-metrics.js";
 import {
@@ -1012,6 +1013,8 @@ export class PaginationEngine {
   /** Per-section `w:pgNumType` (start / format), read off the section wrappers. */
   private pageNumbering: Map<number, SectionPageNumbering> = new Map();
   private bodySectionDimensions = new Map<number, PageDimensions>();
+  /** Each body section's line numbering (`data-line-number*` of its section div), copied onto its pages. */
+  private sectionLineNumbers = new Map<number, Array<[string, string]>>();
   private lastPages: PageInfo[] = [];
   private expectedPageMapAnchorIds: Set<string> = new Set();
   private sourceClipBoxes = new WeakSet<HTMLElement>();
@@ -1189,6 +1192,8 @@ export class PaginationEngine {
       if (!this.deferFragmentIdentities) this.normalizeVisiblePageFragments(pages);
       // Glyph placement only: run once every page and running story is final.
       if (this.alignBaselines) alignBaselinesToWord(this.containerElement);
+      // Word's line numbers, from the lines as laid out on each page.
+      if (hasLineNumbers(this.containerElement)) drawLineNumbers(this.containerElement);
       this.activateCommentReturnLinks(pages);
       // A copy: pages the balloon appendix adds join this list, not the caller's result.
       this.lastPages = [...pages];
@@ -1358,6 +1363,10 @@ export class PaginationEngine {
       this.checkpoint();
       const dims = parseSectionDimensions(section);
       this.bodySectionDimensions.set(parseInt(section.dataset.sectionIndex || "0", 10), dims);
+      if (section.dataset.lineNumbers) {
+        this.sectionLineNumbers.set(parseInt(section.dataset.sectionIndex || "0", 10),
+          Object.entries(section.dataset).filter(([k]) => k.startsWith("lineNumber")) as Array<[string, string]>);
+      }
       for (const id of this.extractFootnoteRefs(section)) {
         const note = this.footnoteRegistry.get(id);
         if (note) {
@@ -8429,6 +8438,7 @@ export class PaginationEngine {
     pageBox.style.contain = "layout paint";
     pageBox.dataset.pageNumber = String(pageNumber);
     pageBox.dataset.sectionIndex = String(sectionIndex);
+    for (const [key, value] of this.sectionLineNumbers.get(sectionIndex) ?? []) pageBox.dataset[key] = value;
     pageBox.dataset.displayedPageNumber = String(displayedPageNumber);
     if (isSectionFiller) pageBox.dataset.sectionFiller = "true";
     // Needed by substitutePageNumberFields: a section that restarts numbering counts from its own

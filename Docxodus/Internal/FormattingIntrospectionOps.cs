@@ -200,6 +200,7 @@ internal static class FormattingIntrospectionOps
             PageBreakBefore = ReadOnOffElement(pPr?.Element(W.pageBreakBefore)),
             WidowControl = ReadOnOffElement(pPr?.Element(W.widowControl)),
             ContextualSpacing = ReadOnOffElement(pPr?.Element(W.contextualSpacing)),
+            SuppressLineNumbers = ReadOnOffElement(pPr?.Element(W.suppressLineNumbers)),
             OutlineLevel = ReadIntAttribute(pPr?.Element(W.outlineLvl)?.Attribute(W.val)),
             ShadingFill = (string?)pPr?.Element(W.shd)?.Attribute(W.fill),
             TopBorder = ParseBorder(pPr?.Element(W.pBdr)?.Element(W.top)),
@@ -223,6 +224,7 @@ internal static class FormattingIntrospectionOps
             PageBreakBefore = value.PageBreakBefore ?? false,
             WidowControl = value.WidowControl ?? true,
             ContextualSpacing = value.ContextualSpacing ?? false,
+            SuppressLineNumbers = value.SuppressLineNumbers ?? false,
         };
     }
 

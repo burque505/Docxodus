@@ -18,6 +18,7 @@
  */
 
 import { liftedDrawingHomes, paginateHtml } from "./pagination.js";
+import { drawLineNumbers, hasLineNumbers } from "./line-numbers.js";
 import { applyUnroundedNormalLineHeights } from "./line-metrics.js";
 import { DocumentViewport } from "./viewport.js";
 import type { ColumnWidth } from "./viewport.js";
@@ -1971,6 +1972,8 @@ export class DocxEditor {
   private editRoot: HTMLElement;
   /** The most recently focused editable block — the target for ribbon/format commands. */
   private activeBlock: HTMLElement | null = null;
+  /** Redraws Word's line numbers in the page view after the text under them changes. */
+  private lineNumberWatch: { observer: MutationObserver; timer: number } | null = null;
   private closed = false;
   /** The pause after which `typingUndo: "word"` commits the typing so far (see onTypingInput). */
   private typingPause: ReturnType<typeof setTimeout> | null = null;
@@ -2658,6 +2661,7 @@ export class DocxEditor {
     this.setPainter("off");
     this.closed = true;
     if (this.typingPause !== null) clearTimeout(this.typingPause);
+    this.unwatchLineNumbers();
     this.container.removeEventListener("copy", this.onCopy);
     this.container.removeEventListener("cut", this.onCut);
     this.container.removeEventListener("paste", this.onPaste);
@@ -3581,6 +3585,7 @@ export class DocxEditor {
    * and the scaled page, which are different boxes.
    */
   private mountHtml(fullHtml: string): void {
+    this.unwatchLineNumbers();
     this.region?.detachPages();
     const parsed = new DOMParser().parseFromString(fullHtml, "text/html");
     const styles = Array.from(parsed.querySelectorAll("style"))
@@ -3629,6 +3634,7 @@ export class DocxEditor {
     // truth. A remount (setPaginated, list/undo edits) rebuilds staging fresh from the live session.
     this.container.querySelector("#pagination-staging, .page-staging")?.remove();
     const pageRoot = target.querySelector<HTMLElement>("#pagination-container") ?? target;
+    this.watchLineNumbers(pageRoot);
     this.editRoot = pageRoot;
     if (this.options.editable) this.wireBlocks(pageRoot);
     this.stampPlanState();
@@ -3639,6 +3645,37 @@ export class DocxEditor {
     // Page boxes already carry the section's dimensions, so the viewport contributes only the
     // fit zoom — a full page is far wider than a phone, and clipping it is not an option.
     this.viewport.attach(pageRoot, false);
+  }
+
+  /** Keep the page view's line numbers (drawn by the paginator) in step with edits made in place:
+   *  any change to the pages' text redraws them, once, after the typing pauses. */
+  private watchLineNumbers(pageRoot: HTMLElement): void {
+    this.unwatchLineNumbers();
+    if (typeof MutationObserver === "undefined" || !hasLineNumbers(pageRoot)) return;
+    const isLayer = (node: Node): boolean =>
+      node.nodeType === 1 && (node as Element).classList.contains("docx-line-numbers");
+    const watch = {
+      timer: 0,
+      observer: new MutationObserver((records) => {
+        const relevant = records.some((r) =>
+          !(r.target.nodeType === 1 ? (r.target as Element) : r.target.parentElement)?.closest(".docx-line-numbers")
+          && !(r.type === "childList" && [...Array.from(r.addedNodes), ...Array.from(r.removedNodes)].every(isLayer)));
+        if (!relevant) return;
+        window.clearTimeout(watch.timer);
+        watch.timer = window.setTimeout(() => {
+          if (!this.closed && pageRoot.isConnected) drawLineNumbers(pageRoot);
+        }, 120);
+      }),
+    };
+    watch.observer.observe(pageRoot, { childList: true, subtree: true, characterData: true });
+    this.lineNumberWatch = watch;
+  }
+
+  private unwatchLineNumbers(): void {
+    if (!this.lineNumberWatch) return;
+    this.lineNumberWatch.observer.disconnect();
+    window.clearTimeout(this.lineNumberWatch.timer);
+    this.lineNumberWatch = null;
   }
 
   private wireBlocks(root: HTMLElement): void {
@@ -5535,6 +5572,7 @@ export class DocxEditor {
   private applyParagraphFormat(op: EditorParagraphFormat & {
     indentDelta?: number;
     clearBorders?: boolean;
+    suppressLineNumbers?: boolean;
   }): void {
     const block = this.activeBlock;
     if (this.closed || !block) return;
@@ -5546,7 +5584,8 @@ export class DocxEditor {
     // whole flow shows (a swapped block keeps its old page).
     const repaginates = !!this.options.paginated && (op.pageBreakBefore !== undefined || op.keepNext !== undefined
       || op.keepLines !== undefined || op.widowControl !== undefined);
-    const rewraps = !!op.clearBorders || repaginates
+    // Line numbers are counted across the page view: suppressing one paragraph's renumbers the rest.
+    const rewraps = !!op.clearBorders || repaginates || op.suppressLineNumbers !== undefined
       || [block, ...blocks].some((b) => b.parentElement?.tagName === "DIV" && inBorderWrapper(b));
     if (
       blocks.length > 1 &&
@@ -5572,6 +5611,11 @@ export class DocxEditor {
     // (like list edits) so the wrapper appears, disappears or takes its new spacing cleanly.
     if (this.affectsList(res) || rewraps) { this.refreshAfter(block, idx, false, true); return; }
     this.swapBlock(block, unid, res.modified?.[0])?.focus();
+  }
+
+  /** Word's "Suppress line numbers" for the active paragraph (or every selected one). */
+  setSuppressLineNumbers(on = true): void {
+    this.applyParagraphFormat({ suppressLineNumbers: on });
   }
 
   /** Set the paragraph style of the active block — or of every block in a multi-block selection

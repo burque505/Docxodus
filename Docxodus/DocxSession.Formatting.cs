@@ -402,6 +402,8 @@ public sealed partial class DocxSession
             if (op.WidowControl is { } widow) SetPPrToggle(element, pPr, W.widowControl, widow, true);
             if (op.ContextualSpacing is { } contextual)
                 SetPPrToggle(element, pPr, W.contextualSpacing, contextual, false);
+            if (op.SuppressLineNumbers is { } suppress)
+                SetPPrToggle(element, pPr, W.suppressLineNumbers, suppress, false);
 
             // firstLine/hanging share one w:ind slot in Word: writing either evicts the other
             // (validation above already rejected an op carrying both).

@@ -2878,6 +2878,8 @@ export interface ParagraphFormatOp {
   widowControl?: boolean;
   /** Don't add space between paragraphs of the same style (`w:contextualSpacing`). */
   contextualSpacing?: boolean;
+  /** Word's "Suppress line numbers" (`w:suppressLineNumbers`). */
+  suppressLineNumbers?: boolean;
   /** Space above the paragraph in twips (`w:spacing/@w:before`; 20 twips = 1pt, so 240 = 12pt).
    * Absolute; negatives are invalid. */
   spacingBefore?: number;
@@ -3016,6 +3018,15 @@ export type ColumnsApplyTo = "section" | "document" | "forward" | "selection";
  * positive, margins and header/footer distances non-negative, and `left + right < width`,
  * `top + bottom < height`; a violation fails with `invalid_page_setup` and touches nothing.
  */
+/** A section's line numbering (`w:lnNumType`): `start` is the first number shown, every `countBy`th
+ * line shows its number (0 = none), `distanceTwips` absent is Word's automatic gap. */
+export interface LineNumbering {
+  countBy: number;
+  start?: number;
+  distanceTwips?: number;
+  restart?: "newPage" | "newSection" | "continuous";
+}
+
 export interface PageSetupOp {
   /** Page width (`w:pgSz/@w:w`). */
   pageWidthTwips?: number;
@@ -3041,6 +3052,8 @@ export interface PageSetupOp {
   /** How the section starts (`w:type`) — Word's Page Setup > Layout > Section start.
    *  `"nextPage"`, the default, removes the element. */
   sectionStart?: SectionStart;
+  /** The section's line numbering (Word's Line Numbers): absent leaves it, `countBy: 0` turns it off. */
+  lineNumbering?: LineNumbering;
 }
 
 /** How a section starts relative to the one before it (`w:type`, ST_SectionMark). */
@@ -3965,6 +3978,8 @@ export interface SectionInfo {
    *  `1, 2, 3` — deliberately not reported as `"decimal"`, so a UI can tell "inherits" from
    *  "explicitly decimal" and avoid writing an attribute the document never had. */
   pageNumberFormat?: NumberFormat;
+  /** The section's line numbering (`w:lnNumType`); absent when it has none. */
+  lineNumbering?: LineNumbering;
 }
 
 /** High-signal paragraph properties. Optional fields are deliberately absent when a
@@ -3985,6 +4000,8 @@ export interface ParagraphFormatting {
   pageBreakBefore?: boolean;
   widowControl?: boolean;
   contextualSpacing?: boolean;
+  /** `w:suppressLineNumbers`: the paragraph's lines are not numbered. */
+  suppressLineNumbers?: boolean;
   outlineLevel?: number;
   shadingFill?: string;
   topBorder?: ParagraphBorderEdge;

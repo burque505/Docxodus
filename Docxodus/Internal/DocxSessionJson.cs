@@ -764,6 +764,9 @@ internal static class DocxSessionJson
             FooterDistanceTwips = TryGetIntNullable(root, "footerDistanceTwips"),
             SectionStart = root.TryGetProperty("sectionStart", out var start) && start.ValueKind == JsonValueKind.String
                 ? start.GetString() : null,
+            LineNumbering = root.TryGetProperty("lineNumbering", out var ln) && ln.ValueKind == JsonValueKind.Object
+                ? ParseLineNumbering(ln)
+                : null,
         };
     }
 
@@ -789,6 +792,18 @@ internal static class DocxSessionJson
             Separator = TryGetBoolNullable(root, "separator"),
         };
     }
+
+    /// <summary>{ countBy?, start?, distanceTwips?, restart?: "newPage"|"newSection"|"continuous" };
+    /// countBy 0 turns line numbers off.</summary>
+    public static LineNumbering ParseLineNumbering(JsonElement root) => new()
+    {
+        CountBy = TryGetIntNullable(root, "countBy") ?? 1,
+        Start = TryGetIntNullable(root, "start") ?? 1,
+        DistanceTwips = TryGetIntNullable(root, "distanceTwips"),
+        Restart = ParseToken(TryGetString(root, "restart", null), "line number restart", LineNumberRestart.NewPage,
+            ("newPage", LineNumberRestart.NewPage), ("newSection", LineNumberRestart.NewSection),
+            ("continuous", LineNumberRestart.Continuous)),
+    };
 
     /// <summary>
     /// Parse the browser editor's render profile — one JSON object instead of a positional
@@ -881,6 +896,7 @@ internal static class DocxSessionJson
             KeepLines = TryGetBoolNullable(root, "keepLines"),
             WidowControl = TryGetBoolNullable(root, "widowControl"),
             ContextualSpacing = TryGetBoolNullable(root, "contextualSpacing"),
+            SuppressLineNumbers = TryGetBoolNullable(root, "suppressLineNumbers"),
             SpacingBefore = TryGetIntNullable(root, "spacingBefore"),
             SpacingAfter = TryGetIntNullable(root, "spacingAfter"),
             LineSpacing = TryGetIntNullable(root, "lineSpacing"),
@@ -3219,6 +3235,19 @@ internal static class DocxSessionJson
             sb.Append(",\"pageNumberStart\":").Append(pnStart);
         if (info.PageNumberFormat is { } pnFormat)
             sb.Append(",\"pageNumberFormat\":").Append(JsonString(NumberFormatToString(pnFormat)));
+        // Omitted when the section has no line numbering (as an absent w:lnNumType).
+        if (info.LineNumbering is { } ln)
+        {
+            sb.Append(",\"lineNumbering\":{\"countBy\":").Append(ln.CountBy)
+              .Append(",\"start\":").Append(ln.Start);
+            if (ln.DistanceTwips is { } d) sb.Append(",\"distanceTwips\":").Append(d);
+            sb.Append(",\"restart\":").Append(JsonString(ln.Restart switch
+            {
+                LineNumberRestart.Continuous => "continuous",
+                LineNumberRestart.NewSection => "newSection",
+                _ => "newPage",
+            })).Append('}');
+        }
         sb.Append('}');
         return sb.ToString();
     }
@@ -3367,6 +3396,7 @@ internal static class DocxSessionJson
         BoolValue("pageBreakBefore", f.PageBreakBefore);
         BoolValue("widowControl", f.WidowControl);
         BoolValue("contextualSpacing", f.ContextualSpacing);
+        BoolValue("suppressLineNumbers", f.SuppressLineNumbers);
         IntValue("outlineLevel", f.OutlineLevel);
         StringValue("shadingFill", f.ShadingFill);
         AppendBorder("topBorder", f.TopBorder);

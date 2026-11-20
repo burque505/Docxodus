@@ -258,6 +258,13 @@ public sealed record PageSetupOp
     /// <c>oddPage</c> or <c>nextColumn</c>. <c>nextPage</c>, the default, removes the element.
     /// </summary>
     public string? SectionStart { get; init; }
+
+    /// <summary>
+    /// The section's line numbering (<c>w:lnNumType</c>), Word's Line Numbers: null leaves it as
+    /// it is; a <see cref="LineNumbering"/> with <see cref="LineNumbering.CountBy"/> 0 turns it
+    /// off (removes the element); otherwise it is written as Word writes it.
+    /// </summary>
+    public LineNumbering? LineNumbering { get; init; }
 }
 
 /// <summary>
@@ -279,6 +286,24 @@ public sealed record ParagraphBorderEdge
 
     /// <summary>Padding between the border and the text in points (<c>w:space</c>). Default 1.</summary>
     public int? Space { get; init; }
+}
+
+/// <summary>When a section's line numbers start again (<c>w:lnNumType/@w:restart</c>).</summary>
+public enum LineNumberRestart { NewPage, NewSection, Continuous }
+
+/// <summary>
+/// A section's line numbering (<c>w:lnNumType</c>), as Word's Line Numbers options set it:
+/// <see cref="Start"/> is the first number shown (Word writes it less one, in <c>w:start</c>);
+/// every <see cref="CountBy"/>th line shows its number (0 = no line numbers);
+/// <see cref="DistanceTwips"/> is the gap between the numbers and the text (null = Word's
+/// automatic distance); <see cref="Restart"/> says when numbering starts again.
+/// </summary>
+public sealed record LineNumbering
+{
+    public int CountBy { get; init; } = 1;
+    public int Start { get; init; } = 1;
+    public int? DistanceTwips { get; init; }
+    public LineNumberRestart Restart { get; init; } = LineNumberRestart.NewPage;
 }
 
 /// <summary>Paragraph alignment (maps to w:jc): Justify → w:val "both".</summary>
@@ -407,6 +432,10 @@ public sealed record ParagraphFormatOp
     /// <summary>"Don't add space between paragraphs of the same style" (<c>w:contextualSpacing</c>);
     /// written like <see cref="KeepNext"/>.</summary>
     public bool? ContextualSpacing { get; init; }
+
+    /// <summary>Word's "Suppress line numbers" (<c>w:suppressLineNumbers</c>): the paragraph's lines
+    /// are neither numbered nor counted. Written like <see cref="KeepNext"/>.</summary>
+    public bool? SuppressLineNumbers { get; init; }
 
     /// <summary>Space above the paragraph in twips (<c>w:spacing/@w:before</c>; 20 twips = 1pt,
     /// so 240 = 12pt). Absolute; 0 writes an explicit zero; negatives are invalid.</summary>
@@ -747,6 +776,8 @@ public sealed record ParagraphFormatting
     public bool? WidowControl { get; init; }
     /// <summary><c>w:contextualSpacing</c>: no space between paragraphs of the same style.</summary>
     public bool? ContextualSpacing { get; init; }
+    /// <summary><c>w:suppressLineNumbers</c>: the paragraph's lines are not numbered.</summary>
+    public bool? SuppressLineNumbers { get; init; }
     public int? OutlineLevel { get; init; }
     public string? ShadingFill { get; init; }
     public ParagraphBorderEdge? TopBorder { get; init; }
@@ -1424,6 +1455,8 @@ public sealed record SectionInfo
 
     /// <summary>Number of text columns. Defaults to 1 if no <c>w:cols</c> is set.</summary>
     required public int Columns { get; init; }
+    /// <summary>The section's line numbering (<c>w:lnNumType</c>), or null when it has none.</summary>
+    public LineNumbering? LineNumbering { get; init; }
 
     /// <summary>The space between columns (<c>w:cols/@w:space</c>), in twips; 720 (half an inch,
     /// Word's default) when the section does not say. Read counterpart of

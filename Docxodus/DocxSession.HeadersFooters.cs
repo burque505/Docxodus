@@ -752,6 +752,15 @@ public sealed partial class DocxSession
                 $"unknown section start '{ss}': use {string.Join(", ", SectionStarts)}", anchorId);
         if (op.PageHeightTwips is { } ph && ph <= 0)
             return EditResult.Fail(EditErrorCode.InvalidPageSetup, "page height must be positive", anchorId);
+        if (op.LineNumbering is { } ln)
+        {
+            if (ln.CountBy < 0 || ln.CountBy > 100)
+                return EditResult.Fail(EditErrorCode.InvalidPageSetup, "line numbers count by 0 (off) to 100", anchorId);
+            if (ln.CountBy > 0 && (ln.Start < 1 || ln.Start > 32767))
+                return EditResult.Fail(EditErrorCode.InvalidPageSetup, "line numbers start at 1 to 32767", anchorId);
+            if (ln.DistanceTwips is < 0)
+                return EditResult.Fail(EditErrorCode.InvalidPageSetup, "line number distance cannot be negative", anchorId);
+        }
         foreach (var (name, value) in new[]
         {
             ("top margin", op.MarginTopTwips), ("bottom margin", op.MarginBottomTwips),
@@ -869,8 +878,35 @@ public sealed partial class DocxSession
 
         if (op.SectionStart is { } sectionStart)
             changed |= WriteSectionStart(sectPr, sectionStart);
+        if (op.LineNumbering is { } ln)
+            changed |= ApplyLineNumbering(sectPr, ln);
 
         return changed;
+    }
+
+    /// <summary>Write <paramref name="ln"/> as <c>w:lnNumType</c> the way Word does (defaults left
+    /// out: start 1, automatic distance, restart each page), or remove it for CountBy 0.</summary>
+    private static bool ApplyLineNumbering(XElement sectPr, LineNumbering ln)
+    {
+        var current = sectPr.Element(W.lnNumType);
+        if (ln.CountBy == 0)
+        {
+            if (current is null) return false;
+            current.Remove();
+            return true;
+        }
+        static string S(int v) => v.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var wanted = new XElement(W.lnNumType, new XAttribute(W.countBy, S(ln.CountBy)));
+        if (ln.Start > 1) wanted.Add(new XAttribute(W.start, S(ln.Start - 1)));
+        if (ln.DistanceTwips is { } d) wanted.Add(new XAttribute(W.distance, S(d)));
+        if (ln.Restart != LineNumberRestart.NewPage)
+            wanted.Add(new XAttribute(W.restart, ln.Restart == LineNumberRestart.Continuous ? "continuous" : "newSection"));
+        if (current is not null && XNode.DeepEquals(
+                new XElement(current.Name, current.Attributes().Where(a => !a.IsNamespaceDeclaration && a.Name.Namespace == W.w)), wanted))
+            return false;
+        if (current is not null) current.ReplaceWith(wanted);
+        else WordprocessingMLUtil.InsertSectPrChildInOrder(sectPr, wanted);
+        return true;
     }
 
     /// <summary>Set (or, for a null value, remove) an attribute; true when the element changed.</summary>
