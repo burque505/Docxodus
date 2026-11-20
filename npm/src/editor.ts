@@ -64,6 +64,11 @@ import type {
   SectionStart,
   StyleInfo,
   TableBorderSpec,
+  TablePropertiesOp,
+  TablePropertiesInfo,
+  TableRowOptions,
+  CellPropertiesOp,
+  TableCellScope,
   TableOfContentsOptions,
 } from "./types.js";
 import { diffUnits, needsRemount, tokenOf, unidOf } from "./editor-reconcile.js";
@@ -267,6 +272,13 @@ export interface DocxEditorExports {
     SetTableBorders?: (handle: number, cellAnchor: string, specJson: string) => string;
     SetCellShading?: (handle: number, cellAnchor: string, fill: string, scope: string) => string;
     SetRepeatHeaderRow?: (handle: number, cellAnchor: string, repeat: boolean) => string;
+    SetTableRowOptions?: (handle: number, cellAnchor: string, repeatHeader: boolean | null,
+      allowBreakAcrossPages: boolean | null, heightTwips: number | null, heightRule: string) => string;
+    SetColumnWidths?: (handle: number, cellAnchor: string, widthsJson: string) => string;
+    /** Table Properties (optional: older engine builds lack them). */
+    SetTableProperties?: (handle: number, cellAnchor: string, opJson: string) => string;
+    SetCellProperties?: (handle: number, cellAnchor: string, opJson: string, scope: string) => string;
+    GetTableProperties?: (handle: number, cellAnchor: string) => string;
     /** Section page setup and header/footer flags (optional). */
     SetPageSetup?: (handle: number, anchor: string, opJson: string) => string;
     /** Word's Layout > Breaks (optional: absent on older bundles). */
@@ -7182,6 +7194,95 @@ export class DocxEditor {
     const bridge = this.exports.DocxSessionBridge;
     if (typeof bridge.SetRepeatHeaderRow !== "function") return;
     this.tableEdit((a) => bridge.SetRepeatHeaderRow!(this.handle, a, repeat));
+  }
+
+  /** The Table Properties dialog's values for the table, row and cell the caret is in, or null. */
+  tableProperties(): TablePropertiesInfo | null {
+    const cell = this.activeBlock?.closest<HTMLElement>("td, th");
+    const bridge = this.exports.DocxSessionBridge;
+    const cellId = cell ? this.anchorIdOf(cell) : undefined;
+    if (this.closed || !cellId || typeof bridge.GetTableProperties !== "function") return null;
+    try {
+      return JSON.parse(bridge.GetTableProperties!(this.handle, cellId)) as TablePropertiesInfo | null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Word's Table Properties for the table the caret is in (width, alignment, indent, cell
+   *  margins, alt text). One undo step. */
+  setTableProperties(op: TablePropertiesOp): void {
+    this.applyTableProperties({ table: op });
+  }
+
+  /** The vertical alignment (or other cell properties) of the caret's cell, row, column or table. */
+  setCellProperties(op: CellPropertiesOp, scope: TableCellScope = "cell"): void {
+    this.applyTableProperties({ cell: op, cellScope: scope });
+  }
+
+  /** Row options of the caret's row: height and its rule, break across pages, repeat as header. */
+  setTableRowOptions(options: TableRowOptions): void {
+    this.applyTableProperties({ row: options });
+  }
+
+  /** The width of the caret's column, twips (a merged cell's width is shared out over the grid
+   *  columns it spans, in their proportions). */
+  setColumnWidth(twips: number): void {
+    this.applyTableProperties({ columnWidthTwips: twips });
+  }
+
+  /**
+   * Apply the Table Properties dialog's changes to the table, row, column and cell the caret is in,
+   * as one edit and one undo step. Each part is optional.
+   */
+  applyTableProperties(changes: {
+    table?: TablePropertiesOp;
+    row?: TableRowOptions;
+    columnWidthTwips?: number;
+    cell?: CellPropertiesOp;
+    cellScope?: TableCellScope;
+  }): void {
+    const bridge = this.exports.DocxSessionBridge;
+    if (typeof bridge.SetTableProperties !== "function" || typeof bridge.SetCellProperties !== "function"
+      || typeof bridge.SetTableRowOptions !== "function" || typeof bridge.SetColumnWidths !== "function") return;
+    const info = changes.columnWidthTwips !== undefined ? this.tableProperties() : null;
+    this.tableEdit((a) => {
+      const tx = typeof bridge.BeginTransaction === "function" ? bridge.BeginTransaction(this.handle) : 0;
+      let last = JSON.stringify({ success: true });
+      let ok = true;
+      const step = (json: string): void => {
+        if (!ok) return;
+        last = json;
+        try { ok = (JSON.parse(json) as { success?: boolean }).success === true; } catch { ok = false; }
+      };
+      if (changes.columnWidthTwips !== undefined && info && changes.columnWidthTwips > 0) {
+        const widths = info.columnWidthsTwips.slice();
+        const span = widths.slice(info.columnIndex, info.columnIndex + info.columnSpan);
+        const total = span.reduce((sum, w) => sum + w, 0) || span.length;
+        let given = 0;
+        span.forEach((w, i) => {
+          const share = i === span.length - 1
+            ? changes.columnWidthTwips! - given
+            : Math.round((changes.columnWidthTwips! * (total === span.length ? 1 : w)) / total);
+          widths[info.columnIndex + i] = Math.max(1, share);
+          given += share;
+        });
+        step(bridge.SetColumnWidths!(this.handle, a, JSON.stringify(widths)));
+      }
+      if (changes.row) {
+        const r = changes.row;
+        step(bridge.SetTableRowOptions!(this.handle, a, r.repeatHeader ?? null, r.allowBreakAcrossPages ?? null,
+          r.heightTwips ?? null, r.heightRule ?? "atLeast"));
+      }
+      if (changes.cell) step(bridge.SetCellProperties!(this.handle, a, JSON.stringify(changes.cell), changes.cellScope ?? "cell"));
+      // The table's own properties last: SetColumnWidths sizes the table to its columns' sum.
+      if (changes.table) step(bridge.SetTableProperties!(this.handle, a, JSON.stringify(changes.table)));
+      if (tx) {
+        if (ok) bridge.CommitTransaction!(tx);
+        else bridge.RollbackTransaction?.(tx);
+      }
+      return last;
+    });
   }
 
   /** Delete the whole table the caret is in. */

@@ -60,6 +60,7 @@ import type { CaseMode, HeadlineCaseLists } from "./change-case.js";
 import { FIND_OPTION_KEYS, findOptionApplies, normalizeFindOptions, specialFindCodes, specialReplaceCodes, type FindOptions } from "./find-query.js";
 import { LIST_DIALOG_CSS, LIST_DIALOG_HTML, ListDialog } from "./ribbon-list-dialog.js";
 import { COLUMNS_DIALOG_CSS, COLUMNS_DIALOG_HTML, ColumnsDialog } from "./ribbon-columns-dialog.js";
+import { TABLE_DIALOG_CSS, TABLE_DIALOG_HTML, TableDialog, type TableDialogResult, type TableDialogTab } from "./ribbon-table-dialog.js";
 import { PICTURE_DIALOG_CSS, PICTURE_DIALOG_HTML, PICTURE_MENU_HTML, PictureDialog, type PictureDialogResult, type PictureDialogTab } from "./ribbon-picture-dialog.js";
 import { formatLength, parseLength } from "./ribbon-paragraph-dialog.js";
 import type { PictureInfo, PictureWrap } from "./editor.js";
@@ -340,6 +341,9 @@ export interface RibbonEditor {
   /** Open the picture dialog (Size, Text Wrapping and Position, Alt Text) on the selected picture;
    *  false when no picture is selected. */
   openPictureDialog(tab?: "size" | "layout" | "alt"): boolean;
+  /** Open the Table Properties dialog (Table, Row, Column, Cell, Alt Text) on the caret's table;
+   *  false when the caret is not in a table. */
+  openTableDialog(tab?: "table" | "row" | "column" | "cell" | "alt"): boolean;
   /** The levels new lists start from (see the `listDefaults` option). */
   setListDefaults(levels: ListLevelSpec[]): void;
   /** Headline Case's word lists (see the `headlineCaseLists` option); null for the built-in ones. */
@@ -419,7 +423,7 @@ const CONTROL_NAMES = [
   "comment", "commentdelete", "commentprev", "commentnext", "commentresolve", "showcomments",
   "commentcount", "trackchanges", "markup", "author", "revcount",
   "viewpage", "viewweb", "zoom", "zoomfit", "zoomonepage", "showrail", "showhint",
-  "shadebtn", "shadebar", "shade", "repeatheader",
+  "shadebtn", "shadebar", "shade", "repeatheader", "tblheight", "tblwidth", "tblprops", "tabledialog",
   "hfFirst", "hfEven", "hfstory",
   "findbar", "findtext", "findprev", "findnext", "findcount", "findcase", "findoptions", "findspecial",
   "findoptmenu", "findspecialmenu", "replacegroup",
@@ -447,7 +451,7 @@ function ensureStyles(doc: Document): void {
   existing?.remove();
   const style = doc.createElement("style");
   style.setAttribute(RIBBON_STYLE_ATTR, RIBBON_STYLE_VERSION);
-  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS;
+  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS;
   (doc.head ?? doc.documentElement).appendChild(style);
 }
 
@@ -549,6 +553,7 @@ class RibbonSurface implements RibbonEditor {
   // (the selection the Columns dialog opened on: its fields take the focus, OK puts it back)
   private columnsRange: Range | null = null;
   private pictureDialog!: PictureDialog;
+  private tableDialog!: TableDialog;
   private pictureUnit: MeasurementUnit = "in";
   private listDialog!: ListDialog;
   private listDefaults: ListLevelSpec[] | undefined;
@@ -595,7 +600,7 @@ class RibbonSurface implements RibbonEditor {
     root.className = "dxr";
     root.dataset.state = "idle";
     root.dataset.frame = this.options.frame ?? "flush";
-    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML;
+    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML + TABLE_DIALOG_HTML;
     for (const el of Array.from(root.querySelectorAll<HTMLElement>("[data-dxr]"))) {
       el.id = this.idPrefix + el.dataset.dxr;
     }
@@ -1544,6 +1549,68 @@ class RibbonSurface implements RibbonEditor {
     return this.pictureDialog.show(tab as PictureDialogTab);
   }
 
+  openTableDialog(tab: "table" | "row" | "column" | "cell" | "alt" = "table"): boolean {
+    if (!this.live || this.tableDialog.open || this.pictureDialog.open || this.columnsDialog.open || this.listDialog.open
+      || this.paragraphDialog.open) return false;
+    this.closePopovers();
+    return this.tableDialog.show(tab as TableDialogTab);
+  }
+
+  private applyTableDialog(result: TableDialogResult): void {
+    const args: Record<string, unknown> = {};
+    if (result.table) args.table = { ...result.table };
+    if (result.row) args.row = { ...result.row };
+    if (result.columnWidthTwips !== undefined) args.columnWidthTwips = result.columnWidthTwips;
+    if (result.cell) args.cell = { ...result.cell };
+    this.run("table properties", () => this.live!.applyTableProperties(result), cmd("applyTableProperties", args as EditorCommandArgs));
+  }
+
+  private wireTable(): void {
+    this.tableDialog = new TableDialog(this.require<HTMLDialogElement>("tabledialog"), {
+      read: () => this.live?.tableProperties() ?? null,
+      apply: (result) => this.applyTableDialog(result),
+    }, this.options.measurementUnit ?? "in");
+    this.require("tblprops").addEventListener("click", () => this.openTableDialog("table"));
+    for (const name of ["tblheight", "tblwidth"] as const) {
+      const input = this.require<HTMLInputElement>(name);
+      input.addEventListener("change", () => {
+        const text = input.value.trim();
+        const twips = text === "" && name === "tblheight" ? 0 : parseLength(text, this.pictureUnit);
+        if (twips === null || twips < 0 || (twips === 0 && name === "tblwidth")) {
+          this.tableChanged();
+          return;
+        }
+        if (name === "tblheight") {
+          this.run("row height", () => this.live!.setTableRowOptions({ heightTwips: twips, heightRule: "atLeast" }),
+            cmd("rowHeight", { twips, rule: "atLeast" }));
+        } else {
+          this.run("column width", () => this.live!.setColumnWidth(twips), cmd("columnWidth", { twips }));
+        }
+      });
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") { event.preventDefault(); input.dispatchEvent(new Event("change")); }
+      });
+    }
+  }
+
+  /** The Cell Size boxes and the Alignment buttons, from the caret's table. */
+  private tableChanged(): void {
+    const info = this.live?.tableProperties() ?? null;
+    const height = this.control<HTMLInputElement>("tblheight");
+    const width = this.control<HTMLInputElement>("tblwidth");
+    if (height && document.activeElement !== height)
+      height.value = info?.rowHeightTwips ? formatLength(info.rowHeightTwips, this.pictureUnit) : "";
+    if (width && document.activeElement !== width) {
+      const span = info ? info.columnWidthsTwips.slice(info.columnIndex, info.columnIndex + info.columnSpan) : [];
+      const twips = span.reduce((sum, w) => sum + w, 0);
+      width.value = twips > 0 ? formatLength(twips, this.pictureUnit) : "";
+    }
+    const valign = info?.verticalAlignment === "center" || info?.verticalAlignment === "bottom" ? info.verticalAlignment : "top";
+    for (const [tt, v] of [["alignTop", "top"], ["alignCenter", "center"], ["alignBottom", "bottom"]] as const)
+      this.element.querySelector<HTMLElement>(`.dxr-panel[data-panel="table"] button[data-tt="${tt}"]`)
+        ?.classList.toggle("dxr-on", !!info && valign === v);
+  }
+
   private wirePicture(): void {
     this.pictureUnit = this.options.measurementUnit ?? "in";
     this.pictureDialog = new PictureDialog(this.require<HTMLDialogElement>("picturedialog"), {
@@ -1705,6 +1772,7 @@ class RibbonSurface implements RibbonEditor {
     this.listDialog.setUnit(unit);
     this.columnsDialog.setUnit(unit);
     this.pictureDialog.setUnit(unit);
+    this.tableDialog.setUnit(unit);
     this.pictureUnit = unit;
     this.pictureChanged(this.live?.selectedPicture() ?? null);
   }
@@ -1714,6 +1782,7 @@ class RibbonSurface implements RibbonEditor {
     this.wireListDialog();
     this.wireColumns();
     this.wirePicture();
+    this.wireTable();
     const ribbon = this.require("ribbon");
 
     // (the File tab opens a menu instead: wireFileMenu)
@@ -1753,6 +1822,9 @@ class RibbonSurface implements RibbonEditor {
       borders: cmd("tableBorders", { spec: { scope: "all", style: "single", size: 4 } }),
       noborders: cmd("tableBorders", { spec: { scope: "all", style: "none" } }),
       noshade: cmd("cellShading", { fill: "", scope: "cell" }),
+      alignTop: cmd("cellAlignment", { align: "top" }),
+      alignCenter: cmd("cellAlignment", { align: "center" }),
+      alignBottom: cmd("cellAlignment", { align: "bottom" }),
       delTable: cmd("deleteTable"),
     };
     delegate<HTMLElement>('.dxr-panel[data-panel="table"] button[data-tt]', (b) => b.dataset.tt!, (b) => {
@@ -1769,6 +1841,9 @@ class RibbonSurface implements RibbonEditor {
         borders: () => this.live!.setTableBorders({ scope: "all", style: "single", size: 4 }),
         noborders: () => this.live!.setTableBorders({ scope: "all", style: "none" }),
         noshade: () => this.live!.setCellShading("", "cell"),
+        alignTop: () => this.live!.setCellProperties({ verticalAlignment: "top" }),
+        alignCenter: () => this.live!.setCellProperties({ verticalAlignment: "center" }),
+        alignBottom: () => this.live!.setCellProperties({ verticalAlignment: "bottom" }),
         delTable: () => this.live!.deleteTable(),
       };
       ops[b.dataset.tt ?? ""]?.();
@@ -3017,6 +3092,7 @@ class RibbonSurface implements RibbonEditor {
       if (inTable) {
         const row = el?.closest("tr");
         this.require<HTMLInputElement>("repeatheader").checked = !!row?.classList.toString().includes("header");
+        this.tableChanged();
       }
     }
     this.refreshRailAnchor();

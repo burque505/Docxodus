@@ -12,7 +12,7 @@
  * matching ribbon control is.
  */
 import type { DocxEditor, EditorAlignment, EditorPageSetup, EditorParagraphFormat, FormatKey, PasteFormatting } from "./editor.js";
-import type { FloatingImageLayout, ListFormat, ListLevelSpec, NumberFormat, TableBorderSpec, TableOfContentsOptions } from "./types.js";
+import type { FloatingImageLayout, ListFormat, ListLevelSpec, NumberFormat, TableBorderSpec, TableOfContentsOptions, TablePropertiesOp, TableRowOptions, CellPropertiesOp } from "./types.js";
 import { TrackedChangeMode } from "./types.js";
 import { FIND_OPTION_KEYS, type FindOptions } from "./find-query.js";
 
@@ -488,6 +488,40 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   },
   repeatHeaderRow: { group: "table", description: "Repeat the first row on every page (or not).", args: { on: "boolean" }, run: (e, a) => e.setRepeatHeaderRow(a.bool("on")) },
   deleteTable: { group: "table", description: "Delete the table at the caret.", args: {}, run: (e) => e.deleteTable() },
+  tableProperties: {
+    group: "table", description: "Word's Table Properties for the table at the caret (a TablePropertiesOp: widthType auto|twips|percent, width, alignment left|center|right, indentTwips, cellMargins, altTitle, altDescription).",
+    args: { op: "object" }, run: (e, a) => e.setTableProperties(a.object("op") as TablePropertiesOp),
+  },
+  applyTableProperties: {
+    group: "table", description: "The Table Properties dialog's OK: any of table (a TablePropertiesOp), row (height, rule, allowBreak, repeatHeader), columnWidthTwips, cell (verticalAlignment), as one undo step.",
+    args: { "table?": "object", "row?": "object", "columnWidthTwips?": "number", "cell?": "object" },
+    run: (e, a) => e.applyTableProperties({
+      table: a.optObject("table") as TablePropertiesOp | undefined,
+      row: a.optObject("row") as TableRowOptions | undefined,
+      columnWidthTwips: a.optNumber("columnWidthTwips"),
+      cell: a.optObject("cell") as CellPropertiesOp | undefined,
+    }),
+  },
+  cellAlignment: {
+    group: "table", description: "The vertical alignment of the cell at the caret (or its row, column or table).",
+    args: { align: "top|center|bottom", "scope?": "cell|row|column|table" },
+    run: (e, a) => e.setCellProperties({ verticalAlignment: a.oneOf("align", ["top", "center", "bottom"] as const) },
+      a.optOneOf("scope", ["cell", "row", "column", "table"] as const) ?? "cell"),
+  },
+  rowHeight: {
+    group: "table", description: "The height of the row at the caret, twips (0 removes it), at least or exactly.",
+    args: { twips: "number", "rule?": "atLeast|exact" },
+    run: (e, a) => e.setTableRowOptions({ heightTwips: a.number("twips"), heightRule: a.optOneOf("rule", ["atLeast", "exact"] as const) ?? "atLeast" }),
+  },
+  rowOptions: {
+    group: "table", description: "The row at the caret: allow it to break across pages, repeat it as a header row.",
+    args: { "allowBreak?": "boolean", "repeatHeader?": "boolean" },
+    run: (e, a) => e.setTableRowOptions({ allowBreakAcrossPages: a.optBool("allowBreak"), repeatHeader: a.optBool("repeatHeader") }),
+  },
+  columnWidth: {
+    group: "table", description: "The width of the column at the caret, twips.",
+    args: { twips: "number" }, run: (e, a) => e.setColumnWidth(a.number("twips")),
+  },
 
   // ── review ──
   trackChanges: {
@@ -630,6 +664,10 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   picture: {
     group: "query", description: "The selected picture: id, wrap, size in points, alt text, title, layout, what can change.",
     args: {}, returns: "object, or null", run: (e) => e.selectedPicture(),
+  },
+  tableInfo: {
+    group: "query", description: "The Table Properties of the table, row and cell at the caret (width, alignment, indent, margins, alt text, row height, column widths, vertical alignment).",
+    args: {}, returns: "object, or null", run: (e) => e.tableProperties(),
   },
   pageInfo: { group: "query", description: "In page view, the caret's page and the page count.", args: {}, returns: "{ page, total }, or null", run: (e) => e.pageInfo() },
   version: { group: "query", description: "The document's version: it goes up with every committed edit.", args: {}, returns: "number, or null", run: (e) => e.version },

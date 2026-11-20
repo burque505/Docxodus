@@ -29,7 +29,7 @@
  */
 
 /** Bumped whenever RIBBON_CSS changes, so a stale injected stylesheet is replaced. */
-export const RIBBON_STYLE_VERSION = "15";
+export const RIBBON_STYLE_VERSION = "16";
 export const RIBBON_STYLE_ATTR = "data-docxodus-ribbon-styles";
 
 /** Width of the comment gutter the surface reserves beside the sheet, in px. */
@@ -356,6 +356,7 @@ export const RIBBON_CSS = `
 }
 .dxr [data-dxr="fontsize"] { width: 58px; }
 .dxr [data-dxr="picheight"], .dxr [data-dxr="picwidth"] { width: 64px; }
+.dxr [data-dxr="tblheight"], .dxr [data-dxr="tblwidth"] { width: 64px; }
 .dxr [data-dxr="showmarks"] { font-size: 17px; font-weight: 700; line-height: 1; }
 .dxr [data-dxr="fontfamily"] { width: 138px; }
 .dxr [data-dxr="style"] { width: 148px; }
@@ -1442,6 +1443,24 @@ export const RIBBON_HTML = `
           <button type="button" data-tt="mergeRight" title="Merge this cell with the one to its right">Merge right</button>
           <button type="button" data-tt="mergeDown" title="Merge this cell with the one below">Merge down</button>
           <button type="button" data-tt="unmerge" title="Split a merged cell back into its cells">Split</button>
+        </div>
+      </div>
+      <div class="dxr-group">
+        <span class="dxr-glabel">Cell Size</span>
+        <div class="dxr-row">
+          <label class="dxr-toggle">Height <input data-dxr="tblheight" type="text" autocomplete="off" title="The row's height (at least); empty lets it fit its text" /></label>
+          <label class="dxr-toggle">Width <input data-dxr="tblwidth" type="text" autocomplete="off" title="The column's width" /></label>
+        </div>
+        <div class="dxr-row">
+          <button type="button" data-dxr="tblprops" title="Table Properties: size, alignment, rows, columns, cells and alt text">Properties…</button>
+        </div>
+      </div>
+      <div class="dxr-group">
+        <span class="dxr-glabel">Alignment</span>
+        <div class="dxr-row">
+          <button type="button" data-tt="alignTop" title="Align the cell's text to its top">Top</button>
+          <button type="button" data-tt="alignCenter" title="Center the cell's text vertically">Center</button>
+          <button type="button" data-tt="alignBottom" title="Align the cell's text to its bottom">Bottom</button>
         </div>
       </div>
       <div class="dxr-group">
