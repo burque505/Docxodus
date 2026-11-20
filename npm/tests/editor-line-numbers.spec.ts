@@ -101,3 +101,55 @@ test('typing a new line redraws the numbers; the continuous view shows none', as
   await page.evaluate(() => (window as any).__ribbon.editor.setPaginated(false));
   await expect.poll(async () => (await numbers(page)).length).toBe(0);
 });
+
+import { storedZip, xml, W_NS, R_NS } from './docx-zip.js';
+
+/** Three columns of long paragraphs, then (a continuous section break) one column; both sections
+ *  number their lines and restart each section. */
+function columnsFixture(): Uint8Array {
+  const lorem = 'Lorem ipsum dolor sit amet consectetuer adipiscing elit maecenas porttitor congue massa fusce posuere magna sed pulvinar ultricies purus lectus malesuada libero sit amet commodo magna eros quis urna.';
+  const p = (t: string) => `<w:p><w:r><w:t>${t}</w:t></w:r></w:p>`;
+  const ln = '<w:lnNumType w:countBy="1" w:restart="newSection"/>';
+  const body = [1, 2, 3, 4, 5, 6].map((i) => p(`${i}. ${lorem}`)).join('')
+    + `<w:p><w:pPr><w:sectPr>${ln}<w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/><w:cols w:num="3" w:space="720"/></w:sectPr></w:pPr></w:p>`
+    + p('After the columns, one column again.') + p('A second line of the last section.')
+    + `<w:sectPr><w:type w:val="continuous"/>${ln}<w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>`;
+  const rel = (id: string, kind: string, target: string) => `<Relationship Id="${id}" Type="${R_NS}/${kind}" Target="${target}"/>`;
+  return storedZip([
+    { name: '[Content_Types].xml', data: xml('<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+      + '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+      + '<Default Extension="xml" ContentType="application/xml"/>'
+      + '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>') },
+    { name: '_rels/.rels', data: xml(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${rel('rId1', 'officeDocument', 'word/document.xml')}</Relationships>`) },
+    { name: 'word/document.xml', data: xml(`<w:document xmlns:w="${W_NS}"><w:body>${body}</w:body></w:document>`) },
+  ]);
+}
+
+test('in columns each column is numbered on from the one before, and a new section restarts', async ({ page }) => {
+  await page.goto('/test-harness.html');
+  await page.waitForFunction(() => (window as any).DocxodusReady === true, { timeout: 30000 });
+  await page.evaluate((bytes) => {
+    const host = document.createElement('div');
+    host.id = 'ln-cols';
+    document.body.appendChild(host);
+    const D = (window as any).Docxodus;
+    (window as any).__ed = D.DocxEditor.open(host, new Uint8Array(bytes), D, { paginated: true });
+  }, Array.from(columnsFixture()));
+  await expect(page.locator('#ln-cols .docx-line-numbers span').first()).toBeVisible();
+  const spans = await page.evaluate(() => Array.from(document.querySelectorAll('#ln-cols .docx-line-numbers span')).map((s) => {
+    const r = s.getBoundingClientRect();
+    return { n: Number(s.textContent), x: Math.round(r.right), y: Math.round(r.top) };
+  }));
+  // 6 paragraphs of 7 lines in three columns; the empty paragraph that carries the break takes no number.
+  expect(spans.length).toBe(42 + 2);
+  // No two numbers drawn on top of each other.
+  const places = new Set(spans.map((s) => `${s.x},${s.y}`));
+  expect(places.size).toBe(spans.length);
+  // The last section's two lines restart at 1, and come last.
+  const tail = spans.slice(-2).map((s) => s.n);
+  expect(tail).toEqual([1, 2]);
+  // In the column section, ordered by column (x) then top: 1, 2, 3, ... with no gap or repeat.
+  const columns = spans.slice(0, -2).sort((a, b) => a.x - b.x || a.y - b.y).map((s) => s.n);
+  expect(columns).toEqual(Array.from({ length: columns.length }, (_, i) => i + 1));
+  expect(new Set(spans.slice(0, -2).map((s) => s.x)).size).toBe(3);
+});
