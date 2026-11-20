@@ -62,6 +62,7 @@ import type {
   RevisionIdentity,
   RevisionAuthorNameInfo,
   SectionInfo,
+  LineNumbering,
   SectionStart,
   StyleInfo,
   TableBorderSpec,
@@ -6468,7 +6469,7 @@ export class DocxEditor {
 
   /** True when a list item's number on the page differs from the number the document gives it
    *  (bullets, whose glyph the engine does not report, are not compared). */
-  /** The body's sections as the engine has them now (columns, start, page), one entry per
+  /** The body's sections as the engine has them now (columns, start, page, line numbers), one entry per
    *  section the view shows, for telling whether a step changed any. */
   private sectionSignature(): string {
     if (this.closed) return "";
@@ -6486,7 +6487,8 @@ export class DocxEditor {
       try {
         const i = JSON.parse(bridge.GetSectionInfo(this.handle, fullId)) as SectionInfo | null;
         if (i) out.push(JSON.stringify([i.columns, i.columnSpaceTwips, i.columnSeparator, i.sectionStart,
-          i.pageWidthTwips, i.pageHeightTwips, i.marginTopTwips, i.marginBottomTwips, i.marginLeftTwips, i.marginRightTwips]));
+          i.pageWidthTwips, i.pageHeightTwips, i.marginTopTwips, i.marginBottomTwips, i.marginLeftTwips, i.marginRightTwips,
+          i.lineNumbering ?? null]));
       } catch {
         // (an engine without section info: nothing to compare)
       }
@@ -8053,6 +8055,52 @@ export class DocxEditor {
     if (!res.success) return false;
     // Columns and any new sections are section wrappers, which only the full render lays out.
     this.remount(this.blockIndex(first), false);
+    return true;
+  }
+
+  /** The line numbering of the section holding the caret, or null when it has none. */
+  lineNumbering(): LineNumbering | null {
+    return this.sectionInfo()?.lineNumbering ?? null;
+  }
+
+  /**
+   * Word's Line Numbers: `lineNumbering` (`countBy: 0` turns them off) for the caret's section, or
+   * with `applyTo: "document"` for every section, as one edit. They show in the page view.
+   */
+  setLineNumbering(lineNumbering: LineNumbering, applyTo: "section" | "document" = "section"): boolean {
+    this.assertOpen();
+    const bridge = this.exports.DocxSessionBridge;
+    if (typeof bridge.SetPageSetup !== "function") return false;
+    let anchors: string[];
+    if (applyTo === "document") {
+      // The first body block of each section stands for it: page view stamps a block's section on
+      // it, the continuous view keeps blocks inside their section's element.
+      const seen = new Map<string, string>();
+      for (const block of this.editableList()) {
+        if (this.isBandBlock(block) || block.closest("td, th")) continue;
+        const key = block.dataset.paginationSection
+          ?? block.closest<HTMLElement>("[data-section-index]")?.dataset.sectionIndex ?? "0";
+        const id = this.anchorIdOf(block);
+        if (id && !seen.has(key)) seen.set(key, id);
+      }
+      anchors = [...seen.values()];
+    } else {
+      const info = this.sectionInfo();
+      anchors = info ? [info.anchorId] : [];
+    }
+    if (!anchors.length) return false;
+    const op = JSON.stringify({ lineNumbering });
+    const tx = typeof bridge.BeginTransaction === "function" ? bridge.BeginTransaction(this.handle) : 0;
+    let ok = true;
+    for (const anchor of anchors) {
+      if (!this.parseEdit(bridge.SetPageSetup(this.handle, anchor, op)).success) { ok = false; break; }
+    }
+    if (tx) {
+      if (ok) bridge.CommitTransaction!(tx);
+      else bridge.RollbackTransaction?.(tx);
+    }
+    if (!ok) return false;
+    this.remount(this.activeBlock ? this.blockIndex(this.activeBlock) : -1, false);
     return true;
   }
 

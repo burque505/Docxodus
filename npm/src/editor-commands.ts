@@ -396,6 +396,21 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   },
 
   // ── layout ──
+  lineNumbers: {
+    group: "layout",
+    description: "Word's Line Numbers for the caret's section (applyTo \"document\": every section): countBy (0 turns them off), start, distanceTwips (absent = Auto), restart newPage|newSection|continuous. They show in page view.",
+    args: { countBy: "number", "start?": "number", "distanceTwips?": "number", "restart?": "newPage|newSection|continuous", "applyTo?": "section|document" },
+    run: (e, a) => e.setLineNumbering({
+      countBy: Math.round(a.number("countBy")),
+      ...(a.optNumber("start") !== undefined ? { start: Math.round(a.optNumber("start")!) } : {}),
+      ...(a.optNumber("distanceTwips") !== undefined ? { distanceTwips: Math.round(a.optNumber("distanceTwips")!) } : {}),
+      ...(a.optOneOf("restart", ["newPage", "newSection", "continuous"] as const) ? { restart: a.optOneOf("restart", ["newPage", "newSection", "continuous"] as const) } : {}),
+    }, a.optOneOf("applyTo", ["section", "document"] as const) ?? "section"),
+  },
+  suppressLineNumbers: {
+    group: "layout", description: "Word's Suppress for Current Paragraph (or on: false to number it again).",
+    args: { "on?": "boolean" }, run: (e, a) => e.setSuppressLineNumbers(a.optBool("on") ?? true),
+  },
   columns: {
     group: "layout",
     description: "Set the text columns: how many (equal), the space between in twips, a line between; applyTo is Word's Apply to (selection when text is selected, else section).",

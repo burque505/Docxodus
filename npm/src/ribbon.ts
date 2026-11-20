@@ -43,7 +43,7 @@ import type { RibbonHistoryBinding } from './ribbon-history.js';
 export type { RibbonHistoryBinding, RibbonHistoryOptions } from './ribbon-history.js';
 import type { BandWhich } from "./editor-headerfooter.js";
 import { TrackedChangeMode } from "./types.js";
-import type { ColumnsApplyTo, ColumnsOp, ListFormat, ListLevelSpec, NumberFormat, SectionStart } from "./types.js";
+import type { ColumnsApplyTo, ColumnsOp, LineNumbering, ListFormat, ListLevelSpec, NumberFormat, SectionStart } from "./types.js";
 import {
   COMMON_FONTS,
   HIGHLIGHT_COLORS,
@@ -60,6 +60,7 @@ import type { CaseMode, HeadlineCaseLists } from "./change-case.js";
 import { FIND_OPTION_KEYS, findOptionApplies, normalizeFindOptions, specialFindCodes, specialReplaceCodes, type FindOptions } from "./find-query.js";
 import { LIST_DIALOG_CSS, LIST_DIALOG_HTML, ListDialog } from "./ribbon-list-dialog.js";
 import { COLUMNS_DIALOG_CSS, COLUMNS_DIALOG_HTML, ColumnsDialog } from "./ribbon-columns-dialog.js";
+import { LINE_NUMBERS_DIALOG_CSS, LINE_NUMBERS_DIALOG_HTML, LineNumbersDialog } from "./ribbon-linenumbers-dialog.js";
 import { TABLE_DIALOG_CSS, TABLE_DIALOG_HTML, TableDialog, type TableDialogResult, type TableDialogTab } from "./ribbon-table-dialog.js";
 import { PICTURE_DIALOG_CSS, PICTURE_DIALOG_HTML, PICTURE_MENU_HTML, PictureDialog, type PictureDialogResult, type PictureDialogTab } from "./ribbon-picture-dialog.js";
 import { formatLength, parseLength } from "./ribbon-paragraph-dialog.js";
@@ -338,6 +339,9 @@ export interface RibbonEditor {
   openListDialog(): boolean;
   /** Open the Columns dialog (Word's More Columns) on the caret's section; false when no document is open. */
   openColumnsDialog(): boolean;
+  /** Open the Line Numbers dialog (Word's Line Numbering Options) on the caret's section; false
+   *  when no document is open. */
+  openLineNumbersDialog(): boolean;
   /** Open the picture dialog (Size, Text Wrapping and Position, Alt Text) on the selected picture;
    *  false when no picture is selected. */
   openPictureDialog(tab?: "size" | "layout" | "alt"): boolean;
@@ -423,7 +427,7 @@ const CONTROL_NAMES = [
   "comment", "commentdelete", "commentprev", "commentnext", "commentresolve", "showcomments",
   "commentcount", "trackchanges", "markup", "author", "revcount",
   "viewpage", "viewweb", "zoom", "zoomfit", "zoomonepage", "showrail", "showhint",
-  "shadebtn", "shadebar", "shade", "repeatheader", "tblheight", "tblwidth", "tblprops", "tabledialog",
+  "shadebtn", "shadebar", "shade", "repeatheader", "tblheight", "tblwidth", "tblprops", "tabledialog", "linenumbers", "linenumbersdialog",
   "hfFirst", "hfEven", "hfstory",
   "findbar", "findtext", "findprev", "findnext", "findcount", "findcase", "findoptions", "findspecial",
   "findoptmenu", "findspecialmenu", "replacegroup",
@@ -451,7 +455,7 @@ function ensureStyles(doc: Document): void {
   existing?.remove();
   const style = doc.createElement("style");
   style.setAttribute(RIBBON_STYLE_ATTR, RIBBON_STYLE_VERSION);
-  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS;
+  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS;
   (doc.head ?? doc.documentElement).appendChild(style);
 }
 
@@ -554,6 +558,7 @@ class RibbonSurface implements RibbonEditor {
   private columnsRange: Range | null = null;
   private pictureDialog!: PictureDialog;
   private tableDialog!: TableDialog;
+  private lineNumbersDialog!: LineNumbersDialog;
   private pictureUnit: MeasurementUnit = "in";
   private listDialog!: ListDialog;
   private listDefaults: ListLevelSpec[] | undefined;
@@ -600,7 +605,7 @@ class RibbonSurface implements RibbonEditor {
     root.className = "dxr";
     root.dataset.state = "idle";
     root.dataset.frame = this.options.frame ?? "flush";
-    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML + TABLE_DIALOG_HTML;
+    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML + TABLE_DIALOG_HTML + LINE_NUMBERS_DIALOG_HTML;
     for (const el of Array.from(root.querySelectorAll<HTMLElement>("[data-dxr]"))) {
       el.id = this.idPrefix + el.dataset.dxr;
     }
@@ -1739,6 +1744,45 @@ class RibbonSurface implements RibbonEditor {
     this.syncLayoutState();
   }
 
+  private wireLineNumbers(): void {
+    this.lineNumbersDialog = new LineNumbersDialog(this.require<HTMLDialogElement>("linenumbersdialog"), {
+      read: () => this.live?.sectionInfo() ?? null,
+      apply: (lineNumbering, applyTo) => this.applyLineNumbering(lineNumbering, applyTo),
+    }, this.options.measurementUnit ?? "in");
+    const menu = this.require<HTMLSelectElement>("linenumbers");
+    menu.addEventListener("change", () => {
+      const v = menu.value;
+      menu.value = "";
+      if (!this.live || !v) return;
+      if (v === "more") { this.openLineNumbersDialog(); return; }
+      if (v === "suppress") {
+        this.run("suppress line numbers", () => this.live!.setSuppressLineNumbers(true), cmd("suppressLineNumbers", { on: true }));
+        return;
+      }
+      if (v === "none") { this.applyLineNumbering({ countBy: 0 }); return; }
+      // Word keeps the section's count-by, start and distance and changes only when numbering restarts.
+      const current = this.live.lineNumbering();
+      this.applyLineNumbering({ countBy: current?.countBy ?? 1, start: current?.start ?? 1,
+        ...(current?.distanceTwips !== undefined ? { distanceTwips: current.distanceTwips } : {}),
+        restart: v as "newPage" | "newSection" | "continuous" });
+    });
+  }
+
+  /** Set line numbering as the menu or dialog asked; in the continuous view, say where they show. */
+  private applyLineNumbering(lineNumbering: LineNumbering, applyTo: "section" | "document" = "section"): void {
+    this.run("line numbers", () => this.live!.setLineNumbering(lineNumbering, applyTo),
+      cmd("lineNumbers", { ...lineNumbering, ...(applyTo === "document" ? { applyTo } : {}) }));
+    if (lineNumbering.countBy > 0 && !this.require<HTMLInputElement>("paginated").checked)
+      this.setStatus(this.translateText(RIBBON_STATUS_TEXTS.lineNumbersPageView));
+  }
+
+  openLineNumbersDialog(): boolean {
+    if (!this.live || this.lineNumbersDialog.open || this.columnsDialog.open || this.listDialog.open
+      || this.paragraphDialog.open) return false;
+    this.closePopovers();
+    return this.lineNumbersDialog.show();
+  }
+
   openColumnsDialog(): boolean {
     if (!this.live || this.columnsDialog.open || this.listDialog.open || this.paragraphDialog.open) return false;
     this.closePopovers();
@@ -1773,6 +1817,7 @@ class RibbonSurface implements RibbonEditor {
     this.columnsDialog.setUnit(unit);
     this.pictureDialog.setUnit(unit);
     this.tableDialog.setUnit(unit);
+    this.lineNumbersDialog.setUnit(unit);
     this.pictureUnit = unit;
     this.pictureChanged(this.live?.selectedPicture() ?? null);
   }
@@ -1783,6 +1828,7 @@ class RibbonSurface implements RibbonEditor {
     this.wireColumns();
     this.wirePicture();
     this.wireTable();
+    this.wireLineNumbers();
     const ribbon = this.require("ribbon");
 
     // (the File tab opens a menu instead: wireFileMenu)

@@ -26,12 +26,12 @@ async function mount(page: Page) {
 
 /** Each table cell's paragraphs, as text. */
 const cells = (page: Page) => page.evaluate(() =>
-  Array.from(document.querySelectorAll('#cj-host td')).map((td) =>
+  Array.from(document.querySelectorAll('#cj-host [data-dxr="editor"] td')).map((td) =>
     Array.from(td.querySelectorAll<HTMLElement>('[data-anchor][contenteditable="true"]'))
       .map((p) => (p.textContent ?? '').replace(/ /g, ' ').trim())));
 
 const inCell = (page: Page, cell: number, paragraph: number) =>
-  page.locator(`${HOST} td`).nth(cell).locator('[data-anchor][contenteditable="true"]').nth(paragraph);
+  page.locator(`${HOST} [data-dxr="editor"] td`).nth(cell).locator('[data-anchor][contenteditable="true"]').nth(paragraph);
 
 /** A 1×2 table whose first cell holds an empty paragraph, "Text" and another empty paragraph. */
 async function cellWithEmptyParagraphs(page: Page) {

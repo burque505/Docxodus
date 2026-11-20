@@ -29,7 +29,7 @@
  */
 
 /** Bumped whenever RIBBON_CSS changes, so a stale injected stylesheet is replaced. */
-export const RIBBON_STYLE_VERSION = "16";
+export const RIBBON_STYLE_VERSION = "17";
 export const RIBBON_STYLE_ATTR = "data-docxodus-ribbon-styles";
 
 /** Width of the comment gutter the surface reserves beside the sheet, in px. */
@@ -1253,6 +1253,15 @@ export const RIBBON_HTML = `
             <option value="3">Three</option>
             <option value="more">More columns&#8230;</option>
           </select>
+          <select data-dxr="linenumbers" title="Number the lines in the margin (shown in page view)">
+            <option value="">Line Numbers&#8230;</option>
+            <option value="none">None</option>
+            <option value="continuous">Continuous</option>
+            <option value="newPage">Restart Each Page</option>
+            <option value="newSection">Restart Each Section</option>
+            <option value="suppress">Suppress for Current Paragraph</option>
+            <option value="more">Line Numbering Options&#8230;</option>
+          </select>
           <select data-dxr="pagesize" title="Paper size for this section">
             <option value="">Size&#8230;</option>
             <option value="12240,15840">Letter — 8.5 &times; 11&quot;</option>
@@ -1722,6 +1731,7 @@ export const RIBBON_STATUS_TEXTS = {
   pictureRefused: "This picture cannot be changed that way",
   breakRefused: "A break goes in a body paragraph, not in a table, header or footer, nor while changes are tracked",
   columnsRefused: "Columns go in the body, each at least half an inch wide, and a new section cannot start while changes are tracked",
+  lineNumbersPageView: "Line numbers show in page view",
 } as const;
 
 /** The default hint copy, shown above the document in full chrome. */
