@@ -113,6 +113,22 @@ internal static class BlockMetadataOps
         // scopes, derive the same deterministic identity without mutating the live package.
         var sectionUnid = UnidHelper.ReadOrDeriveUnid(sectPr);
 
+        // Line numbering: w:start is one less than the first number shown, as Word writes it.
+        var lnNumType = sectPr.Element(W.lnNumType);
+        int countBy = ParseInt((string?)lnNumType?.Attribute(W.countBy)) ?? 0;
+        LineNumbering? lineNumbering = lnNumType is null || countBy <= 0 ? null : new LineNumbering
+        {
+            CountBy = countBy,
+            Start = (ParseInt((string?)lnNumType.Attribute(W.start)) ?? 0) + 1,
+            DistanceTwips = ParseInt((string?)lnNumType.Attribute(W.distance)),
+            Restart = (string?)lnNumType.Attribute(W.restart) switch
+            {
+                "continuous" => LineNumberRestart.Continuous,
+                "newSection" => LineNumberRestart.NewSection,
+                _ => LineNumberRestart.NewPage,
+            },
+        };
+
         return new SectionInfo
         {
             AnchorId = target.Anchor.Id,
@@ -129,6 +145,7 @@ internal static class BlockMetadataOps
             TitlePage = titlePage,
             EvenAndOddHeaders = evenAndOddHeaders,
             Columns = colCount,
+            LineNumbering = lineNumbering,
             // The URI lists keep their original meaning — this section's OWN references — so only
             // the (new) *Refs lists carry inherited stories.
             HeaderPartUris = ownHeaderRefs.Select(r => r.PartUri).ToList(),

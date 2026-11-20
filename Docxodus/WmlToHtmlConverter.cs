@@ -6476,6 +6476,10 @@ namespace Docxodus
             if (IsOnOffPropertyEnabled(closingPPr?.Element(W.keepLines)))
                 htmlParagraph.Add(new XAttribute("data-keep-lines", "true"));
 
+            // w:suppressLineNumbers - the paginated view neither numbers nor counts its lines
+            if (IsOnOffPropertyEnabled(closingPPr?.Element(W.suppressLineNumbers)))
+                htmlParagraph.Add(new XAttribute("data-suppress-line-numbers", "true"));
+
             // Its line is the preceding paragraph's, so it stays on that page after a page break.
             if ((string?)firstParagraph.Attribute(StructuralParagraphAttribute) == SectionMarkParagraph)
                 htmlParagraph.Add(new XAttribute("data-section-mark", "true"));
@@ -7492,6 +7496,19 @@ namespace Docxodus
                     if ((string?)pgNumType?.Attribute(W.fmt) is { } pgFmt)
                         div.Add(new XAttribute("data-page-num-fmt", pgFmt));
 
+                    // The section's line numbering (w:lnNumType), which the paginated view draws in
+                    // the margin from the laid-out lines. w:start is one less than the first number
+                    // shown; an absent w:distance is Word's automatic gap; restart defaults to newPage.
+                    var lnNumType = sectAnnotation?.SectionElement!.Element(W.lnNumType);
+                    if ((int?)lnNumType?.Attribute(W.countBy) is int countBy && countBy > 0)
+                    {
+                        div.Add(new XAttribute("data-line-numbers", countBy));
+                        div.Add(new XAttribute("data-line-number-start", ((int?)lnNumType!.Attribute(W.start) ?? 0) + 1));
+                        if (WordprocessingMLUtil.AttributeToTwips(lnNumType.Attribute(W.distance)) is { } distance)
+                            div.Add(new XAttribute("data-line-number-distance", PageGeometryValue(distance / 20m)));
+                        div.Add(new XAttribute("data-line-number-restart", (string?)lnNumType.Attribute(W.restart) ?? "newPage"));
+                    }
+
                     sectionIndex++;
                     return div;
                 })
@@ -7661,7 +7678,6 @@ namespace Docxodus
          * - pageBreakBefore
          * - snapToGrid
          * - suppressAutoHyphens
-         * - suppressLineNumbers
          * - suppressOverlap
          * - tabs
          * - textBoxTightWrap
