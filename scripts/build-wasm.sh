@@ -190,7 +190,13 @@ du -sh "$WASM_DIST"
 # merged, CI runners measured the payload at 6,069,718 to 6,072,589 bytes, up to 2,317 over
 # 5928 KiB. 8 KiB more covers that spread between runners. Assembly roots, dependencies and
 # the AOT profile are unchanged.
-# Both together: 5928 + 64 + 8 KiB.
+# A list's levels and Continue Numbering (#1790: GetListLevels, SetListLevels, ContinueNumbering,
+# their JSON and the numbering-definition code behind them) add 6,440 bytes, measured by two local
+# builds of main 4d94dc32 and the branch that differ only in that change (6,057,148 -> 6,063,588).
+# CI measured the branch at 6,078,467 bytes before its rebase, 3 over 5936 KiB. 8 KiB more covers
+# the change with the spread between runners; assembly roots, dependencies and the AOT profile are
+# unchanged.
+# (#1773/#1776 era) Both together: 5928 + 64 + 8 KiB.
 # 2026-11-19 (dAHKxodus fork): section breaks, page/column breaks and the fork's M5 editor ops
 # measured 6,145,117 bytes, 1,117 over 6000 KiB; 16 KiB more covers it and the next small ops.
 # Assembly roots, dependencies and the AOT profile are unchanged.
