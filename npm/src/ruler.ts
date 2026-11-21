@@ -110,6 +110,9 @@ const MARKER_SVG: Record<string, string> = {
   rightMargin: "",
 };
 
+/** The narrowest text an indent drag leaves a paragraph: 1/8 inch. */
+const MIN_TEXT_TWIPS = 180;
+
 /** Twips per snap step: 1/16 inch, or 0.25 cm. */
 const SNAP: Record<RulerUnit, number> = { in: 90, cm: 1440 / 2.54 / 4 };
 
@@ -392,7 +395,12 @@ export class Ruler {
     let clientX: number;
     switch (drag.kind) {
       case "rightIndent": {
-        drag.twips = -this.twipsAt(ev.clientX, free, s.originRight);
+        // The right indent stops short of the left and first-line indents (Word keeps a sliver of
+        // text width: a paragraph with none can no longer be clicked into), and at its reach.
+        const width = (s.originRight - s.originLeft) / s.pxPerTwip;
+        const maxTwips = Math.floor(width - Math.max(s.leftIndent, s.leftIndent + s.firstLine) - MIN_TEXT_TWIPS);
+        const minTwips = Math.round((s.originRight - s.boundsRight) / s.pxPerTwip);
+        drag.twips = Math.max(minTwips, Math.min(maxTwips, -this.twipsAt(ev.clientX, free, s.originRight)));
         clientX = s.originRight - drag.twips * s.pxPerTwip;
         break;
       }
@@ -423,9 +431,15 @@ export class Ruler {
         break;
       }
       default: {
-        // An indent stays within its reach: a table cell's edges, else the page's.
+        // An indent stays within its reach (a table cell's edges, else the page's) and, as the
+        // right indent, short of the other side: the first line and the other lines both keep
+        // some text width. (A tab stop only keeps within the reach.)
         const minTwips = Math.round((s.boundsLeft - s.originLeft) / s.pxPerTwip);
-        const maxTwips = Math.round((s.boundsRight - s.originLeft) / s.pxPerTwip);
+        let maxTwips = Math.round((s.boundsRight - s.originLeft) / s.pxPerTwip);
+        const rightEdge = Math.floor((s.originRight - s.originLeft) / s.pxPerTwip - s.rightIndent - MIN_TEXT_TWIPS);
+        if (drag.kind === "firstLine" || drag.kind === "hanging") maxTwips = Math.min(maxTwips, rightEdge);
+        // (the box carries the first line with it)
+        if (drag.kind === "leftIndent") maxTwips = Math.min(maxTwips, rightEdge, rightEdge - s.firstLine);
         drag.twips = Math.max(minTwips, Math.min(maxTwips, this.twipsAt(ev.clientX, free, s.originLeft)));
         clientX = s.originLeft + drag.twips * s.pxPerTwip;
       }

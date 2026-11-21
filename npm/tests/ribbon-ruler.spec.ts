@@ -236,3 +236,20 @@ test('dragging a column marker moves the boundary between two columns; one undo'
   await page.keyboard.press('Control+z');
   await expect.poll(() => widths(page)).toEqual(before);
 });
+
+test('the right indent cannot cross the left one: the paragraph keeps a sliver of width and stays editable', async ({ page }) => {
+  await inTable(page);
+  const s = await state(page);
+  const marker = (await mark(page, 'rightIndent').boundingBox())!;
+  await page.mouse.move(marker.x + marker.width / 2, marker.y + marker.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(s.pageLeft, marker.y + marker.height / 2, { steps: 6 });
+  await page.mouse.up();
+  await expect.poll(async () => (await format(page))?.rightIndent ?? 0).toBeGreaterThan(0);
+  const paragraph = page.locator(`${HOST} td`).nth(1).locator('[contenteditable="true"]').first();
+  expect((await paragraph.boundingBox())!.width).toBeGreaterThan(5);
+  await paragraph.click();
+  // (each letter is a line of its own now: the typing is what matters)
+  await page.keyboard.type('!');
+  await expect(paragraph).toContainText('!');
+});
