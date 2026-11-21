@@ -434,8 +434,11 @@ export class Ruler {
         // An indent stays within its reach (a table cell's edges, else the page's) and, as the
         // right indent, short of the other side: the first line and the other lines both keep
         // some text width. (A tab stop only keeps within the reach.)
-        const minTwips = Math.round((s.boundsLeft - s.originLeft) / s.pxPerTwip);
+        let minTwips = Math.round((s.boundsLeft - s.originLeft) / s.pxPerTwip);
         let maxTwips = Math.round((s.boundsRight - s.originLeft) / s.pxPerTwip);
+        // The box carries the first line: with a hanging indent that sits left of the box, and it
+        // must stay within the reach too (else it lands in the cell to the left).
+        if (drag.kind === "leftIndent" && s.firstLine < 0) minTwips -= s.firstLine;
         const rightEdge = Math.floor((s.originRight - s.originLeft) / s.pxPerTwip - s.rightIndent - MIN_TEXT_TWIPS);
         if (drag.kind === "firstLine" || drag.kind === "hanging") maxTwips = Math.min(maxTwips, rightEdge);
         // (the box carries the first line with it)

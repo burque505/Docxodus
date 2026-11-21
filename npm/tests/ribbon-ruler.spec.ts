@@ -253,3 +253,17 @@ test('the right indent cannot cross the left one: the paragraph keeps a sliver o
   await page.keyboard.type('!');
   await expect(paragraph).toContainText('!');
 });
+
+test('in a cell, the left box with a hanging indent stops where the first line meets the cell edge', async ({ page }) => {
+  await inTable(page);
+  const s0 = await state(page);
+  await drag(page, 'hanging', 900);
+  await expect.poll(async () => (await format(page))?.hangingIndent ?? 0).toBeGreaterThan(0);
+  await drag(page, 'leftIndent', -4000);
+  await expect.poll(async () => (await format(page))?.leftIndent ?? 0).toBeLessThan(900);
+  const firstLineX = await page.evaluate(() => {
+    const p = document.querySelectorAll('#ru-host td')[1].querySelector('[contenteditable="true"]') as HTMLElement;
+    return p.getBoundingClientRect().left + parseFloat(getComputedStyle(p).textIndent);
+  });
+  expect(firstLineX).toBeGreaterThanOrEqual(s0.boundsLeft - 1);
+});
