@@ -570,6 +570,7 @@ class RibbonSurface implements RibbonEditor {
   private rulerFrame: number | null = null;
   private rulerUnit: MeasurementUnit = "in";
   private rulerObserver: ResizeObserver | null = null;
+  private focusRing: HTMLElement | null = null;
   private pictureUnit: MeasurementUnit = "in";
   private listDialog!: ListDialog;
   private listDefaults: ListLevelSpec[] | undefined;
@@ -1408,6 +1409,7 @@ class RibbonSurface implements RibbonEditor {
     this.rulerFrame = null;
     this.rulerObserver?.disconnect();
     this.ruler?.destroy();
+    this.focusRing?.remove();
     if (this.statsTimer != null) clearTimeout(this.statsTimer);
     this.stopRotation();
     try {
@@ -1842,13 +1844,48 @@ class RibbonSurface implements RibbonEditor {
     this.scheduleRuler();
   }
 
-  /** Redraw the ruler on the next frame (caret moves, edits, scrolling, zoom all ask). */
+  /** Redraw the ruler and the hanging paragraph's focus ring on the next frame (caret moves,
+   *  edits, scrolling, zoom all ask). */
   private scheduleRuler(): void {
-    if (!this.ruler || this.ruler.element.hidden || this.rulerFrame != null || this.destroyed) return;
+    if (!this.ruler || this.rulerFrame != null || this.destroyed) return;
     this.rulerFrame = requestAnimationFrame(() => {
       this.rulerFrame = null;
-      this.ruler.refresh();
+      this.syncFocusRing();
+      if (!this.ruler.element.hidden) this.ruler.refresh();
     });
+  }
+
+  /** The focus outline of a paragraph whose first line hangs left of its box: around the box and
+   *  that line (a CSS outline follows the box only, and the ribbon's CSS hides it for these). */
+  private syncFocusRing(): void {
+    const doc = this.element.ownerDocument;
+    const active = doc.activeElement as HTMLElement | null;
+    const block = active?.closest?.<HTMLElement>('[data-anchor][contenteditable="true"]') ?? null;
+    const hang = block && this.surface.contains(block) && typeof getComputedStyle === "function"
+      ? parseFloat(getComputedStyle(block).textIndent) : 0;
+    if (!block || !(hang < 0)) {
+      if (this.focusRing) this.focusRing.hidden = true;
+      return;
+    }
+    if (!this.focusRing) {
+      this.focusRing = doc.createElement("div");
+      this.focusRing.className = "dxr-focusring";
+      this.focusRing.dataset.dxr = "focusring";
+      this.element.appendChild(this.focusRing);
+    }
+    const r = block.getBoundingClientRect();
+    const scale = block.offsetWidth > 0 ? r.width / block.offsetWidth : 1;
+    // (the CSS outline's 2px offset and 2px width)
+    const left = Math.min(r.left, r.left + hang * scale) - 4, top = r.top - 4;
+    const right = r.right + 4, bottom = r.bottom + 4;
+    const area = this.element.querySelector<HTMLElement>("[data-dxr-scroll]")?.getBoundingClientRect();
+    const clip = area
+      ? `inset(${Math.max(0, area.top - top)}px ${Math.max(0, right - area.right)}px ${Math.max(0, bottom - area.bottom)}px ${Math.max(0, area.left - left)}px)`
+      : "none";
+    Object.assign(this.focusRing.style, {
+      left: `${left}px`, top: `${top}px`, width: `${right - left}px`, height: `${bottom - top}px`, clipPath: clip,
+    });
+    this.focusRing.hidden = false;
   }
 
   openTabsDialog(): boolean {

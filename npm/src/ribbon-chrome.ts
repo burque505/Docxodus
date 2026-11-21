@@ -29,7 +29,7 @@
  */
 
 /** Bumped whenever RIBBON_CSS changes, so a stale injected stylesheet is replaced. */
-export const RIBBON_STYLE_VERSION = "19";
+export const RIBBON_STYLE_VERSION = "20";
 export const RIBBON_STYLE_ATTR = "data-docxodus-ribbon-styles";
 
 /** Width of the comment gutter the surface reserves beside the sheet, in px. */
@@ -526,6 +526,10 @@ export const RIBBON_CSS = `
   outline-offset: 2px;
   border-radius: 2px;
 }
+/* A first line hanging left of the paragraph's box would sit outside that outline: the ribbon
+   draws the ring itself around both (.dxr-focusring). */
+.dxr-surface [contenteditable="true"][style*="text-indent: -"]:focus,
+.dxr-surface [contenteditable="true"][style*="text-indent:-"]:focus { outline-color: transparent; }
 @media (hover: hover) { .dxr-surface [contenteditable="true"]:hover { background: var(--dxr-wash); } }
 
 /* Header/footer bands (continuous view): the top and bottom margin of the sheet, drawn the way

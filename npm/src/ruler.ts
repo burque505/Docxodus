@@ -57,26 +57,35 @@ export interface RulerHost {
 }
 
 export const RULER_CSS = `
-.dxr-ruler { position: relative; height: 22px; flex: none; overflow: hidden; user-select: none;
+.dxr-ruler { position: relative; height: 26px; flex: none; overflow: hidden; user-select: none;
   background: var(--dxr-desk); border-bottom: 1px solid var(--dxr-rule); touch-action: none;
   --dxr-ruler-paper: var(--dxr-sheet); --dxr-ruler-margin: var(--dxr-rule-strong);
-  --dxr-ruler-ink: var(--dxr-muted); --dxr-ruler-marker: var(--dxr-ink); }
+  --dxr-ruler-ink: var(--dxr-muted); --dxr-ruler-marker: var(--dxr-ink); --dxr-ruler-hot: var(--dxr-accent); }
 .dxr-ruler[hidden] { display: none; }
 .dxr-ruler canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-.dxr-ruler-mark { position: absolute; width: 9px; margin-left: -4.5px; cursor: ew-resize; color: var(--dxr-ruler-marker); }
+/* Each marker is a 13px-wide grab area around its symbol, in a band of its own from top to bottom
+   (first line, table column, hanging indent, left box), so neighbours are hard to mistake; the
+   one under the mouse takes the accent colour before it is pressed. */
+.dxr-ruler-mark { position: absolute; width: 13px; margin-left: -6.5px; cursor: ew-resize;
+  color: var(--dxr-ruler-marker); display: flex; justify-content: center; }
 .dxr-ruler-mark svg { display: block; width: 9px; overflow: visible; }
-.dxr-ruler-mark[data-mark="firstLine"] { top: 0; height: 7px; }
-.dxr-ruler-mark[data-mark="hanging"] { top: 13px; height: 5px; }
-.dxr-ruler-mark[data-mark="leftIndent"] { top: 18px; height: 4px; }
-.dxr-ruler-mark[data-mark="rightIndent"] { top: 13px; height: 5px; }
-.dxr-ruler-mark[data-mark="tab"] { top: 11px; height: 9px; width: 9px; cursor: default; }
-.dxr-ruler-mark[data-mark="leftMargin"], .dxr-ruler-mark[data-mark="rightMargin"] { top: 7px; height: 6px;
-  width: 7px; margin-left: -3.5px; cursor: col-resize; }
-.dxr-ruler-mark[data-mark="column"] { top: 5px; height: 12px; width: 7px; margin-left: -3.5px; cursor: col-resize;
-  background: repeating-linear-gradient(0deg, var(--dxr-ruler-ink) 0 1px, var(--dxr-ruler-margin) 1px 3px);
-  border: 1px solid var(--dxr-ruler-ink); box-sizing: border-box; border-radius: 1px; }
+.dxr-ruler-mark svg [fill]:not([fill="currentColor"]) { fill: var(--dxr-ruler-paper); }
+.dxr-ruler-mark:hover, .dxr-ruler-mark[data-dragging] { color: var(--dxr-ruler-hot); }
+.dxr-ruler-mark:hover svg [fill]:not([fill="currentColor"]),
+.dxr-ruler-mark[data-dragging] svg [fill]:not([fill="currentColor"]) { fill: var(--dxr-wash-on, #ccfbf1); }
+.dxr-ruler-mark[data-mark="firstLine"] { top: 0; height: 9px; align-items: flex-start; }
+.dxr-ruler-mark[data-mark="hanging"], .dxr-ruler-mark[data-mark="rightIndent"] { top: 14px; height: 6px; align-items: flex-end; }
+.dxr-ruler-mark[data-mark="leftIndent"] { top: 20px; height: 6px; align-items: flex-start; }
+.dxr-ruler-mark[data-mark="tab"] { top: 12px; height: 11px; cursor: default; align-items: center; }
+.dxr-ruler-mark[data-mark="leftMargin"], .dxr-ruler-mark[data-mark="rightMargin"] { top: 9px; height: 5px; cursor: col-resize; }
+.dxr-ruler-mark[data-mark="column"] { top: 6px; height: 14px; cursor: col-resize; }
+.dxr-ruler-mark[data-mark="column"]::before { content: ""; width: 7px; height: 100%; box-sizing: border-box;
+  background: repeating-linear-gradient(0deg, currentColor 0 1px, var(--dxr-ruler-margin) 1px 3px);
+  border: 1px solid currentColor; border-radius: 1px; }
+.dxr-ruler-mark[data-mark="column"] { color: var(--dxr-ruler-ink); }
+.dxr-ruler-mark[data-mark="column"]:hover, .dxr-ruler-mark[data-mark="column"][data-dragging] { color: var(--dxr-ruler-hot); }
 .dxr-ruler-mark[data-removing] { opacity: .3; }
-.dxr-ruler-selector { position: absolute; left: 2px; top: 2px; width: 18px; height: 18px; padding: 0;
+.dxr-ruler-selector { position: absolute; left: 2px; top: 4px; width: 18px; height: 18px; padding: 0;
   border: 1px solid var(--dxr-rule-strong); border-radius: 3px; background: var(--dxr-chrome);
   color: var(--dxr-ruler-marker); cursor: pointer; z-index: 1; }
 .dxr-ruler-selector svg { display: block; margin: auto; width: 9px; height: 9px; overflow: visible; }
@@ -84,6 +93,11 @@ export const RULER_CSS = `
   pointer-events: none; z-index: 2147483000; }
 .dxr-ruler-tip { position: fixed; padding: 1px 5px; font: 11px var(--dxr-ui, system-ui); border-radius: 3px;
   background: var(--dxr-ink, #1e293b); color: var(--dxr-sheet, #fff); pointer-events: none; z-index: 2147483001; }
+/* The focus outline of a paragraph whose first line hangs left of its box (drawn by the ribbon
+   around the box and that line, where a CSS outline would leave the line outside). */
+.dxr-focusring { position: fixed; pointer-events: none; z-index: 1; border: 2px solid var(--dxr-accent);
+  border-radius: 2px; box-sizing: border-box; }
+.dxr-focusring[hidden] { display: none; }
 `;
 
 const TAB_KINDS: TabStopAlignment[] = ["left", "center", "right", "decimal", "bar"];
@@ -368,6 +382,7 @@ export class Ruler {
     }
     ev.preventDefault();
     this.element.setPointerCapture?.(ev.pointerId);
+    mark?.setAttribute("data-dragging", "");
     this.drag = { kind, element: mark, tab, startX: ev.clientX, startY: ev.clientY, moved: false, removing: false, twips: 0 };
     this.element.addEventListener("pointermove", this.onPointerMove);
     this.element.addEventListener("pointerup", this.onPointerUp);

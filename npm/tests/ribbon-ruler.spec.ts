@@ -267,3 +267,34 @@ test('in a cell, the left box with a hanging indent stops where the first line m
   });
   expect(firstLineX).toBeGreaterThanOrEqual(s0.boundsLeft - 1);
 });
+
+test('markers are wide enough to grab and a column marker does not share a band with the indent markers', async ({ page }) => {
+  await inTable(page);
+  const box = async (sel: string) => (await page.locator(`${HOST} .dxr-ruler-mark${sel}`).first().boundingBox())!;
+  const column = await box('[data-mark="column"]');
+  for (const kind of ['firstLine', 'hanging', 'leftIndent', 'rightIndent']) {
+    const m = await box(`[data-mark="${kind}"]`);
+    expect(m.width, kind).toBeGreaterThanOrEqual(13);
+    // Each indent marker's grab area leaves part of the column marker's band uncovered, top or bottom.
+    const overlap = Math.min(m.y + m.height, column.y + column.height) - Math.max(m.y, column.y);
+    expect(overlap, kind).toBeLessThan(column.height / 2);
+  }
+});
+
+test('a paragraph whose first line hangs gets a focus ring around that line too', async ({ page }) => {
+  await mount(page);
+  await page.evaluate(() => (window as any).__ribbon.editor.setParagraphFormat({ leftIndent: 1440, hangingIndent: 1440 }));
+  await page.locator(`${HOST} [data-anchor][contenteditable="true"]`).first().click();
+  const ring = page.locator('[data-dxr="focusring"]');
+  await expect(ring).toBeVisible();
+  const p = (await page.locator(`${HOST} [data-anchor][contenteditable="true"]`).first().boundingBox())!;
+  const s = await state(page);
+  const r = (await ring.boundingBox())!;
+  expect(r.x).toBeLessThanOrEqual(p.x - 1440 * s.pxPerTwip - 3); // around the hanging first line
+  expect(r.x + r.width).toBeGreaterThanOrEqual(p.x + p.width + 3);
+  const outline = await page.locator(`${HOST} [data-anchor][contenteditable="true"]`).first().evaluate((el) => getComputedStyle(el).outlineColor);
+  expect(outline).toBe('rgba(0, 0, 0, 0)');
+  // No hanging line, no ring: the CSS outline is back.
+  await page.locator(`${HOST} [data-anchor][contenteditable="true"]`).nth(1).click();
+  await expect(ring).toBeHidden();
+});
