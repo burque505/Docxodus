@@ -177,3 +177,30 @@ test('in page view, Page break before moves the paragraph to a new page at once'
   await dialog(page).locator('button[value="ok"]').click();
   await expect.poll(async () => { const p = await pageOf(); return p[1] !== p[0]; }).toBe(true);
 });
+
+test('Tabs… applies the changes, as OK does, then opens the Tabs dialog on the paragraph', async ({ page }) => {
+  await mount(page);
+  await page.keyboard.type('A paragraph with a tab stop.');
+  await page.locator('#pd-host [data-dxr="paralaunch"]').click();
+  await field(page, 'left').fill('1 in');
+  await dialog(page).locator('[data-pd-tabs]').click();
+  await expect(dialog(page)).toBeHidden();
+  expect((await formats(page))[0].leftIndent).toBe(1440);
+  const commands = await page.evaluate(() => (window as any).__reported.map((r: any) => r.command).filter(Boolean));
+  expect(commands.at(-1)).toEqual({ name: 'paragraphFormat', args: { leftIndent: 1440 } });
+
+  const tabs = page.locator('#pd-host dialog[data-dxr="tabsdialog"]');
+  await expect(tabs).toBeVisible();
+  await tabs.locator('[data-tabs="position"]').fill('2');
+  await tabs.locator('button[value="ok"]').click();
+  await expect(tabs).toBeHidden();
+  await expect.poll(() => page.evaluate(() => (window as any).__ribbon.editor.rulerState()?.tabs ?? null))
+    .toEqual([{ positionTwips: 2880, alignment: 'left', leader: 'none' }]);
+
+  // A bad entry keeps the Paragraph dialog open; the Tabs dialog does not open.
+  await page.locator('#pd-host [data-dxr="paralaunch"]').click();
+  await field(page, 'left').fill('lots');
+  await dialog(page).locator('[data-pd-tabs]').click();
+  await expect(dialog(page)).toBeVisible();
+  await expect(tabs).toBeHidden();
+});

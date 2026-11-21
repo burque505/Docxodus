@@ -3,7 +3,8 @@
  * Breaks) and a preview. It opens on the paragraphs the selection covers: a field where they
  * differ is blank (a check box is mixed), and OK sets only the fields the user changed, so a
  * blank field leaves each paragraph's own value alone. The whole change is one
- * `DocxEditor.setParagraphFormat` call: one undo step, one `paragraphFormat` command.
+ * `DocxEditor.setParagraphFormat` call: one undo step, one `paragraphFormat` command. Tabs… (when
+ * the host gives `openTabs`) does what OK does, then opens the Tabs dialog, as in Word.
  *
  * Lengths show in inches or centimetres (`MeasurementUnit`); any field takes a typed unit too
  * ("2 cm", "1 in", "0.5\"", "12 pt", "15 mm", "1 pi"), with a decimal point or comma.
@@ -143,6 +144,8 @@ export const PARAGRAPH_DIALOG_CSS = `
   min-width: 76px; min-height: 30px; border: 1px solid var(--dxr-rule-strong); border-radius: 6px;
   background: var(--dxr-sheet); color: var(--dxr-ink); font: inherit; cursor: pointer;
 }
+.dxr-dialog .dxr-dfoot [data-pd-tabs] { margin-right: auto; }
+.dxr-dialog .dxr-dfoot [data-pd-tabs][hidden] { display: none; }
 .dxr-dialog .dxr-dfoot button[value="ok"] { border-color: var(--dxr-accent); background: var(--dxr-accent); color: #fff; }
 .dxr-dialog .dxr-dfoot button[value="ok"]:hover { background: var(--dxr-accent-hover); }
 .dxr-glabel .dxr-launch {
@@ -232,6 +235,7 @@ export const PARAGRAPH_DIALOG_HTML = `
     </div>
     <div class="dxr-derror" data-pd-error role="alert"><span data-pd-msg="length" hidden>Type a measurement, such as 1.5" or 2 cm.</span><span data-pd-msg="points" hidden>Type a size in points, such as 6 pt, or 0.</span><span data-pd-msg="multiple" hidden>Type how many lines, such as 1.15.</span></div>
     <div class="dxr-dfoot">
+      <button type="submit" value="tabs" data-pd-tabs hidden>Tabs…</button>
       <button type="submit" value="ok">OK</button>
       <button type="submit" value="cancel" formnovalidate>Cancel</button>
     </div>
@@ -249,6 +253,9 @@ export interface ParagraphDialogHost {
   apply(op: EditorParagraphFormat): void;
   /** Called when the dialog closes without a change (Cancel, Esc, or OK with nothing changed). */
   cancelled?(): void;
+  /** Word's Tabs… button: called after the dialog has closed and applied what changed (as OK
+   *  does), to open the Tabs dialog. Without it the dialog has no Tabs… button. */
+  openTabs?(): void;
 }
 
 /** The Paragraph dialog over its markup (`PARAGRAPH_DIALOG_HTML`, already in the page). */
@@ -288,8 +295,12 @@ export class ParagraphDialog {
       const submitter = (event as SubmitEvent).submitter as HTMLButtonElement | null;
       if (submitter?.value === "cancel") { this.finish(null); return; }
       const op = this.collect();
-      if (op !== null) this.finish(op);
+      if (op === null) return;
+      this.finish(op);
+      // Tabs… is OK, then the Tabs dialog (Word): its stops are set on the paragraphs as now formatted.
+      if (submitter?.value === "tabs") this.host.openTabs?.();
     });
+    this.dialog.querySelector<HTMLElement>("[data-pd-tabs]")!.hidden = !host.openTabs;
     // Esc closes the dialog by itself.
     dialog.addEventListener("cancel", (event) => {
       event.preventDefault();

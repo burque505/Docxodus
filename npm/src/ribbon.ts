@@ -1467,6 +1467,7 @@ class RibbonSurface implements RibbonEditor {
     this.paragraphDialog = new ParagraphDialog(this.require<HTMLDialogElement>("paradialog"), {
       read: () => this.live?.paragraphFormats() ?? [],
       apply: (op) => this.run("paragraph", () => this.live!.setParagraphFormat(op), cmd("paragraphFormat", { ...op })),
+      openTabs: () => { this.openTabsDialog(); },
     }, this.options.measurementUnit ?? "in");
     for (const name of ["paralaunch", "paralaunchlayout"]) {
       const launcher = this.control(name);
