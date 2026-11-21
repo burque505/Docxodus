@@ -32,6 +32,7 @@ async function mount(page: Page, paragraphs: string[]) {
     ribbon.setExports((window as any).Docxodus);
     ribbon.openBlank('cross.docx');
     ribbon.loader.done();
+    (window as any).__xbRibbon = ribbon;
   });
   await blocks(page).first().click();
   for (const [i, p] of paragraphs.entries()) {
@@ -173,4 +174,88 @@ test('with changes tracked, typing over paragraphs loses no text and one undo re
   expect(all).toContain('Gamma five six.');
   await page.keyboard.press('Control+z');
   await expect.poll(() => texts(page)).toEqual(PARAS);
+});
+
+const header = (page: Page) => page.locator('#xb-host [data-hf-band="header"] [data-anchor][contenteditable="true"]');
+const bodyTexts = (page: Page) => page.evaluate(() =>
+  Array.from(document.querySelectorAll<HTMLElement>('#xb-host .docx-body-flow [data-anchor][contenteditable="true"]'))
+    .map((b) => (b.textContent ?? '').replace(/\u00a0/g, ' ').trim()));
+
+test('in a header, Ctrl+A and typing edit the header (the browser selects and types there)', async ({ page }) => {
+  await mount(page, PARAS);
+  await page.locator('#xb-host [data-hf-band="header"] [data-hf-placeholder]').click();
+  await expect(header(page)).toHaveCount(1);
+  await header(page).first().click();
+  await page.keyboard.type('Head one');
+  await page.keyboard.press('Enter');
+  await page.keyboard.type('Head two');
+  await expect(header(page)).toHaveCount(2);
+
+  await page.keyboard.press('Control+a');
+  await page.keyboard.type('X');
+
+  // The key reaches the header (it used to be dropped): its paragraph now reads X.
+  await expect.poll(async () => (await header(page).allTextContents()).map((t) => t.trim())).toContain('X');
+  expect(await bodyTexts(page)).toEqual(PARAS);
+});
+
+test('over a selection reaching into a table, typing is not dropped', async ({ page }) => {
+  await mount(page, PARAS);
+  await blocks(page).nth(2).click();
+  await page.keyboard.press('End');
+  await page.evaluate(() => (window as any).__xbRibbon.editor.insertTable(1, 2, { cellContents: ['Cell A', 'Cell B'] }));
+  const all = () => page.evaluate(() =>
+    Array.from(document.querySelectorAll<HTMLElement>('#xb-host .docx-body-flow [data-anchor][contenteditable="true"]'))
+      .map((b) => (b.textContent ?? '').trim()));
+  await expect.poll(async () => (await all()).includes('Cell A')).toBe(true);
+  const cell = (await all()).indexOf('Cell A');
+  await selectAcross(page, 1, 5, cell, 4);    // from "Beta |three" into "Cell| A"
+  const before = (await all()).join('|');
+
+  await page.keyboard.type('Z');
+
+  await expect.poll(async () => (await all()).join('|')).not.toEqual(before);
+  expect((await all()).join('|')).toContain('Z');
+});
+
+test('Delete over parts of two numbered items joins what is left with no space', async ({ page }) => {
+  await mount(page, ['Hello there', 'big world']);
+  for (const i of [0, 1]) {
+    await blocks(page).nth(i).click();
+    await page.evaluate(() => (window as any).__xbRibbon.editor.toggleList('decimal'));
+  }
+  /** Block text without its list number. */
+  const plain = () => page.evaluate(() =>
+    Array.from(document.querySelectorAll<HTMLElement>('#xb-host [data-anchor][contenteditable="true"]')).map((b) => {
+      const c = b.cloneNode(true) as HTMLElement;
+      c.querySelectorAll('[data-list-marker]').forEach((m) => m.remove());
+      return (c.textContent ?? '').replace(/\u00a0/g, ' ').trim();
+    }));
+  await expect.poll(() => page.evaluate(() => Array.from(document.querySelectorAll('#xb-host [data-anchor][contenteditable="true"]')).filter((b) => b.querySelector('[data-list-marker]')).length)).toBe(2);
+  expect(await plain()).toEqual(['Hello there', 'big world']);
+  // From after "Hel" to before "ld" (the number markers are not text the offsets count).
+  await blocks(page).nth(0).focus();
+  await page.evaluate(() => {
+    const all = document.querySelectorAll<HTMLElement>('#xb-host [data-anchor][contenteditable="true"]');
+    const at = (block: HTMLElement, offset: number): [Node, number] => {
+      const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT,
+        { acceptNode: (n) => n.parentElement?.closest('[data-list-marker]') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT });
+      let left = offset;
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const len = (n.nodeValue ?? '').length;
+        if (left <= len) return [n, left];
+        left -= len;
+      }
+      return [block, block.childNodes.length];
+    };
+    const range = document.createRange();
+    range.setStart(...at(all[0], 3));
+    range.setEnd(...at(all[1], 7));
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+  });
+  await page.keyboard.press('Delete');
+  await expect.poll(() => plain()).toEqual(['Helld']);
+  await page.keyboard.press('Control+z');
+  await expect.poll(() => plain()).toEqual(['Hello there', 'big world']);
 });
