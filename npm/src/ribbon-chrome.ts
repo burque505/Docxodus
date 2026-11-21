@@ -27,9 +27,10 @@
  * container measurement gets that right. Compact is the base (mobile-first);
  * `[data-chrome="full"]` adds back the desktop affordances.
  */
+import { NAV_PANE_HTML } from "./ribbon-navpane.js";
 
 /** Bumped whenever RIBBON_CSS changes, so a stale injected stylesheet is replaced. */
-export const RIBBON_STYLE_VERSION = "22";
+export const RIBBON_STYLE_VERSION = "23";
 export const RIBBON_STYLE_ATTR = "data-docxodus-ribbon-styles";
 
 /** Width of the comment gutter the surface reserves beside the sheet, in px. */
@@ -1437,6 +1438,7 @@ export const RIBBON_HTML = `
         <span class="dxr-glabel">Show</span>
         <div class="dxr-row">
           <label class="dxr-toggle"><input data-dxr="showruler" type="checkbox" /> Ruler</label>
+          <label class="dxr-toggle" title="Show the document's headings beside it: go to one, drag one to move it with its text"><input data-dxr="shownav" type="checkbox" /> Navigation Pane</label>
           <label class="dxr-toggle" title="Show where bookmarks start and end, as gray brackets"><input data-dxr="showbookmarks" type="checkbox" /> Bookmarks</label>
           <label class="dxr-toggle"><input data-dxr="showrail" type="checkbox" checked /> Status bar</label>
           <label class="dxr-toggle"><input data-dxr="showhint" type="checkbox" checked /> Editing hint</label>
@@ -1614,11 +1616,17 @@ export const RIBBON_HTML = `
   </div>
 </div>
 
+<!-- The work area: the Navigation Pane (View > Navigation Pane) beside the ruler and the document. -->
+<div class="dxr-work">
+${NAV_PANE_HTML}
+<div class="dxr-workmain">
 <div class="dxr-ruler" data-dxr="ruler" hidden></div>
 
 <div class="dxr-scroll" data-dxr-scroll>
   <p class="dxr-hint" data-dxr-hint></p>
   <div class="dxr-surface" data-dxr="editor" data-dxr-surface data-view="continuous" data-comments="on"></div>
+</div>
+</div>
 </div>
 
 <!-- Status bar — live engine state (the anchor rail), Word's page/word cells, and zoom. -->
@@ -1755,6 +1763,8 @@ export const RIBBON_STATUS_TEXTS = {
   lineNumbersPageView: "Line numbers show in page view",
   noSectionBreak: "There is no section break to remove: the document is one section",
   bookmarkInUse: "A link or cross-reference uses this bookmark, so it is not deleted",
+  headingMoveRefused: "This heading cannot move there: a section break or a range of the document is in the way, or changes are tracked",
+  headingRefused: "This heading cannot be changed that way",
 } as const;
 
 /** The default hint copy, shown above the document in full chrome. */

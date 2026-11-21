@@ -63,6 +63,8 @@ import { COLUMNS_DIALOG_CSS, COLUMNS_DIALOG_HTML, ColumnsDialog } from "./ribbon
 import { LINE_NUMBERS_DIALOG_CSS, LINE_NUMBERS_DIALOG_HTML, LineNumbersDialog } from "./ribbon-linenumbers-dialog.js";
 import { TABS_DIALOG_CSS, TABS_DIALOG_HTML, TabsDialog } from "./ribbon-tabs-dialog.js";
 import { BOOKMARK_DIALOG_CSS, BOOKMARK_DIALOG_HTML, BookmarkDialog } from "./ribbon-bookmark-dialog.js";
+import { NAV_PANE_CSS, NavPane, type NavPaneCommand } from "./ribbon-navpane.js";
+import type { OutlineEntry } from "./types.js";
 import { Ruler, RULER_CSS } from "./ruler.js";
 import { TABLE_DIALOG_CSS, TABLE_DIALOG_HTML, TableDialog, type TableDialogResult, type TableDialogTab } from "./ribbon-table-dialog.js";
 import { PICTURE_DIALOG_CSS, PICTURE_DIALOG_HTML, PICTURE_MENU_HTML, PictureDialog, type PictureDialogResult, type PictureDialogTab } from "./ribbon-picture-dialog.js";
@@ -219,6 +221,10 @@ export interface RibbonOptions extends DocxEditorOptions {
   showFormattingMarks?: boolean;
   /** Show/Hide ¶ was switched (the button, Ctrl+Shift+8 or the command), for a host to keep. */
   onFormattingMarksChange?: (on: boolean) => void;
+  /** Open with the Navigation Pane showing (View > Navigation Pane). */
+  navigationPane?: boolean;
+  /** The Navigation Pane was opened or closed, for a host to keep. */
+  onNavigationPaneChange?: (on: boolean) => void;
   /** Find's options at the start (Match case, whole words, wildcards...: see find-query.ts);
    *  `setFindOptions` changes them later. */
   findOptions?: FindOptions;
@@ -354,6 +360,8 @@ export interface RibbonEditor {
   /** Show or hide bookmarks in the text as gray brackets (the View tab's Bookmarks box, Word's
    *  Show bookmarks). */
   setShowBookmarks(on: boolean): void;
+  /** Show or hide the Navigation Pane (the View tab's Navigation Pane box). */
+  setNavigationPaneVisible(on: boolean): void;
   /** Open the picture dialog (Size, Text Wrapping and Position, Alt Text) on the selected picture;
    *  false when no picture is selected. */
   openPictureDialog(tab?: "size" | "layout" | "alt"): boolean;
@@ -449,7 +457,7 @@ const CONTROL_NAMES = [
   "gridpicker", "gridcells", "gridlabel", "gridalign", "gridborderless",
   "filebutton", "filemenu", "filerecent", "filerecentitems", "filehostitems",
   "linkpop", "linkform", "linkurl", "linkbookmark", "linkcancel",
-  "bookmark", "bookmarkdialog", "showbookmarks",
+  "bookmark", "bookmarkdialog", "showbookmarks", "navpane", "navmenu", "shownav",
   "editor",
   "loader", "loaderEyebrow", "loaderTitle", "loaderCopy", "loaderAd", "loaderNumber",
   "loaderAdTitle", "loaderAdCopy", "loaderBar", "loaderLabel", "loaderMeta", "loaderRetry",
@@ -468,7 +476,7 @@ function ensureStyles(doc: Document): void {
   existing?.remove();
   const style = doc.createElement("style");
   style.setAttribute(RIBBON_STYLE_ATTR, RIBBON_STYLE_VERSION);
-  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + BOOKMARK_DIALOG_CSS + RULER_CSS;
+  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + BOOKMARK_DIALOG_CSS + NAV_PANE_CSS + RULER_CSS;
   (doc.head ?? doc.documentElement).appendChild(style);
 }
 
@@ -584,6 +592,7 @@ class RibbonSurface implements RibbonEditor {
   /** The layer Show bookmarks draws its brackets in (made the first time they show). */
   private bookmarkLayer: HTMLElement | null = null;
   private showBookmarks = false;
+  private navPane!: NavPane;
   private pictureUnit: MeasurementUnit = "in";
   private listDialog!: ListDialog;
   private listDefaults: ListLevelSpec[] | undefined;
@@ -1846,6 +1855,82 @@ class RibbonSurface implements RibbonEditor {
     box.addEventListener("change", () => this.setShowBookmarks(box.checked));
   }
 
+  private wireNavPane(): void {
+    this.navPane = new NavPane(this.require("navpane"), this.require("navmenu"), {
+      outline: () => this.live?.outline() ?? [],
+      current: () => this.live?.headingAtCaret() ?? null,
+      goTo: (entry) => {
+        if (!this.live?.goToHeading(entry.anchorId)) return;
+        this.options.onCommand?.("go to heading", 0, cmd("goToHeading", { heading: entry.text }));
+        this.scheduleRuler();
+      },
+      move: (entry, before) => this.moveHeading(entry, before),
+      command: (entry, command) => this.headingCommand(entry, command),
+      close: () => this.setNavigationPaneVisible(false, true),
+    });
+    const box = this.require<HTMLInputElement>("shownav");
+    box.addEventListener("change", () => this.setNavigationPaneVisible(box.checked, true));
+    if (this.options.navigationPane) this.setNavigationPaneVisible(true);
+  }
+
+  setNavigationPaneVisible(on: boolean, report = false): void {
+    const box = this.control<HTMLInputElement>("shownav");
+    if (box) box.checked = on;
+    const was = this.navPane.visible;
+    this.navPane.setVisible(on);
+    this.scheduleRuler();
+    if (report && was !== on) this.options.onNavigationPaneChange?.(on);
+  }
+
+  /** A heading dragged in the Navigation Pane: before heading `before`, or to the end of the
+   *  document. The command records the headings by their text. */
+  private moveHeading(entry: OutlineEntry, before: OutlineEntry | null): void {
+    const outline = this.live?.outline() ?? [];
+    const last = outline[outline.length - 1];
+    const target = before ?? last;
+    if (!target) return;
+    let result: { ok: boolean; code?: string } = { ok: false };
+    this.run("move heading", () => {
+      result = before ? this.live!.moveHeading(entry.anchorId, before.anchorId, "before")
+        : this.live!.moveHeading(entry.anchorId, last.lastAnchorId, "after");
+    }, () => result.ok ? cmd("moveHeading", { heading: entry.text, to: target.text, position: before ? "before" : "after" }) : undefined);
+    if (!result.ok) this.setStatus(this.translateText(RIBBON_STATUS_TEXTS.headingMoveRefused));
+  }
+
+  /** The Navigation Pane's right-click menu (Expand, Collapse and Show Heading Levels stay in the pane). */
+  private headingCommand(entry: OutlineEntry, command: NavPaneCommand): void {
+    const heading = entry.text;
+    let ok = false;
+    const say = () => { if (!ok) this.setStatus(this.translateText(RIBBON_STATUS_TEXTS.headingRefused)); };
+    switch (command) {
+      case "promote":
+      case "demote": {
+        const level = entry.level + (command === "promote" ? -1 : 1);
+        this.run(command, () => { ok = this.live!.setHeadingLevel(entry.anchorId, level).ok; },
+          () => ok ? cmd("headingLevel", { heading, level }) : undefined);
+        say();
+        return;
+      }
+      case "before":
+      case "after":
+      case "sub":
+        this.run("new heading", () => { ok = this.live!.insertHeading(entry.anchorId, command); },
+          () => ok ? cmd("newHeading", { heading, where: command }) : undefined);
+        say();
+        return;
+      case "delete":
+        this.run("delete heading", () => { ok = this.live!.deleteHeadingSection(entry.anchorId); },
+          () => ok ? cmd("deleteHeading", { heading }) : undefined);
+        say();
+        return;
+      case "select":
+        ok = !!this.live?.selectHeadingSection(entry.anchorId);
+        if (ok) this.options.onCommand?.("select heading", 0, cmd("selectHeading", { heading }));
+        this.scheduleRuler();
+        return;
+    }
+  }
+
   openBookmarkDialog(): boolean {
     if (!this.live || this.bookmarkDialog.open || this.paragraphDialog.open || this.listDialog.open) return false;
     this.closePopovers();
@@ -1955,6 +2040,7 @@ class RibbonSurface implements RibbonEditor {
       this.rulerFrame = null;
       this.syncFocusRing();
       this.drawBookmarks();
+      if (this.navPane?.visible) this.navPane.refresh();
       if (!this.ruler.element.hidden) this.ruler.refresh();
     });
   }
@@ -2055,6 +2141,7 @@ class RibbonSurface implements RibbonEditor {
     this.wireTable();
     this.wireLineNumbers();
     this.wireBookmarks();
+    this.wireNavPane();
     this.wireRuler();
     const ribbon = this.require("ribbon");
 

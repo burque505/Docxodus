@@ -50,6 +50,7 @@ import type {
   HyperlinkInfo,
   BookmarkInfo,
   DocumentRange,
+  OutlineEntry,
   ImageInsertOptions,
   ImageOccurrence,
   FloatingImageLayout,
@@ -117,6 +118,9 @@ export interface DocxEditorExports {
     CommitTransaction?: (transactionHandle: number) => void;
     RollbackTransaction?: (transactionHandle: number) => void;
     MoveBlock?: (handle: number, sourceAnchor: string, targetAnchor: string, pos: string) => string;
+    MoveBlockRange?: (handle: number, firstAnchor: string, lastAnchor: string, targetAnchor: string, pos: string) => string;
+    ListOutline?: (handle: number) => string;
+    InsertParagraph?: (handle: number, anchor: string, pos: string, md: string) => string;
     /** JSON `{anchorId, before, after}[]`: where a block may legally move, per side. Optional —
      *  without it the drag UI offers every block and lets the engine refuse, as it did before. */
     ValidMoveTargets?: (handle: number, sourceAnchor: string) => string;
@@ -1875,6 +1879,12 @@ function contentRangeIn(el: HTMLElement, start: number, length: number): Range |
 }
 
 /** Restore a content-text selection spanning [start, start+length) within `el` (skips markers). */
+/** The unid of a full `kind:scope:unid` anchor id (its last part), or null. */
+function unidOfAnchor(id: string): string | null {
+  const i = id.lastIndexOf(":");
+  return i >= 0 ? id.slice(i + 1) : null;
+}
+
 function selectRange(el: HTMLElement, start: number, length: number): void {
   const sel = typeof window !== "undefined" ? window.getSelection() : null;
   if (!sel || !el.isConnected) return;
@@ -7262,6 +7272,234 @@ export class DocxEditor {
         if (caret !== null) placeCaretAtOffset(fresh, caret);
       }
     }
+  }
+
+  // ─── Outline: Word's Navigation Pane ───────────────────────────────────
+
+  private outlineCache: { version: number | null; list: OutlineEntry[] } | null = null;
+
+  /**
+   * The body's headings in document order (level 1-9, text, the last block of each heading's
+   * part), as Word's Navigation Pane lists them. Read again only when the document's version moves.
+   */
+  outline(): OutlineEntry[] {
+    const bridge = this.exports.DocxSessionBridge;
+    if (this.closed || typeof bridge.ListOutline !== "function") return [];
+    let version: number | null = null;
+    try { version = this.version; } catch { version = null; }
+    if (this.outlineCache && version !== null && this.outlineCache.version === version) return this.outlineCache.list;
+    let list: OutlineEntry[];
+    try {
+      list = JSON.parse(bridge.ListOutline(this.handle)) as OutlineEntry[];
+    } catch {
+      list = [];
+    }
+    this.outlineCache = { version, list };
+    return list;
+  }
+
+  /** The heading whose part of the document the caret is in (its anchor), or null before the
+   *  first heading or outside the body. */
+  headingAtCaret(): string | null {
+    const caretBlock = this.activeBlock;
+    if (!caretBlock?.isConnected || this.isBandBlock(caretBlock)) return null;
+    let found: string | null = null;
+    const byUnid = new Map<string, HTMLElement>();
+    for (const el of this.editableList()) {
+      const unid = el.getAttribute("data-anchor");
+      if (unid && !byUnid.has(unid)) byUnid.set(unid, el);
+    }
+    for (const entry of this.outline()) {
+      const unid = unidOfAnchor(entry.anchorId);
+      const el = unid ? byUnid.get(unid) : undefined;
+      if (!el) continue;
+      if (el === caretBlock || (el.compareDocumentPosition(caretBlock) & Node.DOCUMENT_POSITION_FOLLOWING)) found = entry.anchorId;
+      else break;
+    }
+    return found;
+  }
+
+  /** Put the caret at the start of heading `anchorId` and scroll it into view. */
+  goToHeading(anchorId: string): boolean {
+    const el = this.blockOfAnchor(anchorId);
+    if (!el) return false;
+    el.scrollIntoView({ block: "start" });
+    this.activeBlock = el;
+    placeCaretAtOffset(el, 0);
+    return true;
+  }
+
+  /**
+   * Move heading `anchorId` with everything under it (Word's Navigation Pane drag) before or
+   * after the block `targetAnchorId`: one undo step. Refused (with the engine's code) across a
+   * section break, into its own part, and under tracked changes.
+   */
+  moveHeading(anchorId: string, targetAnchorId: string, position: "before" | "after"): { ok: boolean; code?: string } {
+    const bridge = this.exports.DocxSessionBridge;
+    const entry = this.outline().find((e) => e.anchorId === anchorId);
+    if (this.closed || !entry || typeof bridge.MoveBlockRange !== "function") return { ok: false };
+    this.commitActiveTyping();
+    const unid = unidOfAnchor(anchorId);
+    const res = this.parseEdit(bridge.MoveBlockRange(this.handle, entry.anchorId, entry.lastAnchorId, targetAnchorId, position), { expectRejection: true });
+    if (!res.success) return { ok: false, code: res.error?.code };
+    this.remountAt(unid);
+    return { ok: true };
+  }
+
+  /**
+   * Give heading `anchorId` outline level `level` (1-9) through the document's own "heading N"
+   * style (found by its name, so a localized document's "Título 1" serves), as Word's Promote and
+   * Demote do. One undo step.
+   */
+  setHeadingLevel(anchorId: string, level: number): { ok: boolean; code?: string } {
+    const bridge = this.exports.DocxSessionBridge;
+    if (this.closed || level < 1 || level > 9) return { ok: false };
+    this.commitActiveTyping();
+    const res = this.parseEdit(bridge.SetParagraphStyle(this.handle, anchorId, this.headingStyleId(level)), { expectRejection: true });
+    if (!res.success) return { ok: false, code: res.error?.code };
+    this.remountAt(unidOfAnchor(anchorId), true);
+    return { ok: true };
+  }
+
+  /**
+   * Word's New Heading Before / New Heading After / New Subheading: an empty heading before
+   * `anchorId`, after its part (at its level), or after its part one level down; the caret goes
+   * into it. One undo step.
+   */
+  insertHeading(anchorId: string, where: "before" | "after" | "sub"): boolean {
+    const bridge = this.exports.DocxSessionBridge;
+    const entry = this.outline().find((e) => e.anchorId === anchorId);
+    if (this.closed || !entry || typeof bridge.InsertParagraph !== "function") return false;
+    this.commitActiveTyping();
+    const level = where === "sub" ? Math.min(entry.level + 1, 9) : entry.level;
+    const at = where === "before" ? entry.anchorId : entry.lastAnchorId;
+    const tx = typeof bridge.BeginTransaction === "function" ? bridge.BeginTransaction(this.handle) : 0;
+    let ok = true;
+    let unid: string | null = null;
+    try {
+      const step = (json: string) => {
+        const r = this.parseEdit(json);
+        if (!r.success) throw new Error("refused");
+        return r;
+      };
+      // (the engine takes no empty paragraph: one letter, styled, then taken out)
+      let id = step(bridge.InsertParagraph(this.handle, at, where === "before" ? "before" : "after", "x")).created?.[0]?.id;
+      if (!id) throw new Error("no paragraph");
+      id = step(bridge.SetParagraphStyle(this.handle, id, this.headingStyleId(level))).modified?.[0]?.id ?? id;
+      id = step(bridge.ReplaceTextAtSpan(this.handle, id, 0, 1, "", "")).modified?.[0]?.id ?? id;
+      unid = unidOfAnchor(id);
+    } catch {
+      ok = false;
+    } finally {
+      if (tx) {
+        if (ok) bridge.CommitTransaction!(tx);
+        else bridge.RollbackTransaction?.(tx);
+      }
+    }
+    if (!ok) return false;
+    this.remountAt(unid);
+    return true;
+  }
+
+  /**
+   * Word's Delete in the Navigation Pane: heading `anchorId` and everything under it. One undo
+   * step. The body's last paragraph cannot go: it is emptied instead.
+   */
+  deleteHeadingSection(anchorId: string): boolean {
+    const bridge = this.exports.DocxSessionBridge;
+    const entry = this.outline().find((e) => e.anchorId === anchorId);
+    if (this.closed || !entry) return false;
+    this.commitActiveTyping();
+    const index = this.editableList().indexOf(this.blockOfAnchor(entry.anchorId) ?? document.body);
+    const tx = typeof bridge.BeginTransaction === "function" ? bridge.BeginTransaction(this.handle) : 0;
+    let ok = true;
+    try {
+      if (entry.lastAnchorId !== entry.anchorId) {
+        if (typeof bridge.DeleteRange !== "function") throw new Error("no DeleteRange");
+        const r = this.parseEdit(bridge.DeleteRange(this.handle, entry.anchorId, entry.lastAnchorId));
+        if (!r.success) throw new Error("refused");
+      }
+      const last = this.parseEdit(bridge.DeleteBlock(this.handle, entry.lastAnchorId), { expectRejection: true });
+      if (!last.success) {
+        // (the document's last paragraph: keep it, empty, as body text)
+        const text = this.sessionTextOf(entry.lastAnchorId) ?? "";
+        let id = entry.lastAnchorId;
+        if (text) {
+          const r = this.parseEdit(bridge.ReplaceTextAtSpan(this.handle, id, 0, text.length, "", ""));
+          if (!r.success) throw new Error("refused");
+          id = r.modified?.[0]?.id ?? id;
+        }
+        this.parseEdit(bridge.SetParagraphStyle(this.handle, id, "Normal"), { expectRejection: true });
+      }
+    } catch {
+      ok = false;
+    } finally {
+      if (tx) {
+        if (ok) bridge.CommitTransaction!(tx);
+        else bridge.RollbackTransaction?.(tx);
+      }
+    }
+    this.remount(Math.max(0, index - 1), true);
+    return ok;
+  }
+
+  /** Word's Select Heading and Content: from the heading's start to the end of its part. */
+  selectHeadingSection(anchorId: string): boolean {
+    const entry = this.outline().find((e) => e.anchorId === anchorId);
+    const start = entry ? this.blockOfAnchor(entry.anchorId) : null;
+    if (!entry || !start) return false;
+    let end = this.blockOfAnchor(entry.lastAnchorId);
+    if (!end) {
+      // a table: its last cell's last paragraph
+      const unid = unidOfAnchor(entry.lastAnchorId);
+      const table = unid ? this.container.querySelector<HTMLElement>(`[data-anchor="${CSS.escape(unid)}"]`) : null;
+      const cells = table ? Array.from(table.querySelectorAll<HTMLElement>('[data-anchor][contenteditable="true"]')) : [];
+      end = cells[cells.length - 1] ?? start;
+    }
+    start.scrollIntoView({ block: "start" });
+    if (end === start) {
+      this.activeBlock = start;
+      selectRange(start, 0, blockContentText(start).length);
+    } else {
+      this.selectBetween(DocxEditor.blockEdge(start, false), DocxEditor.blockEdge(end, true));
+    }
+    return true;
+  }
+
+  /** The style id of the document's "heading N" (its name, as every language's Word writes it),
+   *  else the built-in id the engine makes when the document has none. */
+  private headingStyleId(level: number): string {
+    try {
+      const raw = this.exports.DocxSessionBridge.ListStyles?.(this.handle);
+      const styles = raw ? (JSON.parse(raw) as Array<{ id: string; name: string; type: string }>) : [];
+      const named = styles.find((s) => s.type === "paragraph" && s.name.toLowerCase() === `heading ${level}`);
+      if (named) return named.id;
+    } catch {
+      /* fall through */
+    }
+    return `Heading${level}`;
+  }
+
+  /** Commit the focused block's typing before a structural edit reads the session. */
+  private commitActiveTyping(): void {
+    const block = this.activeBlock;
+    const id = block ? this.anchorIdOf(block) : undefined;
+    if (block?.isConnected && id) this.syncBlock(block, id);
+  }
+
+  /** Re-render the whole document (list numbers and pages follow a structural edit) and put the
+   *  caret at the start, or the end, of the block with this unid. */
+  private remountAt(unid: string | null, end = false): void {
+    this.remount();
+    const el = unid ? this.container.querySelector<HTMLElement>(`[data-anchor="${CSS.escape(unid)}"][contenteditable="true"]`) : null;
+    if (!el) return;
+    el.scrollIntoView({ block: "nearest" });
+    this.activeBlock = el;
+    const text = blockContentText(el);
+    // An empty paragraph renders a placeholder space: selected, typing replaces it (a caret before
+    // it would keep it, and the document would get the space after the typed text).
+    if (text.length > 0 && trimSpaces(text.replace(/ /g, " ")).length === 0) selectRange(el, 0, text.length);
+    else placeCaretAtOffset(el, end ? text.length : 0);
   }
 
   /** Insert an inline image (base64 bytes) at the caret in the active body block. */

@@ -162,6 +162,17 @@ function must(ok: boolean, command: string, why: string): void {
   if (!ok) throw new EditorCommandError("refused", command, `${command}: ${why}`);
 }
 
+/** The anchor of the heading a command names: by its text (the first heading with it), or the
+ *  heading the caret is under when no text is given. */
+function headingArg(e: DocxEditor, a: Args, command: string, name = "heading"): string {
+  const text = a.optString(name);
+  const id = text === undefined
+    ? e.headingAtCaret()
+    : e.outline().find((h) => h.text.trim() === text.trim())?.anchorId ?? null;
+  if (!id) throw new EditorCommandError("refused", command, `${command}: ${text === undefined ? "the caret is under no heading" : `no heading "${text}"`}`);
+  return id;
+}
+
 const COLUMN_SCOPES = ["section", "document", "forward", "selection"] as const;
 const PICTURE_WRAPS = ["inline", "square", "tight", "through", "topAndBottom", "behind", "inFront"] as const;
 const ALIGNMENTS: readonly EditorAlignment[] = ["left", "center", "right", "justify"];
@@ -407,6 +418,45 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
       const r = e.removeBookmark(a.string("name"));
       must(r.ok, "deleteBookmark", r.code ? `the engine refused it (${r.code})` : "the engine refused it");
     },
+  },
+  goToHeading: {
+    group: "insert", description: "Put the caret at a heading (by its text), as a click in the Navigation Pane does.",
+    args: { heading: "string" },
+    run: (e, a) => must(e.goToHeading(headingArg(e, a, "goToHeading")), "goToHeading", "the heading is not shown"),
+  },
+  moveHeading: {
+    group: "insert", description: "Move a heading (by its text; the caret's when absent) with everything under it before or after another heading's part, as a drag in the Navigation Pane does.",
+    args: { "heading?": "string", to: "string", "position?": "before|after" },
+    run: (e, a) => {
+      const id = headingArg(e, a, "moveHeading");
+      const to = e.outline().find((h) => h.anchorId === headingArg(e, a, "moveHeading", "to"))!;
+      const after = a.optOneOf("position", ["before", "after"] as const) === "after";
+      const r = e.moveHeading(id, after ? to.lastAnchorId : to.anchorId, after ? "after" : "before");
+      must(r.ok, "moveHeading", r.code ? `the engine refused it (${r.code})` : "the engine refused it");
+    },
+  },
+  headingLevel: {
+    group: "insert", description: "Promote or demote a heading (by its text; the caret's when absent) to outline level 1-9, through the document's \"heading N\" style.",
+    args: { "heading?": "string", level: "number" },
+    run: (e, a) => {
+      const r = e.setHeadingLevel(headingArg(e, a, "headingLevel"), a.number("level"));
+      must(r.ok, "headingLevel", r.code ? `the engine refused it (${r.code})` : "the level is 1-9");
+    },
+  },
+  newHeading: {
+    group: "insert", description: "Word's New Heading Before / After / New Subheading for a heading (by its text; the caret's when absent).",
+    args: { "heading?": "string", where: "before|after|sub" },
+    run: (e, a) => must(e.insertHeading(headingArg(e, a, "newHeading"), a.oneOf("where", ["before", "after", "sub"] as const)), "newHeading", "the engine refused it"),
+  },
+  deleteHeading: {
+    group: "insert", description: "Delete a heading (by its text; the caret's when absent) and everything under it.",
+    args: { "heading?": "string" },
+    run: (e, a) => must(e.deleteHeadingSection(headingArg(e, a, "deleteHeading")), "deleteHeading", "the engine refused it"),
+  },
+  selectHeading: {
+    group: "insert", description: "Word's Select Heading and Content for a heading (by its text; the caret's when absent).",
+    args: { "heading?": "string" },
+    run: (e, a) => must(e.selectHeadingSection(headingArg(e, a, "selectHeading")), "selectHeading", "the heading is not shown"),
   },
   goToBookmark: {
     group: "insert", description: "Select a bookmark's text (the caret, for an empty one) and scroll to it.",
@@ -722,6 +772,11 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   picture: {
     group: "query", description: "The selected picture: id, wrap, size in points, alt text, title, layout, what can change.",
     args: {}, returns: "object, or null", run: (e) => e.selectedPicture(),
+  },
+  outline: {
+    group: "query", description: "The document's headings, as the Navigation Pane lists them: level (1-9) and text.",
+    args: {}, returns: "array of { level, text }",
+    run: (e) => e.outline().map((h) => ({ level: h.level, text: h.text })),
   },
   bookmarks: {
     group: "query", description: "The document's bookmarks in document order: name and text (hidden: Word's own _Toc…, _Ref…, _GoBack too).",
