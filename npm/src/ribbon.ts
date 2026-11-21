@@ -833,6 +833,32 @@ class RibbonSurface implements RibbonEditor {
       opt.textContent = style.name;
       select.appendChild(opt);
     }
+    this.styleNames = new Map(styles.filter((s) => s.type === "paragraph").map((s) => [s.id, s.name]));
+    this.defaultStyleId = styles.find((s) => s.type === "paragraph" && s.isDefault)?.id ?? "Normal";
+    this.syncStyleBox();
+  }
+
+  /** Paragraph style names by id (for a style the gallery leaves out) and the default one. */
+  private styleNames = new Map<string, string>();
+  private defaultStyleId = "Normal";
+
+  /** The Styles box shows the caret paragraph's style, as Word's gallery marks it. A style the
+   *  gallery leaves out (a hidden one) is added to the list for as long as it is shown. */
+  private syncStyleBox(): void {
+    const select = this.control<HTMLSelectElement>("style");
+    if (!select || !this.live || select.ownerDocument.activeElement === select) return;
+    let id: string | null = null;
+    try { id = this.live.styleAtCaret(); } catch { id = null; }
+    id ??= this.selectionElement() ? this.defaultStyleId : null;
+    for (const extra of Array.from(select.querySelectorAll("option[data-extra]"))) if ((extra as HTMLOptionElement).value !== id) extra.remove();
+    if (id && !Array.from(select.options).some((o) => o.value === id)) {
+      const opt = select.ownerDocument.createElement("option");
+      opt.value = id;
+      opt.textContent = this.styleNames.get(id) ?? id;
+      opt.dataset.extra = "";
+      select.appendChild(opt);
+    }
+    select.value = id ?? "";
   }
 
   // ── chrome density ──────────────────────────────────────────────────────────
@@ -2291,7 +2317,14 @@ class RibbonSurface implements RibbonEditor {
     });
 
     this.wireSelect("fontfamily", "font family", (v) => this.live!.setFontFamily(v), (v) => cmd("fontFamily", { name: v }));
-    this.wireSelect("style", "style", (v) => this.live!.setParagraphStyle(v), (v) => cmd("style", { styleId: v }));
+    const styleBox = this.require<HTMLSelectElement>("style");
+    styleBox.addEventListener("change", () => {
+      const value = styleBox.value;
+      if (this.live && value) this.run("style", () => this.live!.setParagraphStyle(value), cmd("style", { styleId: value }));
+      // (then back to what the caret's paragraph has, the new style when it took)
+      styleBox.blur();
+      this.syncStyleBox();
+    });
     const listMenu = this.require<HTMLSelectElement>("listmenu");
     listMenu.addEventListener("change", () => {
       const v = listMenu.value;
@@ -3468,6 +3501,7 @@ class RibbonSurface implements RibbonEditor {
         button.classList.toggle("dxr-on", button.dataset.align === align);
       }
     }
+    this.syncStyleBox();
     const listFormat = this.live.listFormatAtCaret();
     for (const button of Array.from(this.element.querySelectorAll<HTMLElement>("button[data-list]"))) {
       const kind = button.dataset.list;
