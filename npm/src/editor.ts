@@ -22,6 +22,7 @@ import { drawLineNumbers, hasLineNumbers } from "./line-numbers.js";
 import { applyUnroundedNormalLineHeights } from "./line-metrics.js";
 import { DocumentViewport } from "./viewport.js";
 import type { ColumnWidth } from "./viewport.js";
+import { parseSectionDimensions } from "./page-geometry.js";
 import { HeaderFooterRegion } from "./editor-headerfooter.js";
 import type { BandWhich } from "./editor-headerfooter.js";
 import { CommentGutter, COMMENT_GUTTER_CSS } from "./editor-comments.js";
@@ -55,6 +56,8 @@ import type {
   ListLevelSpec,
   NumberFormat,
   PageSetupOp,
+  TabStop,
+  TabStopsInfo,
   ColumnsOp,
   ColumnsApplyTo,
   ParagraphFormatting,
@@ -285,6 +288,10 @@ export interface DocxEditorExports {
     GetTableProperties?: (handle: number, cellAnchor: string) => string;
     /** Section page setup and header/footer flags (optional). */
     SetPageSetup?: (handle: number, anchor: string, opJson: string) => string;
+    /** Tab stops (optional: older engine builds lack them). */
+    SetTabStops?: (handle: number, anchorId: string, stopsJson: string) => string;
+    GetTabStops?: (handle: number, anchorId: string) => string;
+    SetDefaultTabStop?: (handle: number, twips: number) => string;
     /** Word's Layout > Breaks (optional: absent on older bundles). */
     InsertSectionBreak?: (handle: number, anchor: string, offset: number, sectionStart: string) => string;
     RemoveSectionBreak?: (handle: number, anchor: string) => string;
@@ -462,6 +469,38 @@ export interface DocxEditorOpenAsyncOptions extends DocxEditorOptions {
  * {@link PageSetupOp} (all twips; omit = unchanged), so the two cannot drift.
  */
 export type EditorPageSetup = PageSetupOp;
+
+/**
+ * What a ruler shows for the caret's paragraph ({@link DocxEditor.rulerState}). Positions are
+ * client pixels (as `getBoundingClientRect` gives them); lengths are twips.
+ */
+export interface EditorRulerState {
+  /** The page's edges: the page box in page view, the section's sheet in continuous view. */
+  pageLeft: number;
+  pageRight: number;
+  /** The section's text column (inside the left and right margins). */
+  textLeft: number;
+  textRight: number;
+  /** Where the paragraph's indent 0 lies, left and right: the text column, a table cell's text
+   *  area or a newspaper column. Tab positions count from `originLeft` too. */
+  originLeft: number;
+  originRight: number;
+  /** Screen pixels per twip at the current zoom. */
+  pxPerTwip: number;
+  /** True when the paragraph's origin is the section's text column, so dragging a margin edge
+   *  changes the section's page margins. */
+  inSectionColumn: boolean;
+  marginLeftTwips: number;
+  marginRightTwips: number;
+  leftIndent: number;
+  rightIndent: number;
+  /** The first line's indent from `leftIndent`: positive for a first-line indent, negative for a
+   *  hanging one. */
+  firstLine: number;
+  /** The tab stops in effect (from the active paragraph), and the default interval after them. */
+  tabs: Required<TabStop>[];
+  defaultTabStopTwips: number;
+}
 
 /** One hit from {@link DocxEditor.find}: a content-offset span inside an editable block. */
 export interface EditorMatch {
@@ -5742,6 +5781,111 @@ export class DocxEditor {
     // (like list edits) so the wrapper appears, disappears or takes its new spacing cleanly.
     if (this.affectsList(res) || rewraps) { this.refreshAfter(block, idx, false, true); return; }
     this.swapBlock(block, unid, res.modified?.[0])?.focus();
+  }
+
+  /**
+   * Where the caret's paragraph sits on screen and its indents and tab stops — what a ruler
+   * draws. Null without an editable paragraph (or with a right-to-left one, which the ruler does
+   * not draw yet).
+   */
+  rulerState(): EditorRulerState | null {
+    const block = this.activeBlock;
+    const bridge = this.exports.DocxSessionBridge;
+    if (this.closed || !block || !block.isConnected || typeof bridge.GetFormatting !== "function") return null;
+    const fullId = this.anchorIdOf(block);
+    if (!fullId) return null;
+    let format: EditorParagraphFormat;
+    let tabs: TabStopsInfo | null = null;
+    try {
+      const parsed = JSON.parse(bridge.GetFormatting(this.handle, fullId)) as FormattingInspection | null;
+      if (!parsed?.effectiveParagraph) return null;
+      format = asEditorParagraphFormat(parsed.effectiveParagraph);
+      if (typeof bridge.GetTabStops === "function")
+        tabs = JSON.parse(bridge.GetTabStops(this.handle, fullId)) as TabStopsInfo | null;
+    } catch {
+      return null;
+    }
+    if (typeof getComputedStyle === "function" && getComputedStyle(block).direction === "rtl") return null;
+    const rect = block.getBoundingClientRect();
+    // Screen pixels per CSS pixel, whatever scales the view (a transform, CSS zoom): a twip is a
+    // fifteenth of a CSS pixel (1/20 pt, 96 px to 72 pt).
+    const screenScale = block.offsetWidth > 0 ? rect.width / block.offsetWidth : 1;
+    const pxPerTwip = screenScale / 15;
+    const leftIndent = format.leftIndent ?? 0;
+    const rightIndent = format.rightIndent ?? 0;
+    const originLeft = rect.left - leftIndent * pxPerTwip;
+    const originRight = rect.right + rightIndent * pxPerTwip;
+
+    // The page: the page box in page view; in continuous view the section wrapper, which is
+    // either the sheet itself or only its text column.
+    const section = block.closest<HTMLElement>("[data-section-index]")
+      ?? (this.editRoot.querySelector<HTMLElement>("[data-section-index]") ?? this.editRoot);
+    const dims = parseSectionDimensions(section);
+    const pxPerPt = pxPerTwip * 20;
+    const page = block.closest<HTMLElement>(".page-box");
+    let pageLeft: number;
+    if (page) {
+      pageLeft = page.getBoundingClientRect().left;
+    } else {
+      const box = section.getBoundingClientRect();
+      const sheet = Math.abs(box.width - dims.pageWidth * pxPerPt) < Math.abs(box.width - dims.contentWidth * pxPerPt);
+      pageLeft = sheet ? box.left : box.left - dims.marginLeft * pxPerPt;
+    }
+    const pageRight = pageLeft + dims.pageWidth * pxPerPt;
+    const textLeft = pageLeft + dims.marginLeft * pxPerPt;
+    const textRight = pageRight - dims.marginRight * pxPerPt;
+    const inSectionColumn = !block.closest("td, th") && !this.isBandBlock(block)
+      && Math.abs(originLeft - textLeft) < 1.5 && Math.abs(originRight - textRight) < 1.5;
+    return {
+      pageLeft, pageRight, textLeft, textRight, originLeft, originRight, pxPerTwip, inSectionColumn,
+      marginLeftTwips: Math.round(dims.marginLeft * 20),
+      marginRightTwips: Math.round(dims.marginRight * 20),
+      leftIndent,
+      rightIndent,
+      firstLine: format.hangingIndent ? -format.hangingIndent : (format.firstLineIndent ?? 0),
+      tabs: tabs?.stops ?? [],
+      defaultTabStopTwips: tabs?.defaultTabStopTwips ?? 720,
+    };
+  }
+
+  /**
+   * Make `stops` the tab stops of the active paragraph, or of every selected one, as ONE undo
+   * step (Word's Tabs dialog and ruler). Returns false when there is no paragraph or the engine
+   * has no tab-stop op.
+   */
+  setTabStops(stops: TabStop[]): boolean {
+    const block = this.activeBlock;
+    const bridge = this.exports.DocxSessionBridge;
+    if (this.closed || !block || typeof bridge.SetTabStops !== "function") return false;
+    const json = JSON.stringify(stops);
+    const blocks = this.selectedBlocks();
+    const tx = blocks.length > 1 && typeof bridge.BeginTransaction === "function" ? bridge.BeginTransaction(this.handle) : 0;
+    try {
+      if (blocks.length > 1 && this.applyParagraphOpAcrossBlocks(blocks, (id) => bridge.SetTabStops!(this.handle, id, json)))
+        return true;
+      const unid = block.getAttribute("data-anchor");
+      let fullId = unid ? this.anchorIdOf(block) : undefined;
+      if (!unid || !fullId) return false;
+      fullId = this.syncBlock(block, fullId);
+      if (!fullId) return false;
+      const res = this.parseEdit(bridge.SetTabStops(this.handle, fullId, json));
+      if (!res.success) return false;
+      this.swapBlock(block, unid, res.modified?.[0])?.focus();
+      return true;
+    } finally {
+      if (tx) bridge.CommitTransaction!(tx);
+    }
+  }
+
+  /** The document's default tab interval (twips): the automatic stops after the last set one.
+   *  One undo step; the whole document is laid out again. */
+  setDefaultTabStop(twips: number): boolean {
+    const bridge = this.exports.DocxSessionBridge;
+    if (this.closed || typeof bridge.SetDefaultTabStop !== "function") return false;
+    const res = this.parseEdit(bridge.SetDefaultTabStop(this.handle, twips));
+    if (!res.success) return false;
+    this.remount(this.activeBlock ? this.blockIndex(this.activeBlock) : -1, false);
+    return true;
   }
 
   /** Word's "Suppress line numbers" for the active paragraph (or every selected one). */

@@ -324,6 +324,24 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     args: { "periods?": "top|all|none" },
     run: (e, a) => must(e.setLegalNumbering(a.optOneOf("periods", ["top", "all", "none"] as const) ?? "top"), "legalNumbering", "there is no paragraph to number"),
   },
+  tabStops: {
+    group: "paragraph",
+    description: "Word's Tabs: make these the paragraph's tab stops (every selected paragraph's). Each object has positionTwips (from the left margin, not the indent), alignment left|center|right|decimal|bar, leader none|dot|hyphen|underscore|heavy|middleDot. [] clears them all.",
+    args: { stops: "object" },
+    run: (e, a) => must(e.setTabStops(a.objects("stops").map((o) => {
+      const s = new Args("tabStops", o);
+      return {
+        positionTwips: Math.round(s.number("positionTwips")),
+        alignment: s.optOneOf("alignment", ["left", "center", "right", "decimal", "bar"] as const) ?? "left",
+        leader: s.optOneOf("leader", ["none", "dot", "hyphen", "underscore", "heavy", "middleDot"] as const) ?? "none",
+      };
+    })), "tabStops", "the tab stops could not be set (two at one position, one past 22 inches, or no paragraph)"),
+  },
+  defaultTabStop: {
+    group: "paragraph", description: "The document's default tab interval, in twips (720 = half an inch).",
+    args: { twips: "number" },
+    run: (e, a) => must(e.setDefaultTabStop(Math.round(a.number("twips"))), "defaultTabStop", "the interval must be greater than 0"),
+  },
   setListLevels: {
     group: "paragraph",
     description: "Word's Define New Multilevel List: change levels of the list (the paragraphs made a numbered list first). Each object names a level (0-8) and any of format, text (\"%1.%2\"), start, numberPositionTwips, textPositionTwips, legal.",

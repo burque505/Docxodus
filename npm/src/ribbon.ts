@@ -61,6 +61,8 @@ import { FIND_OPTION_KEYS, findOptionApplies, normalizeFindOptions, specialFindC
 import { LIST_DIALOG_CSS, LIST_DIALOG_HTML, ListDialog } from "./ribbon-list-dialog.js";
 import { COLUMNS_DIALOG_CSS, COLUMNS_DIALOG_HTML, ColumnsDialog } from "./ribbon-columns-dialog.js";
 import { LINE_NUMBERS_DIALOG_CSS, LINE_NUMBERS_DIALOG_HTML, LineNumbersDialog } from "./ribbon-linenumbers-dialog.js";
+import { TABS_DIALOG_CSS, TABS_DIALOG_HTML, TabsDialog } from "./ribbon-tabs-dialog.js";
+import { Ruler, RULER_CSS } from "./ruler.js";
 import { TABLE_DIALOG_CSS, TABLE_DIALOG_HTML, TableDialog, type TableDialogResult, type TableDialogTab } from "./ribbon-table-dialog.js";
 import { PICTURE_DIALOG_CSS, PICTURE_DIALOG_HTML, PICTURE_MENU_HTML, PictureDialog, type PictureDialogResult, type PictureDialogTab } from "./ribbon-picture-dialog.js";
 import { formatLength, parseLength } from "./ribbon-paragraph-dialog.js";
@@ -342,6 +344,10 @@ export interface RibbonEditor {
   /** Open the Line Numbers dialog (Word's Line Numbering Options) on the caret's section; false
    *  when no document is open. */
   openLineNumbersDialog(): boolean;
+  /** Open the Tabs dialog on the caret paragraph's tab stops; false when there is no paragraph. */
+  openTabsDialog(): boolean;
+  /** Show or hide the ruler (the View tab's Ruler box). */
+  setRulerVisible(on: boolean): void;
   /** Open the picture dialog (Size, Text Wrapping and Position, Alt Text) on the selected picture;
    *  false when no picture is selected. */
   openPictureDialog(tab?: "size" | "layout" | "alt"): boolean;
@@ -426,7 +432,7 @@ const CONTROL_NAMES = [
   "toc", "footnote", "endnote", "pagenum", "totalpages",
   "comment", "commentdelete", "commentprev", "commentnext", "commentresolve", "showcomments",
   "commentcount", "trackchanges", "markup", "author", "revcount",
-  "viewpage", "viewweb", "zoom", "zoomfit", "zoomonepage", "showrail", "showhint",
+  "viewpage", "viewweb", "zoom", "zoomfit", "zoomonepage", "showrail", "showhint", "showruler", "ruler", "tabsdialog",
   "shadebtn", "shadebar", "shade", "repeatheader", "tblheight", "tblwidth", "tblprops", "tabledialog", "linenumbers", "linenumbersdialog",
   "hfFirst", "hfEven", "hfstory",
   "findbar", "findtext", "findprev", "findnext", "findcount", "findcase", "findoptions", "findspecial",
@@ -455,7 +461,7 @@ function ensureStyles(doc: Document): void {
   existing?.remove();
   const style = doc.createElement("style");
   style.setAttribute(RIBBON_STYLE_ATTR, RIBBON_STYLE_VERSION);
-  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS;
+  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + RULER_CSS;
   (doc.head ?? doc.documentElement).appendChild(style);
 }
 
@@ -559,6 +565,11 @@ class RibbonSurface implements RibbonEditor {
   private pictureDialog!: PictureDialog;
   private tableDialog!: TableDialog;
   private lineNumbersDialog!: LineNumbersDialog;
+  private tabsDialog!: TabsDialog;
+  private ruler!: Ruler;
+  private rulerFrame: number | null = null;
+  private rulerUnit: MeasurementUnit = "in";
+  private rulerObserver: ResizeObserver | null = null;
   private pictureUnit: MeasurementUnit = "in";
   private listDialog!: ListDialog;
   private listDefaults: ListLevelSpec[] | undefined;
@@ -605,7 +616,7 @@ class RibbonSurface implements RibbonEditor {
     root.className = "dxr";
     root.dataset.state = "idle";
     root.dataset.frame = this.options.frame ?? "flush";
-    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML + TABLE_DIALOG_HTML + LINE_NUMBERS_DIALOG_HTML;
+    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML + TABLE_DIALOG_HTML + LINE_NUMBERS_DIALOG_HTML + TABS_DIALOG_HTML;
     for (const el of Array.from(root.querySelectorAll<HTMLElement>("[data-dxr]"))) {
       el.id = this.idPrefix + el.dataset.dxr;
     }
@@ -966,6 +977,7 @@ class RibbonSurface implements RibbonEditor {
         this.scheduleDirtyCheck();
         this.options.onEdit?.(info);
         this.scheduleStats();
+        this.scheduleRuler();
       },
       onMove: info => { this.history?.edited(); this.scheduleDirtyCheck(); this.options.onMove?.(info); },
       onStoryChange: (which) => this.onStoryChange(which),
@@ -1390,6 +1402,10 @@ class RibbonSurface implements RibbonEditor {
     this.stripObserver = null;
     if (this.selectionFrame != null) cancelAnimationFrame(this.selectionFrame);
     this.selectionFrame = null;
+    if (this.rulerFrame != null) cancelAnimationFrame(this.rulerFrame);
+    this.rulerFrame = null;
+    this.rulerObserver?.disconnect();
+    this.ruler?.destroy();
     if (this.statsTimer != null) clearTimeout(this.statsTimer);
     this.stopRotation();
     try {
@@ -1432,6 +1448,7 @@ class RibbonSurface implements RibbonEditor {
       this.scheduleDirtyCheck();
       this.refreshRailCounts();
       this.refreshRailAnchor();
+      this.scheduleRuler();
       this.scheduleStats();
     }
   }
@@ -1779,6 +1796,61 @@ class RibbonSurface implements RibbonEditor {
       this.setStatus(this.translateText(RIBBON_STATUS_TEXTS.lineNumbersPageView));
   }
 
+  private wireRuler(): void {
+    this.rulerUnit = this.options.measurementUnit ?? "in";
+    this.tabsDialog = new TabsDialog(this.require<HTMLDialogElement>("tabsdialog"), {
+      read: () => {
+        const state = this.live?.rulerState();
+        return state ? { stops: state.tabs, styleStops: [], defaultTabStopTwips: state.defaultTabStopTwips } : null;
+      },
+      apply: (stops, defaultTwips) => {
+        this.run("tabs", () => this.live!.setTabStops(stops), cmd("tabStops", { stops }));
+        if (defaultTwips !== null)
+          this.run("default tab stops", () => this.live!.setDefaultTabStop(defaultTwips), cmd("defaultTabStop", { twips: defaultTwips }));
+      },
+    }, this.rulerUnit);
+    const scroll = this.element.querySelector<HTMLElement>("[data-dxr-scroll]");
+    this.ruler = new Ruler(this.require("ruler"), {
+      state: () => this.live?.rulerState() ?? null,
+      unit: () => this.rulerUnit,
+      t: (text) => this.translateText(text),
+      setIndents: (op) => this.run("ruler indent", () => this.live!.setParagraphFormat(op), cmd("paragraphFormat", { ...op })),
+      setTabStops: (stops) => this.run("ruler tab", () => this.live!.setTabStops(stops), cmd("tabStops", { stops })),
+      setMargins: (op) => this.run("ruler margin", () => this.live!.setPageSetup(op), cmd("pageSetup", { ...op })),
+      openTabsDialog: () => { this.openTabsDialog(); },
+      guideArea: () => scroll,
+    });
+    const box = this.require<HTMLInputElement>("showruler");
+    box.addEventListener("change", () => this.setRulerVisible(box.checked));
+    scroll?.addEventListener("scroll", () => this.scheduleRuler(), { passive: true });
+    if (typeof ResizeObserver !== "undefined" && scroll) {
+      this.rulerObserver = new ResizeObserver(() => this.scheduleRuler());
+      this.rulerObserver.observe(scroll);
+    }
+  }
+
+  setRulerVisible(on: boolean): void {
+    const box = this.control<HTMLInputElement>("showruler");
+    if (box) box.checked = on;
+    this.ruler.element.hidden = !on;
+    this.scheduleRuler();
+  }
+
+  /** Redraw the ruler on the next frame (caret moves, edits, scrolling, zoom all ask). */
+  private scheduleRuler(): void {
+    if (!this.ruler || this.ruler.element.hidden || this.rulerFrame != null || this.destroyed) return;
+    this.rulerFrame = requestAnimationFrame(() => {
+      this.rulerFrame = null;
+      this.ruler.refresh();
+    });
+  }
+
+  openTabsDialog(): boolean {
+    if (!this.live || this.tabsDialog.open || this.paragraphDialog.open) return false;
+    this.closePopovers();
+    return this.tabsDialog.show();
+  }
+
   openLineNumbersDialog(): boolean {
     if (!this.live || this.lineNumbersDialog.open || this.columnsDialog.open || this.listDialog.open
       || this.paragraphDialog.open) return false;
@@ -1821,6 +1893,9 @@ class RibbonSurface implements RibbonEditor {
     this.pictureDialog.setUnit(unit);
     this.tableDialog.setUnit(unit);
     this.lineNumbersDialog.setUnit(unit);
+    this.tabsDialog.setUnit(unit);
+    this.rulerUnit = unit;
+    this.scheduleRuler();
     this.pictureUnit = unit;
     this.pictureChanged(this.live?.selectedPicture() ?? null);
   }
@@ -1832,6 +1907,7 @@ class RibbonSurface implements RibbonEditor {
     this.wirePicture();
     this.wireTable();
     this.wireLineNumbers();
+    this.wireRuler();
     const ribbon = this.require("ribbon");
 
     // (the File tab opens a menu instead: wireFileMenu)
@@ -3101,6 +3177,7 @@ class RibbonSurface implements RibbonEditor {
 
   private syncSelection(): void {
     if (!this.live || this.destroyed) return;
+    this.scheduleRuler();
     const el = this.selectionElement();
 
     const state = this.live.queryFormatState();

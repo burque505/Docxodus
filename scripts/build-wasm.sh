@@ -200,7 +200,9 @@ du -sh "$WASM_DIST"
 # 2026-11-19 (dAHKxodus fork): section breaks, page/column breaks and the fork's M5 editor ops
 # measured 6,145,117 bytes, 1,117 over 6000 KiB; 16 KiB more covers it and the next small ops.
 # Assembly roots, dependencies and the AOT profile are unchanged.
-WIRE_BUDGET_BYTES=$((6016 * 1024))
+# 2026-11-21 (dAHKxodus fork): tab stops (GetTabStops, SetTabStops, SetDefaultTabStop) for the
+# ruler, on a fork already within 2 KB of 6016 KiB; 16 KiB more covers them and the next small ops.
+WIRE_BUDGET_BYTES=$((6032 * 1024))
 WIRE_BYTES=$(cat "$WASM_DIST/_framework/.wire-size")
 rm -f "$WASM_DIST/_framework/.wire-size"
 echo ""

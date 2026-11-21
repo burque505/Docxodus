@@ -29,7 +29,7 @@
  */
 
 /** Bumped whenever RIBBON_CSS changes, so a stale injected stylesheet is replaced. */
-export const RIBBON_STYLE_VERSION = "18";
+export const RIBBON_STYLE_VERSION = "19";
 export const RIBBON_STYLE_ATTR = "data-docxodus-ribbon-styles";
 
 /** Width of the comment gutter the surface reserves beside the sheet, in px. */
@@ -1421,6 +1421,7 @@ export const RIBBON_HTML = `
       <div class="dxr-group">
         <span class="dxr-glabel">Show</span>
         <div class="dxr-row">
+          <label class="dxr-toggle"><input data-dxr="showruler" type="checkbox" /> Ruler</label>
           <label class="dxr-toggle"><input data-dxr="showrail" type="checkbox" checked /> Status bar</label>
           <label class="dxr-toggle"><input data-dxr="showhint" type="checkbox" checked /> Editing hint</label>
         </div>
@@ -1596,6 +1597,8 @@ export const RIBBON_HTML = `
     <button type="button" class="dxr-icon" data-dxr="findclose" title="Close (Esc)">&#10005;</button>
   </div>
 </div>
+
+<div class="dxr-ruler" data-dxr="ruler" hidden></div>
 
 <div class="dxr-scroll" data-dxr-scroll>
   <p class="dxr-hint" data-dxr-hint></p>
