@@ -114,3 +114,24 @@ test.describe('Join paragraphs', () => {
     expect(await texts(page)).toEqual(['One line', 'Two']);
   });
 });
+
+test('a paragraph mark stays at its place under a first-line indent', async ({ page }) => {
+  await mount(page, ['Indented', '']);
+  await exec(page, 'showFormattingMarks', { on: true }).catch(() => page.evaluate(() => (window as any).__ribbon.editor.setShowFormattingMarks(true)));
+  await page.evaluate(() => (window as any).__ribbon.editor.setShowFormattingMarks(true));
+  for (const index of [0, 1]) {
+    await blocks(page).nth(index).click();
+    await page.evaluate(() => (window as any).__ribbon.editor.setParagraphFormat({ firstLineIndent: 1440 }));
+  }
+  // Where the ¶ is drawn: at the text's end (or the first line's start when empty), not an inch on.
+  const gaps = await page.evaluate(() => Array.from(document.querySelectorAll<HTMLElement>('#mj-host [data-anchor][contenteditable="true"]')).map((p) => {
+    const after = getComputedStyle(p, '::after');
+    const range = document.createRange();
+    range.selectNodeContents(p);
+    const text = (p.textContent ?? '').replace(/ /g, '').trim();
+    const end = text ? range.getBoundingClientRect().right : p.getBoundingClientRect().left + parseFloat(getComputedStyle(p).textIndent);
+    return { indent: after.textIndent, end: Math.round(end - p.getBoundingClientRect().left) };
+  }));
+  for (const g of gaps) expect(g.indent).toBe('0px');
+  expect(gaps[1].end).toBe(96); // the empty paragraph's first line starts an inch in
+});

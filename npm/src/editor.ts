@@ -1720,6 +1720,9 @@ const FORMATTING_MARKS_CSS = `
 .docx-show-marks [data-anchor][contenteditable="true"]::after {
   content: "¶"; position: absolute; color: #4a7fc1; font-weight: normal; font-style: normal;
   text-decoration: none; pointer-events: none; user-select: none; padding-left: 1px;
+  /* (an absolute box indents its own first line by the paragraph's text-indent: without this a
+     first-line indent pushed the mark that far past its place, out to the cell's edge) */
+  text-indent: 0;
 }
 .docx-show-marks .page-box [data-section-break][contenteditable="true"]::after {
   content: ":::::: " var(--docx-section-break-nextPage, "Section break (Next page)") " ::::::";
@@ -1739,7 +1742,7 @@ const FORMATTING_MARKS_CSS = `
 }
 .docx-show-marks [data-docx-tab] { position: relative; }
 .docx-show-marks [data-docx-tab]::after {
-  content: "→"; position: absolute; left: 0; right: 0; text-align: center; color: #4a7fc1;
+  content: "→"; position: absolute; left: 0; right: 0; text-align: center; text-indent: 0; color: #4a7fc1;
   font-weight: normal; font-style: normal; text-decoration: none; pointer-events: none; user-select: none;
 }
 `;
