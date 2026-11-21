@@ -63,6 +63,8 @@ import type {
   TableCellResolutionResult,
   TableMergeContent,
   TableRowOptions,
+  TabStop,
+  TabStopsInfo,
   TableShadingScope,
   ListFormat,
   GrepOptions,
@@ -1032,6 +1034,22 @@ export class DocxSession {
     return JSON.parse(
       this.wasm.SetRepeatHeaderRow(this.handle, cellAnchorId, repeat ?? null),
     ) as EditResult;
+  }
+
+  /** Make `stops` the paragraph's tab stops in effect, as Word does: its own w:tabs holds the stops
+   *  its styles do not give it and clears the style stops not wanted. One undo step. */
+  setTabStops(anchorId: string, stops: TabStop[]): EditResult {
+    return JSON.parse(this.wasm.SetTabStops(this.handle, anchorId, JSON.stringify(stops))) as EditResult;
+  }
+
+  /** A paragraph's tab stops, or null when the anchor is not a paragraph. */
+  getTabStops(anchorId: string): TabStopsInfo | null {
+    return JSON.parse(this.wasm.GetTabStops(this.handle, anchorId)) as TabStopsInfo | null;
+  }
+
+  /** The document's default tab interval (settings w:defaultTabStop), twips. One undo step. */
+  setDefaultTabStop(twips: number): EditResult {
+    return JSON.parse(this.wasm.SetDefaultTabStop(this.handle, twips)) as EditResult;
   }
 
   /** Apply row layout options to the row containing the canonical cell anchor. */
