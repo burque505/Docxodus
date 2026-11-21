@@ -148,6 +148,23 @@ test('the pane works in page view, and closes from its × and the View box', asy
   await expect(page.locator(`${HOST} [data-dxr="shownav"]`)).not.toBeChecked();
 });
 
+test('Show Heading Levels that hides every heading says so, and the menu still opens on the pane to show them again', async ({ page }) => {
+  await mount(page, ['2 Only two', 'text', '2 Another two', 'text']);
+  await row(page, 'Only two').click({ button: 'right' });
+  await page.locator(`${HOST} [data-navcmd="levels"]`).click();
+  await page.locator(`${HOST} [data-navlevel="1"]`).click();
+  await expect.poll(() => paneTexts(page)).toEqual([]);
+  await expect(page.locator(`${HOST} [data-nav="hidden"]`)).toBeVisible();
+  // a right-click on the empty pane opens the menu, its heading commands off
+  await page.locator(`${HOST} [data-nav="list"]`).click({ button: 'right', position: { x: 40, y: 60 } });
+  await expect(page.locator(`${HOST} [data-dxr="navmenu"]`)).toBeVisible();
+  await expect(page.locator(`${HOST} [data-navcmd="promote"]`)).toBeDisabled();
+  await page.locator(`${HOST} [data-navcmd="levels"]`).click();
+  await page.locator(`${HOST} [data-navlevel="9"]`).click();
+  await expect.poll(() => paneTexts(page)).toEqual(['Only two', 'Another two']);
+  await expect(page.locator(`${HOST} [data-nav="hidden"]`)).toBeHidden();
+});
+
 test('a document without headings says how to get them', async ({ page }) => {
   await mount(page, ['just text', 'more text']);
   await expect(page.locator(`${HOST} [data-nav="empty"]`)).toBeVisible();

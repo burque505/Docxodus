@@ -50,6 +50,7 @@ export const NAV_PANE_HTML = `
   <div class="dxr-navhead"><span>Navigation</span><button type="button" data-nav="close" title="Close the Navigation Pane" aria-label="Close">&times;</button></div>
   <div class="dxr-navlist" data-nav="list" role="tree"></div>
   <p class="dxr-navempty" data-nav="empty" hidden>The document has no headings. Give a paragraph a Heading style to see it here.</p>
+  <p class="dxr-navempty" data-nav="hidden" hidden>No headings at the levels shown. Right-click here and choose Show Heading Levels to see more.</p>
   <span hidden data-nav-text="blank">(empty heading)</span>
 </aside>
 <div class="dxr-navmenu" data-dxr="navmenu" role="menu">
@@ -118,12 +119,12 @@ export class NavPane {
       this.host.goTo(entry);
     });
     this.list.addEventListener("keydown", (event) => this.onKey(event));
-    this.list.addEventListener("contextmenu", (event) => {
+    // Anywhere in the pane: on a heading, the menu acts on it; elsewhere (or with every heading
+    // hidden by Show Heading Levels) its heading commands are off, Expand All and the levels stay.
+    pane.addEventListener("contextmenu", (event) => {
       const row = (event.target as HTMLElement).closest<HTMLElement>(".dxr-navitem");
-      const entry = row ? this.entryOf(row) : null;
-      if (!entry) return;
       event.preventDefault();
-      this.openMenu(entry, event.clientX, event.clientY);
+      this.openMenu(row ? this.entryOf(row) : null, event.clientX, event.clientY);
     });
     this.wireDrag();
     menu.addEventListener("click", (event) => {
@@ -132,6 +133,8 @@ export class NavPane {
       const entry = this.menuFor;
       if (button.dataset.navcmd === "levels") {
         menu.querySelector('[data-nav="levels"]')!.toggleAttribute("data-open");
+        // (taller now: kept inside the window)
+        this.placeMenu(parseFloat(menu.style.left), parseFloat(menu.style.top));
         return;
       }
       this.closeMenu();
@@ -193,6 +196,7 @@ export class NavPane {
     this.list.replaceChildren();
     this.empty.hidden = this.entries.length > 0;
     const shown = this.shown();
+    this.pane.querySelector<HTMLElement>('[data-nav="hidden"]')!.hidden = !(this.entries.length > 0 && shown.length === 0);
     // (a heading has children when the next one in the whole outline is deeper)
     const hasChildren = new Set<string>();
     for (let i = 0; i + 1 < this.entries.length; i++)
@@ -296,22 +300,28 @@ export class NavPane {
     }
   }
 
-  private openMenu(entry: OutlineEntry, x: number, y: number): void {
+  private openMenu(entry: OutlineEntry | null, x: number, y: number): void {
     this.menuFor = entry;
     const set = (cmd: string, enabled: boolean) => {
       const b = this.menu.querySelector<HTMLButtonElement>(`[data-navcmd="${cmd}"]`);
       if (b) b.disabled = !enabled;
     };
-    set("promote", entry.level > 1);
-    set("demote", entry.level < 9);
-    set("sub", entry.level < 9);
+    for (const cmd of ["before", "after", "delete", "select"]) set(cmd, !!entry);
+    set("promote", !!entry && entry.level > 1);
+    set("demote", !!entry && entry.level < 9);
+    set("sub", !!entry && entry.level < 9);
     this.menu.querySelector('[data-nav="levels"]')!.removeAttribute("data-open");
     this.menu.setAttribute("data-open", "");
+    this.placeMenu(x, y);
+    this.menu.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+  }
+
+  /** Put the menu at (x, y), moved up and left as far as it takes to stay inside the window. */
+  private placeMenu(x: number, y: number): void {
     const view = this.menu.ownerDocument.defaultView;
     const w = this.menu.offsetWidth, h = this.menu.offsetHeight;
     this.menu.style.left = `${Math.max(4, Math.min(x, (view?.innerWidth ?? x + w) - w - 4))}px`;
     this.menu.style.top = `${Math.max(4, Math.min(y, (view?.innerHeight ?? y + h) - h - 4))}px`;
-    this.menu.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
   }
 
   private closeMenu(): void {
