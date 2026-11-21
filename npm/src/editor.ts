@@ -485,6 +485,13 @@ export interface EditorRulerState {
    *  area or a newspaper column. Tab positions count from `originLeft` too. */
   originLeft: number;
   originRight: number;
+  /** How far the paragraph's indents may reach: a table cell's edges, else the page's. */
+  boundsLeft: number;
+  boundsRight: number;
+  /** In a table cell: the caret row's column boundaries (client x of each cell's left edge after
+   *  the first, then the last cell's right edge), each with the grid column it starts (the last:
+   *  the grid's column count), and the table grid's widths in twips. */
+  table?: { boundaries: { x: number; grid: number }[]; widthsTwips: number[] };
   /** Screen pixels per twip at the current zoom. */
   pxPerTwip: number;
   /** True when the paragraph's origin is the section's text column, so dragging a margin edge
@@ -5837,10 +5844,30 @@ export class DocxEditor {
     const pageRight = pageLeft + dims.pageWidth * pxPerPt;
     const textLeft = pageLeft + dims.marginLeft * pxPerPt;
     const textRight = pageRight - dims.marginRight * pxPerPt;
-    const inSectionColumn = !block.closest("td, th") && !this.isBandBlock(block)
+    const cell = block.closest<HTMLElement>("td, th");
+    const inSectionColumn = !cell && !this.isBandBlock(block)
       && Math.abs(originLeft - textLeft) < 1.5 && Math.abs(originRight - textRight) < 1.5;
+    const cellBox = cell?.getBoundingClientRect();
+    let table: EditorRulerState["table"];
+    const tableInfo = cell ? this.tablePropertiesOf(cell) : null;
+    const row = cell?.closest("tr");
+    if (tableInfo && row) {
+      const cells = Array.from(row.children).filter((c): c is HTMLElement => c.tagName === "TD" || c.tagName === "TH");
+      const boundaries: { x: number; grid: number }[] = [];
+      let grid = 0;
+      cells.forEach((c, i) => {
+        if (i > 0) boundaries.push({ x: c.getBoundingClientRect().left, grid });
+        grid += Math.max(1, (c as HTMLTableCellElement).colSpan || 1);
+      });
+      const last = cells[cells.length - 1];
+      if (last) boundaries.push({ x: last.getBoundingClientRect().right, grid: tableInfo.columnWidthsTwips.length });
+      table = { boundaries, widthsTwips: tableInfo.columnWidthsTwips };
+    }
     return {
       pageLeft, pageRight, textLeft, textRight, originLeft, originRight, pxPerTwip, inSectionColumn,
+      boundsLeft: cellBox ? cellBox.left : pageLeft,
+      boundsRight: cellBox ? cellBox.right : pageRight,
+      ...(table ? { table } : {}),
       marginLeftTwips: Math.round(dims.marginLeft * 20),
       marginRightTwips: Math.round(dims.marginRight * 20),
       leftIndent,
@@ -7588,7 +7615,19 @@ export class DocxEditor {
 
   /** The Table Properties dialog's values for the table, row and cell the caret is in, or null. */
   tableProperties(): TablePropertiesInfo | null {
-    const cell = this.activeBlock?.closest<HTMLElement>("td, th");
+    return this.tablePropertiesOf(this.activeBlock?.closest<HTMLElement>("td, th") ?? null);
+  }
+
+  /** Set the widths (twips) of the caret's table's grid columns, as one undo step (the ruler's
+   *  column markers). */
+  setTableColumnWidths(widthsTwips: number[]): void {
+    const bridge = this.exports.DocxSessionBridge;
+    if (typeof bridge.SetColumnWidths !== "function" || widthsTwips.some((w) => !(w > 0))) return;
+    const json = JSON.stringify(widthsTwips.map((w) => Math.round(w)));
+    this.tableEdit((a) => bridge.SetColumnWidths!(this.handle, a, json));
+  }
+
+  private tablePropertiesOf(cell: HTMLElement | null): TablePropertiesInfo | null {
     const bridge = this.exports.DocxSessionBridge;
     const cellId = cell ? this.anchorIdOf(cell) : undefined;
     if (this.closed || !cellId || typeof bridge.GetTableProperties !== "function") return null;

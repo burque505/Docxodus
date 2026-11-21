@@ -197,3 +197,42 @@ test('the ruler stays after view switches and ribbon clicks, lined up, and its d
   await drag(page, 'leftIndent', 720);
   await expect.poll(async () => (await format(page))?.leftIndent).toBe(720);
 });
+
+/** A 1×2 table under the first paragraph, the caret in its second cell. */
+async function inTable(page: Page) {
+  await mount(page);
+  await page.evaluate(() => (window as any).__ribbon.editor.insertTable(1, 2, { cellContents: ['Hello', 'World'] }));
+  await page.locator(`${HOST} td`).nth(1).locator('[contenteditable="true"]').first().click();
+  await expect(mark(page, 'column')).toBeVisible();
+}
+
+const widths = (page: Page) => page.evaluate(() => (window as any).__ribbon.editor.tableProperties()?.columnWidthsTwips);
+
+test('in a table cell the indents stay within the cell', async ({ page }) => {
+  await inTable(page);
+  const s = await state(page);
+  expect(s.inSectionColumn).toBe(false);
+  await drag(page, 'firstLine', -4000); // far into the cell to the left
+  const limit = Math.round((s.boundsLeft - s.originLeft) / s.pxPerTwip);
+  await expect.poll(async () => (await format(page))?.hangingIndent ?? 0).toBeGreaterThan(0);
+  expect((await format(page)).hangingIndent).toBeLessThanOrEqual(-limit + 1);
+  const cell = (await page.locator(`${HOST} td`).nth(1).boundingBox())!;
+  const text = (await page.locator(`${HOST} td`).nth(1).locator('[contenteditable="true"]').first().boundingBox())!;
+  expect(text.x).toBeGreaterThanOrEqual(cell.x - 1);
+});
+
+test('dragging a column marker moves the boundary between two columns; one undo', async ({ page }) => {
+  await inTable(page);
+  const before = await widths(page);
+  const s = await state(page);
+  const boundary = s.table.boundaries[0];
+  const marker = (await page.locator(`${HOST} .dxr-ruler-mark[data-mark="column"][data-column="0"]`).boundingBox())!;
+  await page.mouse.move(marker.x + marker.width / 2, marker.y + marker.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(boundary.x + 720 * s.pxPerTwip, marker.y + marker.height / 2, { steps: 5 });
+  await page.mouse.up();
+  await expect.poll(() => widths(page)).toEqual([before[0] + 720, before[1] - 720]);
+  await page.locator(`${HOST} td`).nth(1).locator('[contenteditable="true"]').first().click();
+  await page.keyboard.press('Control+z');
+  await expect.poll(() => widths(page)).toEqual(before);
+});

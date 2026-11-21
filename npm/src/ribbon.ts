@@ -1819,6 +1819,7 @@ class RibbonSurface implements RibbonEditor {
       t: (text) => this.translateText(text),
       setIndents: (op) => this.run("ruler indent", () => { this.live!.focusRulerParagraph(); this.live!.setParagraphFormat(op); }, cmd("paragraphFormat", { ...op })),
       setTabStops: (stops) => this.run("ruler tab", () => { this.live!.focusRulerParagraph(); this.live!.setTabStops(stops); }, cmd("tabStops", { stops })),
+      setColumnWidths: (widths) => this.run("ruler column", () => { this.live!.focusRulerParagraph(); this.live!.setTableColumnWidths(widths); }),
       setMargins: (op) => this.run("ruler margin", () => { this.live!.focusRulerParagraph(); this.live!.setPageSetup(op); }, cmd("pageSetup", { ...op })),
       openTabsDialog: () => { this.openTabsDialog(); },
       guideArea: () => scroll,

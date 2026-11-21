@@ -36,6 +36,7 @@ export const RULER_TEXTS = {
   rightIndent: "Right Indent",
   leftMargin: "Left Margin",
   rightMargin: "Right Margin",
+  column: "Move Table Column",
   selector: "Click to choose the kind of tab stop the ruler sets",
 } as const;
 
@@ -48,6 +49,8 @@ export interface RulerHost {
   setIndents(op: EditorParagraphFormat): void;
   setTabStops(stops: TabStop[]): void;
   setMargins(op: { marginLeftTwips?: number; marginRightTwips?: number }): void;
+  /** The caret's table's grid column widths, twips (a column marker's drag). */
+  setColumnWidths(widthsTwips: number[]): void;
   openTabsDialog(): void;
   /** The document's visible area, which the dashed guide line spans while dragging. */
   guideArea(): HTMLElement | null;
@@ -69,6 +72,9 @@ export const RULER_CSS = `
 .dxr-ruler-mark[data-mark="tab"] { top: 11px; height: 9px; width: 9px; cursor: default; }
 .dxr-ruler-mark[data-mark="leftMargin"], .dxr-ruler-mark[data-mark="rightMargin"] { top: 7px; height: 6px;
   width: 7px; margin-left: -3.5px; cursor: col-resize; }
+.dxr-ruler-mark[data-mark="column"] { top: 5px; height: 12px; width: 7px; margin-left: -3.5px; cursor: col-resize;
+  background: repeating-linear-gradient(0deg, var(--dxr-ruler-ink) 0 1px, var(--dxr-ruler-margin) 1px 3px);
+  border: 1px solid var(--dxr-ruler-ink); box-sizing: border-box; border-radius: 1px; }
 .dxr-ruler-mark[data-removing] { opacity: .3; }
 .dxr-ruler-selector { position: absolute; left: 2px; top: 2px; width: 18px; height: 18px; padding: 0;
   border: 1px solid var(--dxr-rule-strong); border-radius: 3px; background: var(--dxr-chrome);
@@ -107,12 +113,13 @@ const MARKER_SVG: Record<string, string> = {
 /** Twips per snap step: 1/16 inch, or 0.25 cm. */
 const SNAP: Record<RulerUnit, number> = { in: 90, cm: 1440 / 2.54 / 4 };
 
-type MarkKind = "firstLine" | "hanging" | "leftIndent" | "rightIndent" | "tab" | "leftMargin" | "rightMargin";
+type MarkKind = "firstLine" | "hanging" | "leftIndent" | "rightIndent" | "tab" | "leftMargin" | "rightMargin" | "column";
 
 interface Drag {
   kind: MarkKind;
   element: HTMLElement | null;
-  /** For a tab: its index in the state's stops, or -1 for a new one from a click. */
+  /** For a tab: its index in the state's stops, or -1 for a new one from a click. For a column
+   *  marker: its index in the state's table boundaries. */
   tab: number;
   startX: number;
   startY: number;
@@ -291,6 +298,10 @@ export class Ruler {
       this.addMark("leftMargin", s.textLeft - rect.left);
       this.addMark("rightMargin", s.textRight - rect.left);
     }
+    // A table's column boundaries (Word's Move Table Column markers), under the indent markers.
+    s.table?.boundaries.forEach((b, index) => {
+      this.addMark("column", b.x - rect.left).dataset.column = String(index);
+    });
     const at = (twips: number) => s.originLeft + twips * s.pxPerTwip - rect.left;
     const indentX = at(s.leftIndent);
     this.addMark("firstLine", at(s.leftIndent + s.firstLine));
@@ -334,6 +345,7 @@ export class Ruler {
     let tab = -1;
     if (mark) {
       kind = mark.dataset.mark as MarkKind;
+      if (kind === "column") tab = Number(mark.dataset.column);
       if (kind === "tab") {
         tab = Number(mark.dataset.tab);
         const twips = s.tabs[tab]?.positionTwips;
@@ -398,9 +410,22 @@ export class Ruler {
         clientX = s.pageRight - drag.twips * s.pxPerTwip;
         break;
       }
+      case "column": {
+        // Twips the boundary moves; the column before it keeps at least a quarter inch, and so
+        // does the one after it (which gives up what the one before takes).
+        const b = s.table!.boundaries[drag.tab];
+        const before = s.table!.widthsTwips[b.grid - 1] ?? 0;
+        const after = b.grid < s.table!.widthsTwips.length ? s.table!.widthsTwips[b.grid] : Infinity;
+        const raw = free ? Math.round((ev.clientX - b.x) / s.pxPerTwip) : this.twipsAt(ev.clientX, false, b.x);
+        drag.twips = Math.max(360 - before, Math.min(after - 360, raw,
+          Math.round((s.pageRight - b.x) / s.pxPerTwip)));
+        clientX = b.x + drag.twips * s.pxPerTwip;
+        break;
+      }
       default: {
-        const minTwips = Math.round((s.pageLeft - s.originLeft) / s.pxPerTwip);
-        const maxTwips = Math.round((s.pageRight - s.originLeft) / s.pxPerTwip);
+        // An indent stays within its reach: a table cell's edges, else the page's.
+        const minTwips = Math.round((s.boundsLeft - s.originLeft) / s.pxPerTwip);
+        const maxTwips = Math.round((s.boundsRight - s.originLeft) / s.pxPerTwip);
         drag.twips = Math.max(minTwips, Math.min(maxTwips, this.twipsAt(ev.clientX, free, s.originLeft)));
         clientX = s.originLeft + drag.twips * s.pxPerTwip;
       }
@@ -426,6 +451,13 @@ export class Ruler {
   private describe(drag: Drag): string {
     const unit = this.host.unit();
     const value = unit === "cm" ? `${(drag.twips / (1440 / 2.54)).toFixed(2)} cm` : `${(drag.twips / 1440).toFixed(2)}"`;
+    if (drag.kind === "column") {
+      const s = this.current!;
+      const b = s.table!.boundaries[drag.tab];
+      const width = (s.table!.widthsTwips[b.grid - 1] ?? 0) + drag.twips;
+      const shown = unit === "cm" ? `${(width / (1440 / 2.54)).toFixed(2)} cm` : `${(width / 1440).toFixed(2)}"`;
+      return `${this.host.t(RULER_TEXTS.column)}: ${shown}`;
+    }
     return `${this.host.t(drag.kind === "tab" ? RULER_TEXTS[this.tabKindOf(drag)] : RULER_TEXTS[drag.kind])}: ${value}`;
   }
 
@@ -513,6 +545,15 @@ export class Ruler {
       case "rightMargin":
         if (drag.twips !== s.marginRightTwips) this.host.setMargins({ marginRightTwips: drag.twips });
         return;
+      case "column": {
+        if (drag.twips === 0 || !s.table) return;
+        const widths = s.table.widthsTwips.slice();
+        const grid = s.table.boundaries[drag.tab].grid;
+        widths[grid - 1] += drag.twips;
+        if (grid < widths.length) widths[grid] -= drag.twips;
+        this.host.setColumnWidths(widths);
+        return;
+      }
       case "tab": {
         const stops: TabStop[] = s.tabs.map((t) => ({ ...t }));
         const kind = this.tabKindOf(drag);
