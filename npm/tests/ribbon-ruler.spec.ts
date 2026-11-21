@@ -52,6 +52,7 @@ async function at(page: Page, twips: number) {
 
 /** Drag the marker `kind` to `twips` from the origin (the right indent: from the right edge). */
 async function drag(page: Page, kind: string, twips: number, options: { escape?: boolean } = {}) {
+  await expect(mark(page, kind)).toBeVisible();
   const box = (await mark(page, kind).boundingBox())!;
   const s = await state(page);
   const target = kind === 'rightIndent' ? { x: s.originRight - twips * s.pxPerTwip } : await at(page, twips);
@@ -176,4 +177,23 @@ test('the ruler hides with the View tab box', async ({ page }) => {
   await mount(page);
   await page.locator(`${HOST} [data-dxr="showruler"]`).uncheck();
   await expect(page.locator(`${HOST} [data-dxr="ruler"]`)).toBeHidden();
+});
+
+test('the ruler stays after view switches and ribbon clicks, lined up, and its drags still land', async ({ page }) => {
+  await mount(page);
+  const aligned = async () => {
+    const s = await state(page);
+    const left = await mark(page, 'leftIndent').boundingBox();
+    const paragraph = (await page.locator(`${HOST} [data-anchor][contenteditable="true"]`).first().boundingBox())!;
+    return !!s && !!left && Math.abs(left.x + left.width / 2 - s.originLeft) < 1.5 && Math.abs(paragraph.x - s.originLeft) < 1.5;
+  };
+  for (const view of ['viewpage', 'viewweb', 'viewpage']) {
+    await page.locator(`${HOST} [data-dxr="${view}"]`).click();
+    await expect.poll(aligned, { timeout: 5000 }).toBe(true);
+  }
+  // The focus is in the ribbon now (Home tab); a drag still sets the first paragraph's indent.
+  await page.locator(`${HOST} .dxr-tab[data-tab="home"]`).click();
+  await expect.poll(aligned).toBe(true);
+  await drag(page, 'leftIndent', 720);
+  await expect.poll(async () => (await format(page))?.leftIndent).toBe(720);
 });

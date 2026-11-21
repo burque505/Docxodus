@@ -136,6 +136,8 @@ export class Ruler {
   /** The last click on a tab stop (its position and when), to tell a double-click: the marks are
    *  drawn again after every click, so the browser's dblclick lands on the ruler, not the stop. */
   private lastTabClick: { twips: number; at: number } | null = null;
+  /** What the ruler last drew from (see refresh). */
+  private drawn = "";
 
   constructor(element: HTMLElement, host: RulerHost) {
     this.element = element;
@@ -168,10 +170,21 @@ export class Ruler {
     this.drawSelector();
   }
 
+  /** Write the tooltips again (after the host's language changed). */
+  relabel(): void {
+    this.drawSelector();
+    this.drawn = "";
+    this.refresh();
+  }
+
   /** Read the caret paragraph's state again and redraw (cheap; call it per frame at most). */
   refresh(): void {
     if (this.drag || this.element.hidden) return;
     this.current = this.host.state();
+    // Unchanged (the same paragraph, layout, zoom and ruler width): nothing to draw again.
+    const key = `${JSON.stringify(this.current)}|${this.host.unit()}|${this.element.getBoundingClientRect().width}`;
+    if (key === this.drawn) return;
+    this.drawn = key;
     this.draw();
   }
 
@@ -473,6 +486,7 @@ export class Ruler {
     this.tip = null;
     const s = this.current;
     if (commit && drag && s && drag.moved) this.commit(drag, s);
+    this.drawn = "";
     this.refresh();
   }
 

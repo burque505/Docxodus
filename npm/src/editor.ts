@@ -2034,6 +2034,8 @@ export class DocxEditor {
   /** Redraws Word's line numbers in the page view after the text under them changes. */
   private lineNumberWatch: { observer: MutationObserver; timer: number } | null = null;
   private closed = false;
+  /** The anchor of the paragraph the ruler last showed (see rulerBlock). */
+  private rulerAnchor: string | null = null;
   /** The pause after which `typingUndo: "word"` commits the typing so far (see onTypingInput). */
   private typingPause: ReturnType<typeof setTimeout> | null = null;
   /**
@@ -5789,9 +5791,10 @@ export class DocxEditor {
    * not draw yet).
    */
   rulerState(): EditorRulerState | null {
-    const block = this.activeBlock;
+    const block = this.rulerBlock();
     const bridge = this.exports.DocxSessionBridge;
-    if (this.closed || !block || !block.isConnected || typeof bridge.GetFormatting !== "function") return null;
+    if (this.closed || !block || typeof bridge.GetFormatting !== "function") return null;
+    this.rulerAnchor = block.getAttribute("data-anchor");
     const fullId = this.anchorIdOf(block);
     if (!fullId) return null;
     let format: EditorParagraphFormat;
@@ -5846,6 +5849,35 @@ export class DocxEditor {
       tabs: tabs?.stops ?? [],
       defaultTabStopTwips: tabs?.defaultTabStopTwips ?? 720,
     };
+  }
+
+  /** The paragraph whose layout the ruler shows, as Word shows it whether or not the document has
+   *  the focus: the caret's; else, after a re-render (a view switch) or with the focus in the
+   *  ribbon, the one it showed last, found again by its anchor; else the document's first. */
+  private rulerBlock(): HTMLElement | null {
+    const shown = (el: HTMLElement | null | undefined): el is HTMLElement =>
+      !!el && el.isConnected && !el.closest("#pagination-staging, .page-staging");
+    if (shown(this.activeBlock)) return this.activeBlock;
+    if (this.rulerAnchor) {
+      const again = Array.from(this.container.querySelectorAll<HTMLElement>(
+        `[data-anchor="${CSS.escape(this.rulerAnchor)}"][contenteditable="true"]`)).find(shown);
+      if (again) return again;
+    }
+    return Array.from(this.editRoot.querySelectorAll<HTMLElement>('[data-anchor][contenteditable="true"]'))
+      .find((el) => shown(el) && !this.isBandBlock(el)) ?? null;
+  }
+
+  /** Before a ruler edit: when the caret is not in the document (the focus is in the ribbon, or a
+   *  view switch rendered it afresh), put it in the paragraph the ruler shows, so the edit lands
+   *  there. A selection in the document is kept. */
+  focusRulerParagraph(): void {
+    const block = this.rulerBlock();
+    if (!block || block === this.activeBlock) return;
+    block.focus({ preventScroll: true });
+    if (typeof window !== "undefined") {
+      const sel = window.getSelection();
+      if (sel && !block.contains(sel.anchorNode)) sel.collapse(block, 0);
+    }
   }
 
   /**

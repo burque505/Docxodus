@@ -1060,6 +1060,8 @@ class RibbonSurface implements RibbonEditor {
 
   setLabels(labels: Record<string, string>): void {
     this.labels = { ...labels };
+    // (the ruler writes its tooltips from code, in the language of the moment)
+    this.ruler?.relabel();
     const root = this.element;
     const doc = root.ownerDocument;
     const surface = this.surface;
@@ -1800,11 +1802,12 @@ class RibbonSurface implements RibbonEditor {
     this.rulerUnit = this.options.measurementUnit ?? "in";
     this.tabsDialog = new TabsDialog(this.require<HTMLDialogElement>("tabsdialog"), {
       read: () => {
+        this.live?.focusRulerParagraph();
         const state = this.live?.rulerState();
         return state ? { stops: state.tabs, styleStops: [], defaultTabStopTwips: state.defaultTabStopTwips } : null;
       },
       apply: (stops, defaultTwips) => {
-        this.run("tabs", () => this.live!.setTabStops(stops), cmd("tabStops", { stops }));
+        this.run("tabs", () => { this.live!.focusRulerParagraph(); this.live!.setTabStops(stops); }, cmd("tabStops", { stops }));
         if (defaultTwips !== null)
           this.run("default tab stops", () => this.live!.setDefaultTabStop(defaultTwips), cmd("defaultTabStop", { twips: defaultTwips }));
       },
@@ -1814,9 +1817,9 @@ class RibbonSurface implements RibbonEditor {
       state: () => this.live?.rulerState() ?? null,
       unit: () => this.rulerUnit,
       t: (text) => this.translateText(text),
-      setIndents: (op) => this.run("ruler indent", () => this.live!.setParagraphFormat(op), cmd("paragraphFormat", { ...op })),
-      setTabStops: (stops) => this.run("ruler tab", () => this.live!.setTabStops(stops), cmd("tabStops", { stops })),
-      setMargins: (op) => this.run("ruler margin", () => this.live!.setPageSetup(op), cmd("pageSetup", { ...op })),
+      setIndents: (op) => this.run("ruler indent", () => { this.live!.focusRulerParagraph(); this.live!.setParagraphFormat(op); }, cmd("paragraphFormat", { ...op })),
+      setTabStops: (stops) => this.run("ruler tab", () => { this.live!.focusRulerParagraph(); this.live!.setTabStops(stops); }, cmd("tabStops", { stops })),
+      setMargins: (op) => this.run("ruler margin", () => { this.live!.focusRulerParagraph(); this.live!.setPageSetup(op); }, cmd("pageSetup", { ...op })),
       openTabsDialog: () => { this.openTabsDialog(); },
       guideArea: () => scroll,
     });
@@ -1826,6 +1829,8 @@ class RibbonSurface implements RibbonEditor {
     if (typeof ResizeObserver !== "undefined" && scroll) {
       this.rulerObserver = new ResizeObserver(() => this.scheduleRuler());
       this.rulerObserver.observe(scroll);
+      // (a view switch or a page layout changes the document's size, not the scroll area's)
+      this.rulerObserver.observe(this.surface);
     }
   }
 
