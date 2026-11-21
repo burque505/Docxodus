@@ -392,6 +392,27 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     run: (e, a) => must(e.insertHyperlink(a.string("target"), a.optOneOf("kind", ["external", "internal"] as const) ?? "external"), "hyperlink", "select the text to link first"),
   },
   removeHyperlink: { group: "insert", description: "Remove the link at the caret, keeping its text.", args: {}, run: (e) => { e.removeHyperlink(); } },
+  addBookmark: {
+    group: "insert", description: "Put a bookmark on the selection (or at the caret); a name the document already has moves that bookmark here, as Word's Bookmark > Add does.",
+    args: { name: "string" },
+    run: (e, a) => {
+      const r = e.addBookmark(a.string("name"));
+      must(r.ok, "addBookmark", r.code ? `the engine refused it (${r.code})` : "there is no caret in the document");
+    },
+  },
+  deleteBookmark: {
+    group: "insert", description: "Delete a bookmark (its text stays). Refused while a link or cross-reference uses it.",
+    args: { name: "string" },
+    run: (e, a) => {
+      const r = e.removeBookmark(a.string("name"));
+      must(r.ok, "deleteBookmark", r.code ? `the engine refused it (${r.code})` : "the engine refused it");
+    },
+  },
+  goToBookmark: {
+    group: "insert", description: "Select a bookmark's text (the caret, for an empty one) and scroll to it.",
+    args: { name: "string" },
+    run: (e, a) => must(e.goToBookmark(a.string("name")), "goToBookmark", "no such bookmark in the body, a header or a footer"),
+  },
   table: {
     group: "insert", description: "Insert a table at the caret: rows by columns, optionally borderless, its cells aligned.",
     args: { rows: "number", columns: "number", "align?": ALIGNMENTS.join("|"), "borderless?": "boolean" },
@@ -701,6 +722,11 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   picture: {
     group: "query", description: "The selected picture: id, wrap, size in points, alt text, title, layout, what can change.",
     args: {}, returns: "object, or null", run: (e) => e.selectedPicture(),
+  },
+  bookmarks: {
+    group: "query", description: "The document's bookmarks in document order: name and text (hidden: Word's own _Toc…, _Ref…, _GoBack too).",
+    args: { "hidden?": "boolean" }, returns: "array of { name, text }",
+    run: (e, a) => e.bookmarks(a.optBool("hidden") ?? false).map((b) => ({ name: b.name, text: b.text })),
   },
   tableInfo: {
     group: "query", description: "The Table Properties of the table, row and cell at the caret (width, alignment, indent, margins, alt text, row height, column widths, vertical alignment).",

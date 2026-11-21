@@ -48,6 +48,8 @@ import type {
   InlineSpan,
   HeaderFooterKind,
   HyperlinkInfo,
+  BookmarkInfo,
+  DocumentRange,
   ImageInsertOptions,
   ImageOccurrence,
   FloatingImageLayout,
@@ -248,6 +250,10 @@ export interface DocxEditorExports {
       target: string,
     ) => string;
     RemoveHyperlink?: (handle: number, hyperlinkId: string) => string;
+    ListBookmarks?: (handle: number, scopes: number) => string;
+    AddBookmark?: (handle: number, name: string, startAnchor: string, startOffset: number, endAnchor: string, endOffset: number) => string;
+    MoveBookmark?: (handle: number, name: string, startAnchor: string, startOffset: number, endAnchor: string, endOffset: number) => string;
+    RemoveBookmark?: (handle: number, name: string) => string;
     InsertImage?: (
       handle: number,
       anchor: string,
@@ -7073,6 +7079,189 @@ export class DocxEditor {
     if (!res.success) return false;
     if (unid) this.swapBlock(block, unid, res.modified?.[0]);
     return true;
+  }
+
+  // ─── Bookmarks ───────────────────────────────────────────────────────
+
+  /** The engine's bookmark list, read again only when the document's version moves. */
+  private bookmarkCache: { version: number | null; list: BookmarkInfo[] } | null = null;
+
+  /**
+   * The document's bookmarks, in document order. Word's own (`_Toc…`, `_Ref…`, `_GoBack`: a name
+   * starting with `_`) only with `hidden`, as Word's Bookmark dialog has them; Docxodus's managed
+   * ones never.
+   */
+  bookmarks(hidden = false): BookmarkInfo[] {
+    const bridge = this.exports.DocxSessionBridge;
+    if (this.closed || typeof bridge.ListBookmarks !== "function") return [];
+    let version: number | null = null;
+    try { version = this.version; } catch { version = null; }
+    let list = this.bookmarkCache && version !== null && this.bookmarkCache.version === version ? this.bookmarkCache.list : null;
+    if (!list) {
+      try {
+        list = JSON.parse(bridge.ListBookmarks(this.handle, 63 /* ProjectionScopes.All */)) as BookmarkInfo[];
+      } catch {
+        list = [];
+      }
+      this.bookmarkCache = { version, list };
+    }
+    return list.filter((b) => !b.isManaged && (hidden || !b.name.startsWith("_")));
+  }
+
+  /**
+   * The selection (or the caret) as a document range, its paragraphs' typing committed first; null
+   * when the caret is in no editable block. A dialog that takes the focus asks for this before it
+   * opens and hands it back to {@link addBookmark}.
+   */
+  selectionDocumentRange(): DocumentRange | null {
+    if (this.closed) return null;
+    const blocks = this.crossBlockSelection();
+    if (blocks) {
+      const targets = this.multiBlockTargets(blocks);
+      const first = targets[0], last = targets[targets.length - 1];
+      if (!first.fullId || !last.fullId) return null;
+      const startId = this.syncBlock(first.block, first.fullId);
+      const endId = this.syncBlock(last.block, last.fullId);
+      if (!startId || !endId) return null;
+      const lastSpan = last.span ?? { start: 0, length: blockContentText(last.block).length };
+      return { startAnchorId: startId, startOffset: first.span?.start ?? 0, endAnchorId: endId, endOffset: lastSpan.start + lastSpan.length };
+    }
+    const block = this.activeBlock;
+    if (!block?.isConnected) return null;
+    const fullId = this.anchorIdOf(block);
+    if (!fullId) return null;
+    const unid = block.getAttribute("data-anchor");
+    let span = selectionSpanIn(block);
+    if (!span) {
+      const caret = caretOffsetIn(block);
+      if (caret !== null) span = { start: caret, length: 0 };
+      else if (this.lastSelection && this.lastSelection.unid === unid) span = this.lastSelection.span;
+      else span = { start: 0, length: 0 };
+    }
+    const id = this.syncBlock(block, fullId);
+    if (!id) return null;
+    return { startAnchorId: id, startOffset: span.start, endAnchorId: id, endOffset: span.start + span.length };
+  }
+
+  /**
+   * Word's Bookmark > Add: put bookmark `name` on `range` (by default the selection, or the caret
+   * for an empty one). A name the document already has moves that bookmark here, as in Word. One
+   * undo step. The engine's refusal (an invalid or reserved name, ...) comes back as its code.
+   */
+  addBookmark(name: string, range?: DocumentRange | null): { ok: boolean; code?: string } {
+    const bridge = this.exports.DocxSessionBridge;
+    if (this.closed || typeof bridge.AddBookmark !== "function" || typeof bridge.MoveBookmark !== "function") return { ok: false };
+    const at = range ?? this.selectionDocumentRange();
+    if (!at) return { ok: false, code: "no_selection" };
+    const exists = this.bookmarks(true).some((b) => b.name === name);
+    const call = exists ? bridge.MoveBookmark : bridge.AddBookmark;
+    const old = exists ? this.bookmarkBlocks(name) : [];
+    const res = this.parseEdit(call(this.handle, name, at.startAnchorId, at.startOffset, at.endAnchorId, at.endOffset), { expectRejection: true });
+    if (!res.success) return { ok: false, code: res.error?.code };
+    this.rerenderBookmarkBlocks([...old, ...this.blocksOfAnchors([at.startAnchorId, at.endAnchorId])], res.modified ?? []);
+    return { ok: true };
+  }
+
+  /**
+   * Word's Bookmark > Delete. Refused (code `bookmark_in_use`) while a link or a cross-reference
+   * points to it: the reference would show "Error! Bookmark not defined.". One undo step.
+   */
+  removeBookmark(name: string): { ok: boolean; code?: string } {
+    const bridge = this.exports.DocxSessionBridge;
+    if (this.closed || typeof bridge.RemoveBookmark !== "function") return { ok: false };
+    const blocks = this.bookmarkBlocks(name);
+    const res = this.parseEdit(bridge.RemoveBookmark(this.handle, name), { expectRejection: true });
+    if (!res.success) return { ok: false, code: res.error?.code };
+    this.rerenderBookmarkBlocks(blocks, []);
+    return { ok: true };
+  }
+
+  /**
+   * Word's Bookmark > Go To: select the bookmarked text (place the caret, for an empty bookmark)
+   * and scroll it into view. False when the document has no such bookmark, or it lies where the
+   * editor shows no editable text (a footnote, an endnote, a comment).
+   */
+  goToBookmark(name: string): boolean {
+    const mark = this.bookmarks(true).find((b) => b.name === name);
+    const segments = mark?.segments ?? [];
+    if (!mark || segments.length === 0) return false;
+    const first = segments[0], last = segments[segments.length - 1];
+    const startBlock = this.blockOfAnchor(first.anchorId);
+    const endBlock = this.blockOfAnchor(last.anchorId);
+    if (!startBlock || !endBlock) return false;
+    startBlock.scrollIntoView({ block: "center" });
+    if (startBlock === endBlock) {
+      this.activeBlock = startBlock;
+      selectRange(startBlock, first.span.start, last.span.start + last.span.length - first.span.start);
+    } else {
+      this.selectBetween(contentPositionIn(startBlock, first.span.start), contentPositionIn(endBlock, last.span.start + last.span.length));
+    }
+    return true;
+  }
+
+  /**
+   * Where each bookmark starts and ends on screen (client coordinates, the caret's box there), for
+   * Word's "Show bookmarks" brackets. Bookmarks in text the editor does not show are left out.
+   */
+  bookmarkPositions(): Array<{ name: string; start: DOMRect; end: DOMRect; empty: boolean }> {
+    const out: Array<{ name: string; start: DOMRect; end: DOMRect; empty: boolean }> = [];
+    if (this.closed) return out;
+    const blocks = new Map<string, HTMLElement>();
+    for (const el of Array.from(this.container.querySelectorAll<HTMLElement>('[data-anchor][contenteditable="true"]'))) {
+      const id = this.anchorIdOf(el);
+      if (id && !blocks.has(id)) blocks.set(id, el);
+    }
+    for (const mark of this.bookmarks(false)) {
+      const segments = mark.segments;
+      if (segments.length === 0) continue;
+      const first = segments[0], last = segments[segments.length - 1];
+      const a = blocks.get(first.anchorId), b = blocks.get(last.anchorId);
+      if (!a || !b) continue;
+      const start = caretRect(contentPositionIn(a, first.span.start));
+      const end = caretRect(contentPositionIn(b, last.span.start + last.span.length));
+      if (!start || !end || (start.width === 0 && start.height === 0)) continue;
+      out.push({ name: mark.name, start, end, empty: a === b && first.span.length === 0 && segments.length === 1 });
+    }
+    return out;
+  }
+
+  /** The editable block of full anchor id `id` (the body's, or a header's or footer's), or null. */
+  private blockOfAnchor(id: string): HTMLElement | null {
+    for (const el of Array.from(this.container.querySelectorAll<HTMLElement>('[data-anchor][contenteditable="true"]')))
+      if (this.anchorIdOf(el) === id) return el;
+    return null;
+  }
+
+  private blocksOfAnchors(ids: string[]): HTMLElement[] {
+    return ids.map((id) => this.blockOfAnchor(id)).filter((el): el is HTMLElement => !!el);
+  }
+
+  /** The blocks bookmark `name` starts and ends in. */
+  private bookmarkBlocks(name: string): HTMLElement[] {
+    const segments = this.bookmarks(true).find((b) => b.name === name)?.segments ?? [];
+    if (segments.length === 0) return [];
+    return this.blocksOfAnchors([segments[0].anchorId, segments[segments.length - 1].anchorId]);
+  }
+
+  /** Render the blocks whose bookmark markers changed afresh (the converter writes each bookmark's
+   *  start as a link target), keeping the caret's block where it was. */
+  private rerenderBookmarkBlocks(blocks: HTMLElement[], modified: AnchorRef[]): void {
+    const active = this.activeBlock;
+    const caret = active ? caretOffsetIn(active) : null;
+    const seen = new Set<HTMLElement>();
+    for (const el of blocks) {
+      if (seen.has(el) || !el.isConnected) continue;
+      seen.add(el);
+      const unid = el.getAttribute("data-anchor");
+      if (!unid) continue;
+      const id = this.anchorIdOf(el);
+      const ref = modified.find((m) => m.id === id || m.unid === unid);
+      const fresh = this.swapBlock(el, unid, ref);
+      if (el === active && fresh) {
+        this.activeBlock = fresh;
+        if (caret !== null) placeCaretAtOffset(fresh, caret);
+      }
+    }
   }
 
   /** Insert an inline image (base64 bytes) at the caret in the active body block. */

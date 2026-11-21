@@ -43,7 +43,7 @@ import type { RibbonHistoryBinding } from './ribbon-history.js';
 export type { RibbonHistoryBinding, RibbonHistoryOptions } from './ribbon-history.js';
 import type { BandWhich } from "./editor-headerfooter.js";
 import { TrackedChangeMode } from "./types.js";
-import type { ColumnsApplyTo, ColumnsOp, LineNumbering, ListFormat, ListLevelSpec, NumberFormat, SectionStart } from "./types.js";
+import type { ColumnsApplyTo, ColumnsOp, DocumentRange, LineNumbering, ListFormat, ListLevelSpec, NumberFormat, SectionStart } from "./types.js";
 import {
   COMMON_FONTS,
   HIGHLIGHT_COLORS,
@@ -62,6 +62,7 @@ import { LIST_DIALOG_CSS, LIST_DIALOG_HTML, ListDialog } from "./ribbon-list-dia
 import { COLUMNS_DIALOG_CSS, COLUMNS_DIALOG_HTML, ColumnsDialog } from "./ribbon-columns-dialog.js";
 import { LINE_NUMBERS_DIALOG_CSS, LINE_NUMBERS_DIALOG_HTML, LineNumbersDialog } from "./ribbon-linenumbers-dialog.js";
 import { TABS_DIALOG_CSS, TABS_DIALOG_HTML, TabsDialog } from "./ribbon-tabs-dialog.js";
+import { BOOKMARK_DIALOG_CSS, BOOKMARK_DIALOG_HTML, BookmarkDialog } from "./ribbon-bookmark-dialog.js";
 import { Ruler, RULER_CSS } from "./ruler.js";
 import { TABLE_DIALOG_CSS, TABLE_DIALOG_HTML, TableDialog, type TableDialogResult, type TableDialogTab } from "./ribbon-table-dialog.js";
 import { PICTURE_DIALOG_CSS, PICTURE_DIALOG_HTML, PICTURE_MENU_HTML, PictureDialog, type PictureDialogResult, type PictureDialogTab } from "./ribbon-picture-dialog.js";
@@ -348,6 +349,11 @@ export interface RibbonEditor {
   openTabsDialog(): boolean;
   /** Show or hide the ruler (the View tab's Ruler box). */
   setRulerVisible(on: boolean): void;
+  /** Open the Bookmark dialog (Word's Insert > Bookmark) on the selection; false when no document is open. */
+  openBookmarkDialog(): boolean;
+  /** Show or hide bookmarks in the text as gray brackets (the View tab's Bookmarks box, Word's
+   *  Show bookmarks). */
+  setShowBookmarks(on: boolean): void;
   /** Open the picture dialog (Size, Text Wrapping and Position, Alt Text) on the selected picture;
    *  false when no picture is selected. */
   openPictureDialog(tab?: "size" | "layout" | "alt"): boolean;
@@ -442,7 +448,8 @@ const CONTROL_NAMES = [
   "zoomout", "zoomlevel", "zoomin",
   "gridpicker", "gridcells", "gridlabel", "gridalign", "gridborderless",
   "filebutton", "filemenu", "filerecent", "filerecentitems", "filehostitems",
-  "linkpop", "linkform", "linkurl", "linkcancel",
+  "linkpop", "linkform", "linkurl", "linkbookmark", "linkcancel",
+  "bookmark", "bookmarkdialog", "showbookmarks",
   "editor",
   "loader", "loaderEyebrow", "loaderTitle", "loaderCopy", "loaderAd", "loaderNumber",
   "loaderAdTitle", "loaderAdCopy", "loaderBar", "loaderLabel", "loaderMeta", "loaderRetry",
@@ -461,7 +468,7 @@ function ensureStyles(doc: Document): void {
   existing?.remove();
   const style = doc.createElement("style");
   style.setAttribute(RIBBON_STYLE_ATTR, RIBBON_STYLE_VERSION);
-  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + RULER_CSS;
+  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + BOOKMARK_DIALOG_CSS + RULER_CSS;
   (doc.head ?? doc.documentElement).appendChild(style);
 }
 
@@ -571,6 +578,12 @@ class RibbonSurface implements RibbonEditor {
   private rulerUnit: MeasurementUnit = "in";
   private rulerObserver: ResizeObserver | null = null;
   private focusRing: HTMLElement | null = null;
+  private bookmarkDialog!: BookmarkDialog;
+  /** The selection the Bookmark dialog was opened on: its Add puts the bookmark there. */
+  private bookmarkRange: DocumentRange | null = null;
+  /** The layer Show bookmarks draws its brackets in (made the first time they show). */
+  private bookmarkLayer: HTMLElement | null = null;
+  private showBookmarks = false;
   private pictureUnit: MeasurementUnit = "in";
   private listDialog!: ListDialog;
   private listDefaults: ListLevelSpec[] | undefined;
@@ -617,7 +630,7 @@ class RibbonSurface implements RibbonEditor {
     root.className = "dxr";
     root.dataset.state = "idle";
     root.dataset.frame = this.options.frame ?? "flush";
-    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML + TABLE_DIALOG_HTML + LINE_NUMBERS_DIALOG_HTML + TABS_DIALOG_HTML;
+    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML + TABLE_DIALOG_HTML + LINE_NUMBERS_DIALOG_HTML + TABS_DIALOG_HTML + BOOKMARK_DIALOG_HTML;
     for (const el of Array.from(root.querySelectorAll<HTMLElement>("[data-dxr]"))) {
       el.id = this.idPrefix + el.dataset.dxr;
     }
@@ -1410,6 +1423,7 @@ class RibbonSurface implements RibbonEditor {
     this.rulerObserver?.disconnect();
     this.ruler?.destroy();
     this.focusRing?.remove();
+    this.bookmarkLayer?.remove();
     if (this.statsTimer != null) clearTimeout(this.statsTimer);
     this.stopRotation();
     try {
@@ -1801,6 +1815,94 @@ class RibbonSurface implements RibbonEditor {
       this.setStatus(this.translateText(RIBBON_STATUS_TEXTS.lineNumbersPageView));
   }
 
+  private wireBookmarks(): void {
+    this.bookmarkDialog = new BookmarkDialog(this.require<HTMLDialogElement>("bookmarkdialog"), {
+      list: (hidden) => this.live?.bookmarks(hidden) ?? [],
+      add: (name) => {
+        let result: { ok: boolean; code?: string } = { ok: false };
+        this.run("bookmark", () => { result = this.live!.addBookmark(name, this.bookmarkRange); },
+          () => result.ok ? cmd("addBookmark", { name }) : undefined);
+        return result;
+      },
+      remove: (name) => {
+        let result: { ok: boolean; code?: string } = { ok: false };
+        this.run("delete bookmark", () => { result = this.live!.removeBookmark(name); },
+          () => result.ok ? cmd("deleteBookmark", { name }) : undefined);
+        if (result.code === "bookmark_in_use") this.setStatus(this.translateText(RIBBON_STATUS_TEXTS.bookmarkInUse));
+        return result;
+      },
+      goTo: (name) => {
+        const ok = !!this.live?.goToBookmark(name);
+        if (ok) this.options.onCommand?.("go to bookmark", 0, cmd("goToBookmark", { name }));
+        this.scheduleRuler();
+        return ok;
+      },
+    });
+    const button = this.require("bookmark");
+    this.keepSelection(button);
+    button.addEventListener("click", () => { this.openBookmarkDialog(); });
+    const box = this.require<HTMLInputElement>("showbookmarks");
+    // (a way of looking, as the Ruler box: not a command a recording replays)
+    box.addEventListener("change", () => this.setShowBookmarks(box.checked));
+  }
+
+  openBookmarkDialog(): boolean {
+    if (!this.live || this.bookmarkDialog.open || this.paragraphDialog.open || this.listDialog.open) return false;
+    this.closePopovers();
+    // (the dialog takes the focus, and with it the document's selection: Add uses this one)
+    this.bookmarkRange = this.live.selectionDocumentRange();
+    this.bookmarkDialog.show();
+    return true;
+  }
+
+  setShowBookmarks(on: boolean): void {
+    this.showBookmarks = on;
+    const box = this.control<HTMLInputElement>("showbookmarks");
+    if (box) box.checked = on;
+    this.scheduleRuler();
+  }
+
+  /** Word's Show bookmarks: a gray bracket where each bookmark starts and ends, an I-beam for an
+   *  empty one. Drawn over the document (its text and offsets stay as they are), clipped to the
+   *  scroll area, again after every edit, scroll and resize. */
+  private drawBookmarks(): void {
+    const layer = this.bookmarkLayer;
+    if (!this.showBookmarks || !this.live) {
+      if (layer) layer.hidden = true;
+      return;
+    }
+    const doc = this.element.ownerDocument;
+    let host = layer;
+    if (!host) {
+      host = doc.createElement("div");
+      host.className = "dxr-bkmarks";
+      host.dataset.dxr = "bookmarkmarks";
+      this.element.appendChild(host);
+      this.bookmarkLayer = host;
+    }
+    host.hidden = false;
+    const area = this.element.querySelector<HTMLElement>("[data-dxr-scroll]")?.getBoundingClientRect();
+    host.style.clipPath = area
+      ? `inset(${Math.max(0, area.top)}px ${Math.max(0, (doc.defaultView?.innerWidth ?? area.right) - area.right)}px ${Math.max(0, (doc.defaultView?.innerHeight ?? area.bottom) - area.bottom)}px ${Math.max(0, area.left)}px)`
+      : "none";
+    const marks: HTMLElement[] = [];
+    const add = (side: "start" | "end" | "empty", rect: DOMRect, name: string) => {
+      const mark = doc.createElement("span");
+      mark.className = "dxr-bkmark";
+      mark.dataset.side = side;
+      mark.dataset.name = name;
+      const left = side === "start" ? rect.left - 1 : side === "end" ? rect.left - 3 : rect.left - 2.5;
+      Object.assign(mark.style, { left: `${left}px`, top: `${rect.top}px`, height: `${Math.max(rect.height, 8)}px` });
+      marks.push(mark);
+    };
+    for (const mark of this.live.bookmarkPositions()) {
+      if (mark.empty) { add("empty", mark.start, mark.name); continue; }
+      add("start", mark.start, mark.name);
+      add("end", mark.end, mark.name);
+    }
+    host.replaceChildren(...marks);
+  }
+
   private wireRuler(): void {
     this.rulerUnit = this.options.measurementUnit ?? "in";
     this.tabsDialog = new TabsDialog(this.require<HTMLDialogElement>("tabsdialog"), {
@@ -1852,6 +1954,7 @@ class RibbonSurface implements RibbonEditor {
     this.rulerFrame = requestAnimationFrame(() => {
       this.rulerFrame = null;
       this.syncFocusRing();
+      this.drawBookmarks();
       if (!this.ruler.element.hidden) this.ruler.refresh();
     });
   }
@@ -1951,6 +2054,7 @@ class RibbonSurface implements RibbonEditor {
     this.wirePicture();
     this.wireTable();
     this.wireLineNumbers();
+    this.wireBookmarks();
     this.wireRuler();
     const ribbon = this.require("ribbon");
 
@@ -2942,7 +3046,7 @@ class RibbonSurface implements RibbonEditor {
 
   private handleShortcut(event: KeyboardEvent): void {
     // A dialog owns its keys while it is open.
-    if (this.paragraphDialog?.open || this.listDialog?.open) return;
+    if (this.paragraphDialog?.open || this.listDialog?.open || this.bookmarkDialog?.open) return;
     // Alt+F opens the File menu, as in Word.
     if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && (event.key ?? "").toLowerCase() === "f") {
       event.preventDefault();
@@ -2965,6 +3069,12 @@ class RibbonSurface implements RibbonEditor {
       return;
     }
     if (!this.live || !(event.ctrlKey || event.metaKey)) return;
+    // Ctrl+Shift+F5: Word's Bookmark dialog.
+    if (event.key === "F5" && event.shiftKey && !event.altKey) {
+      event.preventDefault();
+      this.openBookmarkDialog();
+      return;
+    }
     const key = (event.key ?? "").toLowerCase();    // (no key: an autofill pick in a text box)
     const target = event.target instanceof Element ? event.target : null;
     // (by its path, not by where the target is now: the editor's own chords re-render the block they
@@ -3092,13 +3202,19 @@ class RibbonSurface implements RibbonEditor {
       else this.openLinkPopover();
     });
     this.control("linkcancel")?.addEventListener("click", () => this.closePopovers());
+    const place = this.require<HTMLSelectElement>("linkbookmark");
+    // A place in the document (a bookmark) or a web address: choosing one sets the other aside.
+    place.addEventListener("change", () => { url.disabled = !!place.value; if (!place.value) url.focus(); });
     form.addEventListener("submit", (event) => {
       event.preventDefault();
-      const target = url.value.trim();
+      const bookmark = place.value;
+      const target = bookmark || url.value.trim();
       if (!target || !this.live) return;
       this.closePopovers();
       let ok = false;
-      this.run("link", () => { ok = this.live!.insertHyperlink(target); }, () => (ok ? cmd("hyperlink", { target }) : undefined));
+      const kind = bookmark ? "internal" : "external";
+      this.run("link", () => { ok = this.live!.insertHyperlink(target, kind); },
+        () => (ok ? cmd("hyperlink", bookmark ? { target, kind } : { target }) : undefined));
       if (!ok) this.setStatus("Select the text to link first");
     });
     url.addEventListener("keydown", (event) => {
@@ -3112,11 +3228,26 @@ class RibbonSurface implements RibbonEditor {
     const pop = this.require("linkpop");
     const url = this.require<HTMLInputElement>("linkurl");
     const existing = this.live.hyperlinkAtCaret();
-    url.value = existing?.target ?? "";
+    const internal = existing?.kind === "internal";
+    url.value = internal ? "" : existing?.target ?? "";
+    // (the document's bookmarks, Word's own hidden ones left out, as Word's Link dialog lists them)
+    const place = this.require<HTMLSelectElement>("linkbookmark");
+    const none = place.options[0];
+    place.replaceChildren(none);
+    for (const mark of this.live.bookmarks(false)) {
+      const option = place.ownerDocument.createElement("option");
+      option.value = mark.name;
+      option.textContent = mark.name;
+      option.title = mark.text;
+      place.appendChild(option);
+    }
+    place.value = internal && existing?.target && Array.from(place.options).some((o) => o.value === existing.target) ? existing.target : "";
+    place.disabled = place.options.length < 2;
+    url.disabled = !!place.value;
     pop.setAttribute("data-open", "");
     this.positionPopover(pop, this.require("link"));
-    url.focus();
-    url.select();
+    if (url.disabled) place.focus();
+    else { url.focus(); url.select(); }
   }
 
   private closePopovers(): void {

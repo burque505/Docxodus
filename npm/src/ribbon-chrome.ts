@@ -29,7 +29,7 @@
  */
 
 /** Bumped whenever RIBBON_CSS changes, so a stale injected stylesheet is replaced. */
-export const RIBBON_STYLE_VERSION = "21";
+export const RIBBON_STYLE_VERSION = "22";
 export const RIBBON_STYLE_ATTR = "data-docxodus-ribbon-styles";
 
 /** Width of the comment gutter the surface reserves beside the sheet, in px. */
@@ -644,6 +644,16 @@ export const RIBBON_CSS = `
 .dxr-pop form .dxr-row { justify-content: flex-end; }
 .dxr-pop form button[type="submit"] { background: var(--dxr-accent); color: #fff; }
 .dxr-pop form button[type="submit"]:hover { background: var(--dxr-accent-hover); }
+.dxr-pop form input:disabled { opacity: .55; }
+
+/* Show bookmarks (View > Bookmarks): Word's gray brackets, drawn over the text. */
+.dxr-bkmarks { position: fixed; inset: 0; pointer-events: none; z-index: 1; }
+.dxr-bkmarks[hidden] { display: none; }
+.dxr-bkmark { position: absolute; width: 3px; box-sizing: border-box; border: 1.5px solid #8c8c8c; }
+.dxr-bkmark[data-side="start"] { border-right: 0; }
+.dxr-bkmark[data-side="end"] { border-left: 0; }
+.dxr-bkmark[data-side="empty"] { width: 5px; border-left: 0; border-right: 0;
+  background: linear-gradient(#8c8c8c, #8c8c8c) center / 1.5px 100% no-repeat; }
 
 /* ── Compact chrome (the mobile-first base) ───────────────────────────────────
    One scrolling strip per tab instead of a multi-row ribbon: group labels turn
@@ -1167,6 +1177,7 @@ export const RIBBON_HTML = `
         <div class="dxr-row">
           <button type="button" data-dxr="link" title="Link the selected text to a URL (Ctrl+K)">&#128279; Link</button>
           <button type="button" data-dxr="unlink" title="Remove the link at the caret">Unlink</button>
+          <button type="button" data-dxr="bookmark" title="Add, delete or go to a bookmark (Ctrl+Shift+F5)">&#128278; Bookmark</button>
         </div>
       </div>
       <div class="dxr-group">
@@ -1426,6 +1437,7 @@ export const RIBBON_HTML = `
         <span class="dxr-glabel">Show</span>
         <div class="dxr-row">
           <label class="dxr-toggle"><input data-dxr="showruler" type="checkbox" /> Ruler</label>
+          <label class="dxr-toggle" title="Show where bookmarks start and end, as gray brackets"><input data-dxr="showbookmarks" type="checkbox" /> Bookmarks</label>
           <label class="dxr-toggle"><input data-dxr="showrail" type="checkbox" checked /> Status bar</label>
           <label class="dxr-toggle"><input data-dxr="showhint" type="checkbox" checked /> Editing hint</label>
         </div>
@@ -1700,7 +1712,8 @@ export const RIBBON_HTML = `
 <!-- Link popover, anchored to the Insert tab's Link button. -->
 <div class="dxr-pop" data-dxr="linkpop">
   <form data-dxr="linkform">
-    <label>Address <input data-dxr="linkurl" type="url" placeholder="https://" required /></label>
+    <label>Address <input data-dxr="linkurl" type="url" placeholder="https://" /></label>
+    <label>Or a place in this document <select data-dxr="linkbookmark"><option value="">(none: the address above)</option></select></label>
     <div class="dxr-row">
       <button type="button" data-dxr="linkcancel">Cancel</button>
       <button type="submit">Insert link</button>
@@ -1741,6 +1754,7 @@ export const RIBBON_STATUS_TEXTS = {
   columnsRefused: "Columns go in the body, each at least half an inch wide, and a new section cannot start while changes are tracked",
   lineNumbersPageView: "Line numbers show in page view",
   noSectionBreak: "There is no section break to remove: the document is one section",
+  bookmarkInUse: "A link or cross-reference uses this bookmark, so it is not deleted",
 } as const;
 
 /** The default hint copy, shown above the document in full chrome. */
