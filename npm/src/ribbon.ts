@@ -593,9 +593,6 @@ class RibbonSurface implements RibbonEditor {
   private focusRing: HTMLElement | null = null;
   private bookmarkDialog!: BookmarkDialog;
   private crossRefDialog!: CrossReferenceDialog;
-  /** Where the Cross-reference dialog's next Insert goes: the selection it was opened on, then
-   *  after the last reference it inserted. */
-  private crossRefRange: DocumentRange | null = null;
   /** The selection the Bookmark dialog was opened on: its Add puts the bookmark there. */
   private bookmarkRange: DocumentRange | null = null;
   /** The layer Show bookmarks draws its brackets in (made the first time they show). */
@@ -1061,6 +1058,7 @@ class RibbonSurface implements RibbonEditor {
   }
 
   private finishOpen(candidate: DocxEditor, paginated: boolean, started: number, name?: string): DocxEditor {
+    this.crossRefDialog?.close();
     this.live?.close();
     candidate.adoptContainer(this.surface);
     this.surface.dataset.view = paginated ? "paginated" : "continuous";
@@ -1912,14 +1910,15 @@ class RibbonSurface implements RibbonEditor {
           : (() => { const n = live.numberedItems().find((i) => i.anchorId === key); return n ? `${n.number} ${n.text}`.trim() : key; })();
         const options = crossReferenceOptionsFor(insert, hyperlink, position);
         this.run("cross-reference", () => {
-          result = live.insertCrossReference(this.crossRefRange, type === "bookmark" ? { bookmark: key } : { anchorId: key }, options);
+          // (the dialog is not modal: the reference goes at the document's caret as it is now)
+          result = live.insertCrossReference(live.selectionDocumentRange(), type === "bookmark" ? { bookmark: key } : { anchorId: key }, options);
         }, () => result.ok ? cmd("crossReference", { type, target, insert, ...(hyperlink ? { hyperlink } : {}), ...(position && options.includePosition ? { position } : {}) }) : undefined);
-        if (result.ok && result.after) this.crossRefRange = result.after;
         return result;
       },
       closed: () => {
-        if (this.crossRefRange) this.live?.placeCaretAt(this.crossRefRange);
-        this.crossRefRange = null;
+        const live = this.live;
+        const at = live?.selectionDocumentRange();
+        if (live && at) live.placeCaretAt(at);
         this.scheduleRuler();
       },
     });
@@ -1929,10 +1928,8 @@ class RibbonSurface implements RibbonEditor {
   }
 
   openCrossReferenceDialog(): boolean {
-    if (!this.live || this.crossRefDialog.open || this.bookmarkDialog.open || this.paragraphDialog.open || this.listDialog.open) return false;
+    if (!this.live || this.bookmarkDialog.open || this.paragraphDialog.open || this.listDialog.open) return false;
     this.closePopovers();
-    // (the dialog takes the focus, and with it the document's selection: Insert uses this one)
-    this.crossRefRange = this.live.selectionDocumentRange();
     this.crossRefDialog.show();
     return true;
   }
@@ -3222,7 +3219,9 @@ class RibbonSurface implements RibbonEditor {
 
   private handleShortcut(event: KeyboardEvent): void {
     // A dialog owns its keys while it is open.
-    if (this.paragraphDialog?.open || this.listDialog?.open || this.bookmarkDialog?.open || this.crossRefDialog?.open) return;
+    if (this.paragraphDialog?.open || this.listDialog?.open || this.bookmarkDialog?.open) return;
+    // (the Cross-reference dialog stays open beside the document: only the keys typed in it are its own)
+    if (this.crossRefDialog?.open && this.crossRefDialog.contains(event.target instanceof Node ? event.target : null)) return;
     // Alt+F opens the File menu, as in Word.
     if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && (event.key ?? "").toLowerCase() === "f") {
       event.preventDefault();

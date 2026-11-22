@@ -1,10 +1,11 @@
 /**
  * The ribbon's Cross-reference dialog — Word's Insert > Cross-reference: a reference type
  * (heading, bookmark, numbered item), what the reference shows, "Insert as hyperlink" and
- * "Include above/below", and the list of targets. Insert leaves the dialog open for the next one,
- * as Word's does; Cancel becomes Close after the first.
+ * "Include above/below", and the list of targets. As in Word, it stays open beside the document
+ * (not modal): the user can click and type in the text between references, and Insert puts the
+ * next one at the caret. Cancel becomes Close after the first.
  */
-import { makeDialogMovable, restoreDialogPlace } from "./ribbon-paragraph-dialog.js";
+import { makeDialogMovable, placeDialogAt, restoreDialogPlace } from "./ribbon-paragraph-dialog.js";
 import {
   CROSS_REFERENCE_INSERTS,
   crossReferenceInsertLabel,
@@ -15,6 +16,7 @@ import {
 
 export const CROSSREF_DIALOG_CSS = `
 .dxr-xrdialog { width: min(440px, calc(100vw - 32px)); }
+.dxr-xrdialog[open]:not(:modal) { position: fixed; z-index: 40; margin: 0; box-shadow: 0 8px 28px rgba(15, 23, 42, .22); }
 .dxr-xrdialog .dxr-xrbody { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; padding: 10px 16px 4px; }
 .dxr-xrdialog .dxr-xrfield { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .dxr-xrdialog .dxr-xrfield select { width: 100%; box-sizing: border-box; }
@@ -66,9 +68,9 @@ export interface CrossReferenceTarget {
 
 export interface CrossReferenceDialogHost {
   targets(type: CrossReferenceType): CrossReferenceTarget[];
-  /** Insert the reference where the dialog was opened (then after the last one inserted). */
+  /** Insert the reference at the document's caret (or over its selection). */
   insert(type: CrossReferenceType, key: string, insert: CrossReferenceInsert, hyperlink: boolean, position: boolean): { ok: boolean; code?: string };
-  /** The dialog closed: put the caret back in the document. */
+  /** The dialog closed: the focus goes back to the document. */
   closed(): void;
 }
 
@@ -94,26 +96,50 @@ export class CrossReferenceDialog {
       this.insert();
     });
     dialog.addEventListener("cancel", (event) => { event.preventDefault(); this.close(); });
+    // (not modal, so Escape is the dialog's own to handle; Enter in the list inserts)
+    dialog.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); this.close(); }
+      else if (event.key === "Enter" && event.target === this.list) { event.preventDefault(); this.insert(); }
+    });
+    // (the document may have changed while the dialog stood open: list its targets again when the list is used)
+    this.list.addEventListener("focus", () => this.fillList());
+    // (the buttons keep the document's selection: Insert goes where its caret is)
+    for (const button of Array.from(dialog.querySelectorAll<HTMLButtonElement>("button")))
+      button.addEventListener("mousedown", (event) => event.preventDefault());
   }
 
   get open(): boolean {
     return this.dialog.open;
   }
 
+  /** Open beside the document (or, already open, bring the focus to it). */
   show(): void {
+    if (this.dialog.open) { this.fillList(); this.list.focus(); return; }
     this.fillInsert();
     this.fillList();
     this.closeLabel(false);
     this.showError(null);
     this.dialog.returnValue = "";
-    this.dialog.showModal();
-    restoreDialogPlace(this.dialog);
+    this.dialog.show();
+    if (this.dialog.style.left) restoreDialogPlace(this.dialog);
+    else {
+      // (first time: at the window's right, below the ribbon, where it hides the least text)
+      const view = this.dialog.ownerDocument.defaultView ?? window;
+      placeDialogAt(this.dialog, view.innerWidth - this.dialog.getBoundingClientRect().width - 24, 150);
+    }
     this.select("type").focus();
   }
 
-  private close(): void {
+  /** Close it (also when the document closes or another opens). */
+  close(): void {
+    if (!this.dialog.open) return;
     this.dialog.close("close");
     this.host.closed();
+  }
+
+  /** True when `node` is in the dialog (its keys are its own). */
+  contains(node: Node | null): boolean {
+    return !!node && this.dialog.contains(node);
   }
 
   private insert(): void {

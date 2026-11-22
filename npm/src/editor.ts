@@ -2122,6 +2122,9 @@ export class DocxEditor {
    * block, and cleared when a caret is collapsed inside a block (so it never goes stale).
    */
   private lastSelection: { unid: string; span: { start: number; length: number } } | null = null;
+  /** The last collapsed caret in a block: what {@link selectionDocumentRange} reads once the focus
+   *  has gone to a dialog that stays open beside the document (Cross-reference). */
+  private lastCaret: { unid: string; offset: number } | null = null;
 
   /**
    * Stable bookmark for a selection spanning independent editable blocks. Native controls such as
@@ -2285,6 +2288,9 @@ export class DocxEditor {
     if (range.collapsed) {
       this.lastSelection = null; // an explicit caret in a block — drop any stale selection
       this.lastCrossBlockSelection = null;
+      const caretUnid = block.getAttribute("data-anchor");
+      const caretAt = caretUnid ? caretOffsetIn(block) : null;
+      this.lastCaret = caretUnid && caretAt !== null ? { unid: caretUnid, offset: caretAt } : null;
       return;
     }
     if (
@@ -7153,6 +7159,7 @@ export class DocxEditor {
       const caret = caretOffsetIn(block);
       if (caret !== null) span = { start: caret, length: 0 };
       else if (this.lastSelection && this.lastSelection.unid === unid) span = this.lastSelection.span;
+      else if (this.lastCaret && this.lastCaret.unid === unid) span = { start: this.lastCaret.offset, length: 0 };
       else span = { start: 0, length: 0 };
     }
     const id = this.syncBlock(block, fullId);

@@ -108,6 +108,44 @@ test('Insert twice: the second reference goes after the first; the _Ref bookmark
   expect(hidden).toHaveLength(1);
 });
 
+test('the dialog is not modal: click and type in the text, insert at the new caret, undo, all while it stays open', async ({ page }) => {
+  await mount(page, ['1 Intro', '1 Methods', 'First: ', 'Second: ']);
+  await caretAtEnd(page, 2);
+  await openDialog(page);
+  expect(await dialog(page).evaluate((d) => d.matches(':modal'))).toBe(false);
+  await xr(page, 'list').selectOption({ index: 0 });
+  await xr(page, 'insertbtn').click();
+  // into the text with the dialog still open: type there, then insert at that caret
+  await caretAtEnd(page, 3);
+  await page.keyboard.type('see ');
+  await expect(dialog(page)).toBeVisible();
+  await xr(page, 'list').selectOption({ index: 1 });
+  await xr(page, 'insertbtn').click();
+  await expect(dialog(page)).toBeVisible();
+  expect(await text(page, 2)).toBe('First: Intro');
+  expect(await text(page, 3)).toBe('Second: see Methods');
+  // a heading added meanwhile shows in the list when it is used next
+  await page.locator(blocks).nth(3).click();
+  await page.keyboard.press('End');
+  await page.keyboard.press('Enter');
+  await page.keyboard.type('Results');
+  await page.evaluate(() => (window as any).__ribbon.exec('style', { styleId: 'Heading1' }));
+  await xr(page, 'list').focus();
+  await expect(xr(page, 'list').locator('option')).toHaveText(['Intro', 'Methods', 'Results']);
+  // the document's own keys still work: Ctrl+Z in the text takes back the edits, then the second reference
+  await page.locator(blocks).nth(3).click();
+  for (let i = 0; i < 10 && (await fields(page).count()) > 1; i++) {
+    await page.keyboard.press('Control+z');
+    await page.waitForTimeout(100);
+  }
+  await expect(fields(page)).toHaveCount(1);
+  await expect(dialog(page)).toBeVisible();
+  // Escape in the dialog closes it
+  await xr(page, 'list').focus();
+  await page.keyboard.press('Escape');
+  await expect(dialog(page)).toBeHidden();
+});
+
 test('a bookmark, above/below; the field stays whole when typing beside it, and is gray there', async ({ page }) => {
   await mount(page, ['Alpha one', 'Beta two', 'Gamma ']);
   await page.locator(blocks).first().click();
