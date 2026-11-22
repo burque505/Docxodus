@@ -83,6 +83,11 @@ internal sealed record HtmlConversionOptions
     /// default; the browser editor's render profile turns it on.</summary>
     public bool StampReferenceFields { get; init; }
 
+    /// <summary>Mark page breaks outside paginated output with <c>data-docx-page-break</c> (see
+    /// <see cref="WmlToHtmlConverterSettings.MarkPageBreaks"/>). Off by default; the browser
+    /// editor's render profile turns it on.</summary>
+    public bool MarkPageBreaks { get; init; }
+
     /// <summary>
     /// Block renders only: also stamp the marker when the batch contains a block from a header or
     /// footer part, whatever <see cref="StampPageNumberFields"/> says. Running stories are only
@@ -197,6 +202,7 @@ internal static class HtmlConversionOps
             NormalizeBulletMarkers = options.NormalizeBulletMarkers,
             StampPageNumberFields = options.StampPageNumberFields,
             StampReferenceFields = options.StampReferenceFields,
+            MarkPageBreaks = options.MarkPageBreaks,
             AuthorColors = options.AuthorColors is null ? null : new Dictionary<string, string>(options.AuthorColors),
             // Embed images as base64 data URIs — no SkiaSharp needed (WASM-safe).
             ImageHandler = CreateBase64ImageHandler(),
@@ -1410,6 +1416,7 @@ internal static class HtmlConversionOps
             // itself painting page boxes. Default false keeps the pinned output identical.
             StampPageNumberFields = options.StampPageNumberFields,
             StampReferenceFields = options.StampReferenceFields,
+            MarkPageBreaks = options.MarkPageBreaks,
             // Pagination changes within-block output too: an anchored picture or text box is
             // positioned absolutely inside its page box, where the flow render centres it as a
             // block. A block re-rendered into a paginated editor must follow the same profile,

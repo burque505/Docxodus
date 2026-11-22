@@ -246,6 +246,14 @@ namespace Docxodus
         public bool StampReferenceFields;
 
         /// <summary>
+        /// If true, a page break (<c>w:br w:type="page"</c>) rendered outside paginated mode, where it
+        /// is a line break like any other, also carries <c>data-docx-page-break="true"</c>, so an
+        /// editor showing the document as one flow can still find where its pages start. Default
+        /// false: the output is unchanged.
+        /// </summary>
+        public bool MarkPageBreaks;
+
+        /// <summary>
         /// If not None, render document with page containers in PDF.js style.
         /// Default: None (continuous scrolling layout).
         /// </summary>
@@ -421,6 +429,7 @@ namespace Docxodus
             IncludeCommentMetadata = true;
             StampPageNumberFields = false;
             StampReferenceFields = false;
+            MarkPageBreaks = false;
             RenderPagination = PaginationMode.None;
             PaginationScale = 1.0;
             PaginationCssClassPrefix = "page-";
@@ -467,6 +476,7 @@ namespace Docxodus
             IncludeCommentMetadata = htmlConverterSettings.IncludeCommentMetadata;
             StampPageNumberFields = htmlConverterSettings.StampPageNumberFields;
             StampReferenceFields = htmlConverterSettings.StampReferenceFields;
+            MarkPageBreaks = htmlConverterSettings.MarkPageBreaks;
             RenderPagination = htmlConverterSettings.RenderPagination;
             PaginationScale = htmlConverterSettings.PaginationScale;
             PaginationCssClassPrefix = htmlConverterSettings.PaginationCssClassPrefix;
@@ -599,6 +609,14 @@ namespace Docxodus
         public bool StampReferenceFields;
 
         /// <summary>
+        /// If true, a page break (<c>w:br w:type="page"</c>) rendered outside paginated mode, where it
+        /// is a line break like any other, also carries <c>data-docx-page-break="true"</c>, so an
+        /// editor showing the document as one flow can still find where its pages start. Default
+        /// false: the output is unchanged.
+        /// </summary>
+        public bool MarkPageBreaks;
+
+        /// <summary>
         /// If not None, render document with page containers in PDF.js style.
         /// Default: None (continuous scrolling layout).
         /// </summary>
@@ -703,6 +721,7 @@ namespace Docxodus
             IncludeCommentMetadata = true;
             StampPageNumberFields = false;
             StampReferenceFields = false;
+            MarkPageBreaks = false;
             RenderPagination = PaginationMode.None;
             PaginationScale = 1.0;
             PaginationCssClassPrefix = "page-";
@@ -6081,7 +6100,8 @@ namespace Docxodus
                          paragraph.Elements(W.pPr).Elements(W.bidi).Any(b => b.Attribute(W.val) == null ||
                                                                              b.Attribute(W.val).ToBoolean() == true);
             var zeroWidthChar = isBidi ? new XEntity("#x200f") : new XEntity("#x200e");
-            var breakElement = new XElement(Xhtml.br, new XAttribute("data-docx-break", "true"));
+            var breakElement = new XElement(Xhtml.br, new XAttribute("data-docx-break", "true"),
+                settings.MarkPageBreaks && breakType == "page" ? new XAttribute("data-docx-page-break", "true") : null);
             // In an ordinary LTR exact-line-height paragraph the break already
             // resumes in the paragraph's declared direction. A synthetic LRM
             // contributes no bidi information there, but wrapping it in the

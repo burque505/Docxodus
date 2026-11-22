@@ -550,6 +550,7 @@ internal static class DocxSessionOps
             RenderTrackedChanges = o.RenderTrackedChanges,
             StampAnchors = true,
             StampReferenceFields = o.ReferenceFields,
+            MarkPageBreaks = o.PageBreaks,
             CommentRenderMode = o.Comments ? (int)CommentRenderMode.Inline : -1,
             CommentCssClassPrefix = EditorCommentCssPrefix,
         };
@@ -607,6 +608,7 @@ internal static class DocxSessionOps
             StampPageNumberFields = o.Paginated,
             StampPageNumberFieldsInRunningStories = true,
             StampReferenceFields = o.ReferenceFields,
+            MarkPageBreaks = o.PageBreaks,
             // Page view also changes how a block itself renders — an anchored picture or text
             // box is positioned absolutely inside its page box — so a block re-rendered into
             // page view follows the same profile the full render used.

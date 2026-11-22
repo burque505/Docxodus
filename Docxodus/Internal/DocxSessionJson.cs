@@ -37,6 +37,9 @@ internal sealed record EditorRenderOptions
     /// <summary>Mark REF / PAGEREF / NOTEREF results with <c>data-field</c> (and their target
     /// bookmark) so the editor keeps each cross-reference whole and can follow it.</summary>
     public bool ReferenceFields { get; init; }
+    /// <summary>Mark page breaks with <c>data-docx-page-break</c> in a render that does not
+    /// paginate, so the editor's continuous view can find where pages start.</summary>
+    public bool PageBreaks { get; init; }
 }
 
 /// <summary>
@@ -841,6 +844,7 @@ internal static class DocxSessionJson
             Comments = TryGetBoolNullable(root, "comments") ?? options.Comments,
             StampAnchors = TryGetBoolNullable(root, "stampAnchors") ?? options.StampAnchors,
             ReferenceFields = TryGetBoolNullable(root, "referenceFields") ?? options.ReferenceFields,
+            PageBreaks = TryGetBoolNullable(root, "pageBreaks") ?? options.PageBreaks,
         };
     }
 
