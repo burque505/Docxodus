@@ -15,6 +15,7 @@ import type { DocxEditor, EditorAlignment, EditorPageSetup, EditorParagraphForma
 import type { FloatingImageLayout, ListFormat, ListLevelSpec, NumberFormat, TableBorderSpec, TableOfContentsOptions, TablePropertiesOp, TableRowOptions, CellPropertiesOp } from "./types.js";
 import { TrackedChangeMode } from "./types.js";
 import { FIND_OPTION_KEYS, type FindOptions } from "./find-query.js";
+import { CROSS_REFERENCE_INSERTS, CROSS_REFERENCE_TYPES, crossReferenceOptionsFor } from "./cross-reference.js";
 
 /** The find options as command arguments (all optional booleans). */
 const FIND_OPTION_ARGS = Object.fromEntries(FIND_OPTION_KEYS.map((k) => [`${k}?`, "boolean"])) as Record<string, string>;
@@ -457,6 +458,28 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     group: "insert", description: "Word's Select Heading and Content for a heading (by its text; the caret's when absent).",
     args: { "heading?": "string" },
     run: (e, a) => must(e.selectHeadingSection(headingArg(e, a, "selectHeading")), "selectHeading", "the heading is not shown"),
+  },
+  crossReference: {
+    group: "insert", description: "Word's Insert > Cross-reference at the caret (a selection is replaced): to a heading (by its text), a bookmark (by its name) or a numbered item (by its text, or its number and text); `insert` is what it shows.",
+    args: { type: CROSS_REFERENCE_TYPES.join("|"), target: "string", insert: "text|page|number|numberNoContext|numberFullContext|position", "hyperlink?": "boolean", "position?": "boolean" },
+    run: (e, a) => {
+      const type = a.oneOf("type", CROSS_REFERENCE_TYPES);
+      const insert = a.oneOf("insert", CROSS_REFERENCE_INSERTS[type]);
+      const wanted = a.string("target").trim();
+      let target: { bookmark: string } | { anchorId: string } | null = null;
+      if (type === "bookmark") {
+        if (e.bookmarks(true).some((b) => b.name === wanted)) target = { bookmark: wanted };
+      } else if (type === "heading") {
+        const id = e.outline().find((h) => h.text.trim() === wanted)?.anchorId;
+        if (id) target = { anchorId: id };
+      } else {
+        const id = e.numberedItems().find((n) => n.text.trim() === wanted || `${n.number} ${n.text}`.trim() === wanted)?.anchorId;
+        if (id) target = { anchorId: id };
+      }
+      if (!target) throw new EditorCommandError("refused", "crossReference", `crossReference: no ${type} "${wanted}"`);
+      const r = e.insertCrossReference(null, target, crossReferenceOptionsFor(insert, !!a.optBool("hyperlink"), !!a.optBool("position")));
+      must(r.ok, "crossReference", r.code ? `the engine refused it (${r.code})` : "there is no caret in the document body");
+    },
   },
   goToBookmark: {
     group: "insert", description: "Select a bookmark's text (the caret, for an empty one) and scroll to it.",

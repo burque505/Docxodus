@@ -63,6 +63,8 @@ import { COLUMNS_DIALOG_CSS, COLUMNS_DIALOG_HTML, ColumnsDialog } from "./ribbon
 import { LINE_NUMBERS_DIALOG_CSS, LINE_NUMBERS_DIALOG_HTML, LineNumbersDialog } from "./ribbon-linenumbers-dialog.js";
 import { TABS_DIALOG_CSS, TABS_DIALOG_HTML, TabsDialog } from "./ribbon-tabs-dialog.js";
 import { BOOKMARK_DIALOG_CSS, BOOKMARK_DIALOG_HTML, BookmarkDialog } from "./ribbon-bookmark-dialog.js";
+import { CROSSREF_DIALOG_CSS, CROSSREF_DIALOG_HTML, CrossReferenceDialog } from "./ribbon-crossref-dialog.js";
+import { crossReferenceOptionsFor } from "./cross-reference.js";
 import { NAV_PANE_CSS, NavPane, type NavPaneCommand } from "./ribbon-navpane.js";
 import type { OutlineEntry } from "./types.js";
 import { Ruler, RULER_CSS } from "./ruler.js";
@@ -357,6 +359,9 @@ export interface RibbonEditor {
   setRulerVisible(on: boolean): void;
   /** Open the Bookmark dialog (Word's Insert > Bookmark) on the selection; false when no document is open. */
   openBookmarkDialog(): boolean;
+  /** Open the Cross-reference dialog (Word's Insert > Cross-reference) at the selection; false when
+   *  no document is open. */
+  openCrossReferenceDialog(): boolean;
   /** Show or hide bookmarks in the text as gray brackets (the View tab's Bookmarks box, Word's
    *  Show bookmarks). */
   setShowBookmarks(on: boolean): void;
@@ -457,7 +462,7 @@ const CONTROL_NAMES = [
   "gridpicker", "gridcells", "gridlabel", "gridalign", "gridborderless",
   "filebutton", "filemenu", "filerecent", "filerecentitems", "filehostitems",
   "linkpop", "linkform", "linkurl", "linkbookmark", "linkcancel",
-  "bookmark", "bookmarkdialog", "showbookmarks", "navpane", "navmenu", "shownav",
+  "bookmark", "bookmarkdialog", "showbookmarks", "crossref", "crossrefdialog", "navpane", "navmenu", "shownav",
   "editor",
   "loader", "loaderEyebrow", "loaderTitle", "loaderCopy", "loaderAd", "loaderNumber",
   "loaderAdTitle", "loaderAdCopy", "loaderBar", "loaderLabel", "loaderMeta", "loaderRetry",
@@ -476,7 +481,7 @@ function ensureStyles(doc: Document): void {
   existing?.remove();
   const style = doc.createElement("style");
   style.setAttribute(RIBBON_STYLE_ATTR, RIBBON_STYLE_VERSION);
-  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + BOOKMARK_DIALOG_CSS + NAV_PANE_CSS + RULER_CSS;
+  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + BOOKMARK_DIALOG_CSS + CROSSREF_DIALOG_CSS + NAV_PANE_CSS + RULER_CSS;
   (doc.head ?? doc.documentElement).appendChild(style);
 }
 
@@ -587,6 +592,10 @@ class RibbonSurface implements RibbonEditor {
   private rulerObserver: ResizeObserver | null = null;
   private focusRing: HTMLElement | null = null;
   private bookmarkDialog!: BookmarkDialog;
+  private crossRefDialog!: CrossReferenceDialog;
+  /** Where the Cross-reference dialog's next Insert goes: the selection it was opened on, then
+   *  after the last reference it inserted. */
+  private crossRefRange: DocumentRange | null = null;
   /** The selection the Bookmark dialog was opened on: its Add puts the bookmark there. */
   private bookmarkRange: DocumentRange | null = null;
   /** The layer Show bookmarks draws its brackets in (made the first time they show). */
@@ -639,7 +648,7 @@ class RibbonSurface implements RibbonEditor {
     root.className = "dxr";
     root.dataset.state = "idle";
     root.dataset.frame = this.options.frame ?? "flush";
-    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML + TABLE_DIALOG_HTML + LINE_NUMBERS_DIALOG_HTML + TABS_DIALOG_HTML + BOOKMARK_DIALOG_HTML;
+    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML + TABLE_DIALOG_HTML + LINE_NUMBERS_DIALOG_HTML + TABS_DIALOG_HTML + BOOKMARK_DIALOG_HTML + CROSSREF_DIALOG_HTML;
     for (const el of Array.from(root.querySelectorAll<HTMLElement>("[data-dxr]"))) {
       el.id = this.idPrefix + el.dataset.dxr;
     }
@@ -1879,6 +1888,53 @@ class RibbonSurface implements RibbonEditor {
     const box = this.require<HTMLInputElement>("showbookmarks");
     // (a way of looking, as the Ruler box: not a command a recording replays)
     box.addEventListener("change", () => this.setShowBookmarks(box.checked));
+    this.wireCrossReferences();
+  }
+
+  private wireCrossReferences(): void {
+    this.crossRefDialog = new CrossReferenceDialog(this.require<HTMLDialogElement>("crossrefdialog"), {
+      targets: (type) => {
+        const live = this.live;
+        if (!live) return [];
+        if (type === "bookmark") return live.bookmarks(false).map((b) => ({ key: b.name, label: b.name }));
+        if (type === "numbered") return live.numberedItems().map((n) => ({ key: n.anchorId, label: `${n.number} ${n.text}`.trim() }));
+        return live.outline().map((h) => {
+          const number = live.numberOf(h.anchorId);
+          return { key: h.anchorId, label: number ? `${number} ${h.text}` : h.text, level: h.level };
+        });
+      },
+      insert: (type, key, insert, hyperlink, position) => {
+        let result: { ok: boolean; code?: string; after?: DocumentRange } = { ok: false };
+        const live = this.live!;
+        // (the recorded command names the target as a reader would: a heading's text, an item's number and text)
+        const target = type === "bookmark" ? key
+          : type === "heading" ? live.outline().find((h) => h.anchorId === key)?.text ?? key
+          : (() => { const n = live.numberedItems().find((i) => i.anchorId === key); return n ? `${n.number} ${n.text}`.trim() : key; })();
+        const options = crossReferenceOptionsFor(insert, hyperlink, position);
+        this.run("cross-reference", () => {
+          result = live.insertCrossReference(this.crossRefRange, type === "bookmark" ? { bookmark: key } : { anchorId: key }, options);
+        }, () => result.ok ? cmd("crossReference", { type, target, insert, ...(hyperlink ? { hyperlink } : {}), ...(position && options.includePosition ? { position } : {}) }) : undefined);
+        if (result.ok && result.after) this.crossRefRange = result.after;
+        return result;
+      },
+      closed: () => {
+        if (this.crossRefRange) this.live?.placeCaretAt(this.crossRefRange);
+        this.crossRefRange = null;
+        this.scheduleRuler();
+      },
+    });
+    const button = this.require("crossref");
+    this.keepSelection(button);
+    button.addEventListener("click", () => { this.openCrossReferenceDialog(); });
+  }
+
+  openCrossReferenceDialog(): boolean {
+    if (!this.live || this.crossRefDialog.open || this.bookmarkDialog.open || this.paragraphDialog.open || this.listDialog.open) return false;
+    this.closePopovers();
+    // (the dialog takes the focus, and with it the document's selection: Insert uses this one)
+    this.crossRefRange = this.live.selectionDocumentRange();
+    this.crossRefDialog.show();
+    return true;
   }
 
   private wireNavPane(): void {
@@ -3166,7 +3222,7 @@ class RibbonSurface implements RibbonEditor {
 
   private handleShortcut(event: KeyboardEvent): void {
     // A dialog owns its keys while it is open.
-    if (this.paragraphDialog?.open || this.listDialog?.open || this.bookmarkDialog?.open) return;
+    if (this.paragraphDialog?.open || this.listDialog?.open || this.bookmarkDialog?.open || this.crossRefDialog?.open) return;
     // Alt+F opens the File menu, as in Word.
     if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && (event.key ?? "").toLowerCase() === "f") {
       event.preventDefault();

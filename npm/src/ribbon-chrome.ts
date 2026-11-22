@@ -30,7 +30,7 @@
 import { NAV_PANE_HTML } from "./ribbon-navpane.js";
 
 /** Bumped whenever RIBBON_CSS changes, so a stale injected stylesheet is replaced. */
-export const RIBBON_STYLE_VERSION = "23";
+export const RIBBON_STYLE_VERSION = "24";
 export const RIBBON_STYLE_ATTR = "data-docxodus-ribbon-styles";
 
 /** Width of the comment gutter the surface reserves beside the sheet, in px. */
@@ -1179,6 +1179,7 @@ export const RIBBON_HTML = `
           <button type="button" data-dxr="link" title="Link the selected text to a URL (Ctrl+K)">&#128279; Link</button>
           <button type="button" data-dxr="unlink" title="Remove the link at the caret">Unlink</button>
           <button type="button" data-dxr="bookmark" title="Add, delete or go to a bookmark (Ctrl+Shift+F5)">&#128278; Bookmark</button>
+          <button type="button" data-dxr="crossref" title="Refer to a heading, a bookmark or a numbered item: its text, its number or its page">&#8618; Cross-reference</button>
         </div>
       </div>
       <div class="dxr-group">

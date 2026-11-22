@@ -78,6 +78,7 @@ import type {
   CellPropertiesOp,
   TableCellScope,
   TableOfContentsOptions,
+  CrossReferenceOptions,
 } from "./types.js";
 import { diffUnits, needsRemount, tokenOf, unidOf } from "./editor-reconcile.js";
 import { EditorCommandError, editorCommands, runEditorCommand } from "./editor-commands.js";
@@ -258,6 +259,8 @@ export interface DocxEditorExports {
     AddBookmark?: (handle: number, name: string, startAnchor: string, startOffset: number, endAnchor: string, endOffset: number) => string;
     MoveBookmark?: (handle: number, name: string, startAnchor: string, startOffset: number, endAnchor: string, endOffset: number) => string;
     RemoveBookmark?: (handle: number, name: string) => string;
+    AddReferenceBookmark?: (handle: number, anchor: string) => string;
+    InsertCrossReference?: (handle: number, anchor: string, characterOffset: number, bookmarkName: string, optionsJson: string) => string;
     InsertImage?: (
       handle: number,
       anchor: string,
@@ -861,7 +864,7 @@ interface AnchorRef {
  * in both at compile time; the lists are optional because a malformed reply may omit them.
  */
 type EditResultLite = Pick<EditResult, "success">
-  & Partial<Pick<EditResult, "created" | "removed" | "modified" | "error" | "caret" | "imageId">>;
+  & Partial<Pick<EditResult, "created" | "removed" | "modified" | "error" | "caret" | "imageId" | "bookmarkName">>;
 
 /**
  * How text flows around a picture, as Word's Wrap Text names it: in line with the text, or
@@ -1781,6 +1784,8 @@ const SECTION_BREAK_CSS = `
   content: var(--docx-section-break-nextColumn, "Section break (Next column)");
 }
 .page-box [data-section-index]::before, .docx-paginated [data-section-index]::before { content: none !important; }
+[data-field-target][data-field-shaded] { background: #d9d9d9; }
+[data-field-hyperlink]:hover { text-decoration: underline dotted; }
 `;
 const sectionBreakStyledDocuments = new WeakSet<Document>();
 function ensureSectionBreakStyles(doc: Document): void {
@@ -2275,6 +2280,7 @@ export class DocxEditor {
     const startBlock = this.editableBlockOf(range.startContainer);
     const endBlock = this.editableBlockOf(range.endContainer);
     const block = startBlock ?? endBlock;
+    this.shadeReferenceFields(block ? range : null);
     if (!block) return; // selection is outside the editor (e.g. a toolbar field) — keep the cache
     if (range.collapsed) {
       this.lastSelection = null; // an explicit caret in a block — drop any stale selection
@@ -2310,6 +2316,7 @@ export class DocxEditor {
     if (this.closed || !this.options.editable) return;
     if (this.pictureMouseDown(event)) return;
     if (event.button !== 0) return;
+    if (this.followReferenceField(event)) return;
     if (this.extendSelectionByClick(event)) { this.clearDragSelection(); return; }
     const target = event.target instanceof Node ? event.target : null;
     const origin = this.editableBlockOf(target);
@@ -7242,6 +7249,194 @@ export class DocxEditor {
     return null;
   }
 
+  // ─── Cross-references: Word's Insert > Cross-reference ─────────────────
+
+  /**
+   * The body's numbered paragraphs (Word's "Numbered item" list): anchor, number and text, in
+   * document order. Bullets are left out, as in Word.
+   */
+  numberedItems(): Array<{ anchorId: string; number: string; text: string }> {
+    const bridge = this.exports.DocxSessionBridge;
+    if (this.closed || typeof bridge.ListAnchors !== "function") return [];
+    try {
+      const index = (JSON.parse(bridge.ListAnchors(this.handle)) as {
+        anchorIndex: Record<string, AnchorTargetLite & { autoNumberPrefix?: string }>;
+      }).anchorIndex;
+      const out: Array<{ anchorId: string; number: string; text: string }> = [];
+      for (const [id, target] of Object.entries(index)) {
+        if (target.scope !== "body" || !["p", "h", "li"].includes(target.kind)) continue;
+        const number = target.autoNumberPrefix ?? this.numberOf(id);
+        if (!/[\p{L}\p{N}]/u.test(number)) continue;
+        out.push({ anchorId: id, number, text: target.textPreview ?? this.sessionTextOf(id) ?? "" });
+      }
+      return out;
+    } catch {
+      return [];
+    }
+  }
+
+  /** The list number (as Word shows it) of body paragraph `anchorId`, or "". */
+  numberOf(anchorId: string): string {
+    try {
+      const raw = this.exports.DocxSessionBridge.GetAnchorInfo?.(this.handle, anchorId);
+      const prefix = raw ? (JSON.parse(raw) as { autoNumberPrefix?: unknown }).autoNumberPrefix : undefined;
+      return typeof prefix === "string" ? prefix : "";
+    } catch {
+      return "";
+    }
+  }
+
+  /**
+   * Word's Cross-reference > Insert: a REF (or, with `pageNumber`, PAGEREF) field at `at` (the
+   * selection the dialog was opened on: a selection in one paragraph is replaced) to bookmark
+   * `target.bookmark`, or to a whole paragraph `target.anchorId` (a heading, a numbered item)
+   * through its hidden `_Ref` bookmark, made here when it has none. One undo step. In page view a
+   * page number is cached as the target's page. Returns the caret place after the field, for the
+   * next Insert.
+   */
+  insertCrossReference(
+    at: DocumentRange | null,
+    target: { bookmark: string } | { anchorId: string },
+    options: CrossReferenceOptions,
+  ): { ok: boolean; code?: string; after?: DocumentRange } {
+    const bridge = this.exports.DocxSessionBridge;
+    if (this.closed || typeof bridge.InsertCrossReference !== "function") return { ok: false };
+    const where = at ?? this.selectionDocumentRange();
+    if (!where) return { ok: false, code: "no_selection" };
+    if (!where.startAnchorId.includes(":body:")) return { ok: false, code: "anchor_wrong_kind" };
+    const tx = typeof bridge.BeginTransaction === "function" ? bridge.BeginTransaction(this.handle) : 0;
+    let ok = true;
+    let code: string | undefined;
+    let id = where.startAnchorId;
+    const offset = where.startOffset;
+    let after: DocumentRange | undefined;
+    try {
+      const step = (json: string) => {
+        const r = this.parseEdit(json, { expectRejection: true });
+        if (!r.success) { code = r.error?.code; throw new Error("refused"); }
+        return r;
+      };
+      if (where.endAnchorId === id && where.endOffset > offset)
+        id = step(bridge.ReplaceTextAtSpan(this.handle, id, offset, where.endOffset - offset, "", "")).modified?.[0]?.id ?? id;
+      let name: string;
+      let targetAnchor: string | null = null;
+      if ("anchorId" in target) {
+        if (typeof bridge.AddReferenceBookmark !== "function") throw new Error("no AddReferenceBookmark");
+        const made = step(bridge.AddReferenceBookmark(this.handle, target.anchorId));
+        name = made.bookmarkName ?? "";
+        targetAnchor = target.anchorId;
+        // (the bookmark's markers may give the insertion paragraph a new anchor, when they share it)
+        id = made.modified?.find((m) => unidOfAnchor(m.id) === unidOfAnchor(id))?.id ?? id;
+      } else {
+        name = target.bookmark;
+        targetAnchor = this.bookmarks(true).find((b) => b.name === name)?.segments[0]?.anchorId ?? null;
+      }
+      const opts: CrossReferenceOptions = { ...options };
+      if (opts.pageNumber && !opts.cachedPage && targetAnchor) {
+        const page = this.pageOfAnchor(targetAnchor);
+        if (page) opts.cachedPage = page;
+      }
+      const before = this.sessionTextOf(id)?.length ?? null;
+      const res = step(bridge.InsertCrossReference(this.handle, id, offset, name, JSON.stringify(opts)));
+      id = res.modified?.[0]?.id ?? id;
+      const length = this.sessionTextOf(id)?.length ?? null;
+      const end = before !== null && length !== null ? offset + (length - before) : offset;
+      after = { startAnchorId: id, startOffset: end, endAnchorId: id, endOffset: end };
+    } catch {
+      ok = false;
+    } finally {
+      if (tx) {
+        if (ok) bridge.CommitTransaction!(tx);
+        else bridge.RollbackTransaction?.(tx);
+      }
+    }
+    if (!ok) return { ok: false, code };
+    this.remount();
+    if (after) this.placeCaretAt(after);
+    return { ok: true, after };
+  }
+
+  /** Put the caret (or the selection) on document range `range`, when it is in one shown block. */
+  placeCaretAt(range: DocumentRange): boolean {
+    const el = this.blockOfAnchor(range.startAnchorId);
+    if (!el) return false;
+    this.activeBlock = el;
+    if (range.endAnchorId === range.startAnchorId && range.endOffset > range.startOffset)
+      selectRange(el, range.startOffset, range.endOffset - range.startOffset);
+    else placeCaretAtOffset(el, range.startOffset);
+    return true;
+  }
+
+  /** In page view, the displayed number of the page block `anchorId` is on; null otherwise. */
+  private pageOfAnchor(anchorId: string): string | null {
+    if (!this.options.paginated) return null;
+    const box = this.blockOfAnchor(anchorId)?.closest<HTMLElement>(".page-box");
+    return box?.dataset.displayedPageNumber ?? box?.dataset.pageNumber ?? null;
+  }
+
+  /** Ctrl+click on a cross-reference inserted as a hyperlink: go to what it refers to. */
+  private followReferenceField(event: MouseEvent): boolean {
+    if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return false;
+    const el = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-field-hyperlink][data-field-target]") : null;
+    const name = el?.dataset.fieldTarget;
+    if (!el || !name || !this.container.contains(el)) return false;
+    event.preventDefault();
+    this.goToBookmark(name);
+    return true;
+  }
+
+  /** The cross-reference fields shaded gray now (Word's field shading "When selected"). */
+  private shadedFields: HTMLElement[] = [];
+
+  /** Shade the cross-reference fields the selection takes in, or the one the caret is beside. */
+  private shadeReferenceFields(range: Range | null): void {
+    for (const field of this.shadedFields) field.removeAttribute("data-field-shaded");
+    this.shadedFields = [];
+    if (!range) return;
+    let found: HTMLElement[] = [];
+    if (!range.collapsed) {
+      found = Array.from(this.container.querySelectorAll<HTMLElement>("[data-field-target]"))
+        .filter((field) => range.intersectsNode(field));
+    } else {
+      const block = this.editableBlockOf(range.startContainer);
+      if (!block) return;
+      const near = (node: Node | null, toward: "previousSibling" | "nextSibling"): HTMLElement | null => {
+        let current: Node | null = node;
+        while (current && current !== block) {
+          const sibling = current[toward];
+          if (sibling) {
+            if (sibling.nodeType === 3 && (sibling.textContent ?? "") !== "") return null;
+            return sibling.nodeType === 1
+              ? ((sibling as Element).closest<HTMLElement>("[data-field-target]")
+                ?? (sibling as Element).querySelector<HTMLElement>("[data-field-target]"))
+              : null;
+          }
+          current = current.parentNode;
+        }
+        return null;
+      };
+      const container = range.startContainer;
+      const inside = fieldOf(container);
+      if (inside?.dataset.fieldTarget) found = [inside];
+      else if (container.nodeType === 3) {
+        const text = container.textContent ?? "";
+        const field = range.startOffset === 0 ? near(container, "previousSibling")
+          : range.startOffset === text.length ? near(container, "nextSibling") : null;
+        if (field) found = [field];
+      } else {
+        const before = container.childNodes[range.startOffset - 1] ?? null;
+        const afterNode = container.childNodes[range.startOffset] ?? null;
+        const pick = (node: Node | null) => node && node.nodeType === 1
+          ? ((node as Element).closest<HTMLElement>("[data-field-target]") ?? (node as Element).querySelector<HTMLElement>("[data-field-target]"))
+          : null;
+        const field = pick(before) ?? pick(afterNode);
+        if (field) found = [field];
+      }
+    }
+    for (const field of found) field.setAttribute("data-field-shaded", "");
+    this.shadedFields = found;
+  }
+
   private blocksOfAnchors(ids: string[]): HTMLElement[] {
     return ids.map((id) => this.blockOfAnchor(id)).filter((el): el is HTMLElement => !!el);
   }
@@ -9424,6 +9619,8 @@ export class DocxEditor {
       scale: this.options.scale,
       renderTrackedChanges: this.renderTrackedChanges,
       comments: this.options.comments,
+      // (cross-references come marked, so they stay whole and Ctrl+click follows them)
+      referenceFields: true,
     });
   }
 
