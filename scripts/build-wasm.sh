@@ -202,7 +202,11 @@ du -sh "$WASM_DIST"
 # Assembly roots, dependencies and the AOT profile are unchanged.
 # 2026-11-21 (dAHKxodus fork): tab stops (GetTabStops, SetTabStops, SetDefaultTabStop) for the
 # ruler, on a fork already within 2 KB of 6016 KiB; 16 KiB more covers them and the next small ops.
-WIRE_BUDGET_BYTES=$((6032 * 1024))
+# 2026-11-22 (dAHKxodus fork): cross-references (AddReferenceBookmark, PAGEREF and the number
+# switches, the reference-field render marker) left 2,790 bytes of 6032 KiB, and a rebuild of the
+# same commit measured 6,179,398 (the build is not byte-for-byte repeatable); 16 KiB more covers it
+# and the next small ops. Assembly roots, dependencies and the AOT profile are unchanged.
+WIRE_BUDGET_BYTES=$((6048 * 1024))
 WIRE_BYTES=$(cat "$WASM_DIST/_framework/.wire-size")
 rm -f "$WASM_DIST/_framework/.wire-size"
 echo ""
