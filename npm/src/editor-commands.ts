@@ -394,6 +394,11 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     args: { "field?": "currentPage|totalPages|pageOfTotal" },
     run: (e, a) => e.insertPageNumber(a.optOneOf("field", ["currentPage", "totalPages", "pageOfTotal"] as const) ?? "currentPage"),
   },
+  updateFields: {
+    group: "insert", description: "Word's Update Field: the fields in the selection's paragraphs (F9), every field (scope all), or the tables of contents (scope tables, Update Table).",
+    args: { "scope?": "selection|all|tables" },
+    run: (e, a) => must(e.updateFields(a.optOneOf("scope", ["selection", "all", "tables"] as const) ?? "selection"), "updateFields", "the engine refused it (changes are tracked?)"),
+  },
   tableOfContents: {
     group: "insert", description: "Insert a table of contents (options as TableOfContentsOptions).", args: { "options?": "object" },
     run: (e, a) => must(e.insertTableOfContents((a.optObject("options") ?? {}) as TableOfContentsOptions), "tableOfContents", "the engine refused it"),

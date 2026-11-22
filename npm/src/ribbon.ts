@@ -365,6 +365,9 @@ export interface RibbonEditor {
   /** Show or hide bookmarks in the text as gray brackets (the View tab's Bookmarks box, Word's
    *  Show bookmarks). */
   setShowBookmarks(on: boolean): void;
+  /** Word's Update Field: the fields in the selection (F9), every field (`all`), or the tables of
+   *  contents (`tables`, Update Table). False when nothing is open or the engine refused. */
+  updateFields(scope?: "selection" | "all" | "tables"): boolean;
   /** Show or hide the Navigation Pane (the View tab's Navigation Pane box). */
   setNavigationPaneVisible(on: boolean): void;
   /** Open the picture dialog (Size, Text Wrapping and Position, Alt Text) on the selected picture;
@@ -462,7 +465,7 @@ const CONTROL_NAMES = [
   "gridpicker", "gridcells", "gridlabel", "gridalign", "gridborderless",
   "filebutton", "filemenu", "filerecent", "filerecentitems", "filehostitems",
   "linkpop", "linkform", "linkurl", "linkbookmark", "linkcancel",
-  "bookmark", "bookmarkdialog", "showbookmarks", "crossref", "crossrefdialog", "navpane", "navmenu", "shownav",
+  "bookmark", "bookmarkdialog", "showbookmarks", "crossref", "crossrefdialog", "updatetoc", "fieldmenu", "navpane", "navmenu", "shownav",
   "editor",
   "loader", "loaderEyebrow", "loaderTitle", "loaderCopy", "loaderAd", "loaderNumber",
   "loaderAdTitle", "loaderAdCopy", "loaderBar", "loaderLabel", "loaderMeta", "loaderRetry",
@@ -1893,6 +1896,55 @@ class RibbonSurface implements RibbonEditor {
     // (a way of looking, as the Ruler box: not a command a recording replays)
     box.addEventListener("change", () => this.setShowBookmarks(box.checked));
     this.wireCrossReferences();
+    this.wireFields();
+  }
+
+  /** Update Table (Insert), F9 (see handleShortcut) and the right-click Update Field on a field. */
+  private wireFields(): void {
+    const button = this.require("updatetoc");
+    this.keepSelection(button);
+    button.addEventListener("click", () => { this.updateFields("tables"); });
+    const menu = this.require("fieldmenu");
+    const surface = this.require("editor");
+    surface.addEventListener("contextmenu", (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (!this.live || !target || target.closest("img, [data-docx-vector-frame]")) return;
+      // (on a field, or anywhere in a table of contents entry: it links to its heading's _Toc bookmark)
+      const block = target.closest<HTMLElement>('[data-anchor][contenteditable="true"]');
+      if (!target.closest("[data-field]") && !block?.querySelector('a[href^="#_Toc"]')) return;
+      event.preventDefault();
+      this.closePopovers();
+      menu.setAttribute("data-open", "");
+      const view = this.element.ownerDocument.defaultView;
+      const width = view?.innerWidth ?? 1024, height = view?.innerHeight ?? 768;
+      const box = menu.getBoundingClientRect();
+      menu.style.left = `${Math.max(4, Math.min(event.clientX, width - box.width - 4))}px`;
+      menu.style.top = `${Math.max(4, Math.min(event.clientY, height - box.height - 4))}px`;
+      menu.querySelector<HTMLButtonElement>("button")?.focus();
+    });
+    menu.addEventListener("mousedown", (event) => event.preventDefault());
+    menu.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") { event.preventDefault(); menu.removeAttribute("data-open"); }
+    });
+    menu.addEventListener("click", (event) => {
+      const item = (event.target as HTMLElement).closest<HTMLButtonElement>("button");
+      if (!item) return;
+      menu.removeAttribute("data-open");
+      if (item.dataset.fm === "update") this.updateFields("selection");
+    });
+    this.element.ownerDocument.addEventListener("mousedown", (event) => {
+      if (menu.hasAttribute("data-open") && !(event.target instanceof Node && menu.contains(event.target))) menu.removeAttribute("data-open");
+    }, true);
+  }
+
+  updateFields(scope: "selection" | "all" | "tables" = "selection"): boolean {
+    const live = this.live;
+    if (!live) return false;
+    let ok = false;
+    this.run(scope === "tables" ? "update table" : "update fields", () => { ok = live.updateFields(scope); },
+      () => ok ? cmd("updateFields", scope === "selection" ? {} : { scope }) : undefined);
+    this.setStatus(this.translateText(ok ? RIBBON_STATUS_TEXTS.fieldsUpdated : RIBBON_STATUS_TEXTS.fieldsRefused));
+    return ok;
   }
 
   private wireCrossReferences(): void {
@@ -3249,6 +3301,13 @@ class RibbonSurface implements RibbonEditor {
       this.options.onCommand?.("change case", 0, cmd("changeCase", { mode: "cycle" }));
       return;
     }
+    // F9: Word's Update Field, for the fields in the selection (Ctrl+A first: every field).
+    if (this.live && event.key === "F9" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey
+      && event.composedPath().includes(this.surface)) {
+      event.preventDefault();
+      this.updateFields("selection");
+      return;
+    }
     if (!this.live || !(event.ctrlKey || event.metaKey)) return;
     // Ctrl+Shift+F5: Word's Bookmark dialog.
     if (event.key === "F5" && event.shiftKey && !event.altKey) {
@@ -3433,6 +3492,7 @@ class RibbonSurface implements RibbonEditor {
 
   private closePopovers(): void {
     this.control("picturemenu")?.removeAttribute("data-open");
+    this.control("fieldmenu")?.removeAttribute("data-open");
     this.control("pastemenu")?.removeAttribute("data-open");
     this.control("pastemore")?.setAttribute("aria-expanded", "false");
     this.control("casemenu")?.removeAttribute("data-open");

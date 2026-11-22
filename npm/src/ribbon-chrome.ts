@@ -30,7 +30,7 @@
 import { NAV_PANE_HTML } from "./ribbon-navpane.js";
 
 /** Bumped whenever RIBBON_CSS changes, so a stale injected stylesheet is replaced. */
-export const RIBBON_STYLE_VERSION = "24";
+export const RIBBON_STYLE_VERSION = "25";
 export const RIBBON_STYLE_ATTR = "data-docxodus-ribbon-styles";
 
 /** Width of the comment gutter the surface reserves beside the sheet, in px. */
@@ -1347,6 +1347,7 @@ export const RIBBON_HTML = `
         <span class="dxr-glabel">Table of contents</span>
         <div class="dxr-row">
           <button type="button" data-dxr="toc" title="Insert a table of contents built from the document's headings">&#9776; Table of Contents</button>
+          <button type="button" data-dxr="updatetoc" title="Update the table of contents: its headings and page numbers (F9 updates the fields in the selection)">&#8635; Update Table</button>
         </div>
       </div>
       <div class="dxr-group">
@@ -1620,6 +1621,9 @@ export const RIBBON_HTML = `
 <!-- The work area: the Navigation Pane (View > Navigation Pane) beside the ruler and the document. -->
 <div class="dxr-work">
 ${NAV_PANE_HTML}
+<div class="dxr-pop dxr-filemenu dxr-picmenu" data-dxr="fieldmenu" role="menu" aria-label="Field">
+  <button type="button" role="menuitem" data-fm="update"><span>Update Field</span></button>
+</div>
 <div class="dxr-workmain">
 <div class="dxr-ruler" data-dxr="ruler" hidden></div>
 
@@ -1764,6 +1768,8 @@ export const RIBBON_STATUS_TEXTS = {
   lineNumbersPageView: "Line numbers show in page view",
   noSectionBreak: "There is no section break to remove: the document is one section",
   bookmarkInUse: "A link or cross-reference uses this bookmark, so it is not deleted",
+  fieldsUpdated: "Fields updated",
+  fieldsRefused: "Fields cannot be updated here, nor while changes are tracked",
   headingMoveRefused: "This heading cannot move there: a section break or a range of the document is in the way, or changes are tracked",
   headingRefused: "This heading cannot be changed that way",
 } as const;

@@ -79,6 +79,7 @@ import type {
   TableCellScope,
   TableOfContentsOptions,
   CrossReferenceOptions,
+  UpdateFieldsOptions,
 } from "./types.js";
 import { diffUnits, needsRemount, tokenOf, unidOf } from "./editor-reconcile.js";
 import { EditorCommandError, editorCommands, runEditorCommand } from "./editor-commands.js";
@@ -260,6 +261,7 @@ export interface DocxEditorExports {
     MoveBookmark?: (handle: number, name: string, startAnchor: string, startOffset: number, endAnchor: string, endOffset: number) => string;
     RemoveBookmark?: (handle: number, name: string) => string;
     AddReferenceBookmark?: (handle: number, anchor: string) => string;
+    UpdateFields?: (handle: number, optionsJson: string) => string;
     InsertCrossReference?: (handle: number, anchor: string, characterOffset: number, bookmarkName: string, optionsJson: string) => string;
     InsertImage?: (
       handle: number,
@@ -8372,11 +8374,108 @@ export class DocxEditor {
     const idx = this.blockIndex(block);
     fullId = this.syncBlock(block, fullId);
     if (!fullId) return false;
+    // (Word fills a new table at once: the insert and its first update are one undo step)
+    const tx = typeof bridge.BeginTransaction === "function" && typeof bridge.UpdateFields === "function"
+      ? bridge.BeginTransaction(this.handle) : 0;
     const res = this.parseEdit(
       bridge.InsertTableOfContents(this.handle, fullId, "before", JSON.stringify(options)),
     );
+    if (res.success && tx) {
+      const filled: UpdateFieldsOptions = { tablesOfContentsOnly: true, pages: this.pageMap(true) };
+      this.parseEdit(bridge.UpdateFields!(this.handle, JSON.stringify(filled)));
+    }
+    if (tx) {
+      if (res.success) bridge.CommitTransaction!(tx);
+      else bridge.RollbackTransaction?.(tx);
+    }
     if (!res.success) return false;
     this.refreshAfter(block, idx, false, /* forceRemount */ true);
+    return true;
+  }
+
+  // ─── Fields: Word's Update Field (F9), Update Table ───────────────────────
+
+  /**
+   * The page each body paragraph is on (its unid to the page number shown): read off the page
+   * view's boxes, or - in continuous view, or with `fromSession` when the view does not show the
+   * session's latest state yet - from a pagination of the document laid out off screen.
+   */
+  pageMap(fromSession = false): Record<string, string> {
+    const pages: Record<string, string> = {};
+    const read = (root: ParentNode) => {
+      for (const box of Array.from(root.querySelectorAll<HTMLElement>(".page-box:not([data-section-filler])"))) {
+        const page = box.dataset.displayedPageNumber ?? box.dataset.pageNumber;
+        if (!page) continue;
+        for (const el of Array.from(box.querySelectorAll<HTMLElement>("[data-anchor]"))) {
+          const unid = el.getAttribute("data-anchor");
+          if (unid && !(unid in pages)) pages[unid] = page;
+        }
+      }
+    };
+    if (this.options.paginated && !fromSession) {
+      read(this.editRoot);
+      return pages;
+    }
+    const bridge = this.exports.DocxSessionBridge;
+    if (this.closed || typeof bridge.RenderEditorHtml !== "function" || typeof document === "undefined") return pages;
+    const html = bridge.RenderEditorHtml(this.handle, JSON.stringify({ ...JSON.parse(this.editorRenderProfile()), paginated: true, scale: 1 }));
+    const host = document.createElement("div");
+    host.setAttribute("aria-hidden", "true");
+    host.style.cssText = "position:absolute;left:-100000px;top:0;visibility:hidden;pointer-events:none;";
+    document.body.appendChild(host);
+    try {
+      paginateHtml(html, host, {
+        scale: 1,
+        cssPrefix: "page-",
+        fragmentParagraphs: false,
+        commentColumnPlacement: "margin",
+        alignBaselinesToWord: false,
+      });
+      host.querySelector("#pagination-staging, .page-staging")?.remove();
+      read(host);
+    } catch {
+      /* no layout: the fields keep the pages they have */
+    } finally {
+      host.remove();
+    }
+    return pages;
+  }
+
+  /**
+   * Word's Update Field: `selection` - the fields in the selection's paragraphs (F9; a selection
+   * of the whole document is `all`); `all` - every field (Ctrl+A, F9; afterwards the document no
+   * longer asks Word to update its fields on open); `tables` - the tables of contents (Update
+   * Table). Page numbers come from {@link pageMap}. One undo step; false when the engine refused
+   * (changes are tracked) or cannot.
+   */
+  updateFields(scope: "selection" | "all" | "tables" = "selection", at?: DocumentRange | null): boolean {
+    const bridge = this.exports.DocxSessionBridge;
+    if (this.closed || typeof bridge.UpdateFields !== "function") return false;
+    let range: DocumentRange | null = null;
+    if (scope === "selection") {
+      range = at ?? this.selectionDocumentRange();
+      // (the whole document selected: Word's Ctrl+A, F9)
+      const body = this.storyBlocks(this.editRoot.querySelector<HTMLElement>('[data-anchor][contenteditable="true"]') ?? this.editRoot)
+        .filter((b) => !this.isBandBlock(b));
+      const firstId = body[0] ? this.anchorIdOf(body[0]) : null;
+      const lastBlock = body[body.length - 1];
+      const lastId = lastBlock ? this.anchorIdOf(lastBlock) : null;
+      if (range && firstId && lastId && range.startAnchorId === firstId && range.startOffset === 0
+        && range.endAnchorId === lastId && range.endOffset >= blockContentText(lastBlock).trimEnd().length) range = null;
+      if (range && !range.startAnchorId.includes(":body:")) return false;
+    }
+    const keep = this.selectionDocumentRange();
+    this.commitActiveTyping();
+    const options: UpdateFieldsOptions = { pages: this.pageMap() };
+    if (scope === "tables") options.tablesOfContentsOnly = true;
+    if (range) options.range = range;
+    const res = this.parseEdit(bridge.UpdateFields(this.handle, JSON.stringify(options)), { expectRejection: true });
+    if (!res.success) return false;
+    this.remount();
+    if (keep && !this.placeCaretAt(keep)) {
+      const first = this.editRoot.querySelector<HTMLElement>('[data-anchor][contenteditable="true"]');
+      if (first) { this.activeBlock = first; placeCaretAtOffset(first, 0); }
+    }
     return true;
   }
 
