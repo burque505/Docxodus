@@ -1,12 +1,15 @@
 /**
  * The ribbon's Bookmark dialog — Word's Insert > Bookmark: the document's bookmarks, sorted by name
  * or by location, Word's own hidden ones on request; Add (a name the document has moves that
- * bookmark to the selection), Delete and Go To.
+ * bookmark to the selection), Delete and Go To. It stays open beside the document (not modal), as
+ * the Cross-reference dialog does: Add takes the selection as it is when Add is clicked, and Go To
+ * selects the bookmark while the dialog stays open, for the next one.
  */
-import { makeDialogMovable, restoreDialogPlace } from "./ribbon-paragraph-dialog.js";
+import { makeDialogMovable, placeDialogAt, restoreDialogPlace } from "./ribbon-paragraph-dialog.js";
 
 export const BOOKMARK_DIALOG_CSS = `
 .dxr-bmdialog { width: min(360px, calc(100vw - 32px)); }
+.dxr-bmdialog[open]:not(:modal) { position: fixed; z-index: 40; margin: 0; box-shadow: 0 8px 28px rgba(15, 23, 42, .22); }
 .dxr-bmdialog .dxr-bmbody { display: grid; grid-template-columns: 1fr auto; gap: 8px 12px; padding: 10px 16px 4px; }
 .dxr-bmdialog .dxr-bmname { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 4px; }
 .dxr-bmdialog .dxr-bmname input { width: 100%; box-sizing: border-box; }
@@ -53,17 +56,16 @@ export function isBookmarkName(name: string): boolean {
 export interface BookmarkDialogHost {
   /** The document's bookmarks in document order (`hidden`: Word's own `_…` ones too). */
   list(hidden: boolean): Array<{ name: string; text: string }>;
-  /** Add (or move) bookmark `name` to the selection the dialog was opened on. */
+  /** Add (or move) bookmark `name` to the document's selection (or caret) as it is now. */
   add(name: string): { ok: boolean; code?: string };
   remove(name: string): { ok: boolean; code?: string };
   goTo(name: string): boolean;
+  /** The dialog closed: the focus goes back to the document. */
+  closed(): void;
 }
 
 /** The Bookmark dialog over its markup (`BOOKMARK_DIALOG_HTML`, already in the page). */
 export class BookmarkDialog {
-  /** The bookmark Go To last showed: the document's selection is put back on it when the dialog closes. */
-  private wentTo: string | null = null;
-
   constructor(private readonly dialog: HTMLDialogElement, private readonly host: BookmarkDialogHost) {
     makeDialogMovable(dialog, dialog.querySelector<HTMLElement>("[data-bm-title]")!);
     const form = dialog.querySelector("form")!;
@@ -94,15 +96,25 @@ export class BookmarkDialog {
       this.add();
     });
     dialog.addEventListener("cancel", (event) => { event.preventDefault(); this.close(); });
+    // (not modal, so Escape is the dialog's own to handle)
+    dialog.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); this.close(); }
+    });
+    // (the document may have changed while the dialog stood open: list its bookmarks again when the list is used)
+    list.addEventListener("focus", () => this.fill());
+    // (the buttons keep the document's selection: Add puts the bookmark there)
+    for (const button of Array.from(dialog.querySelectorAll<HTMLButtonElement>("button")))
+      button.addEventListener("mousedown", (event) => event.preventDefault());
   }
 
   get open(): boolean {
     return this.dialog.open;
   }
 
-  /** Open on the document's bookmarks, the Name box holding `suggested` (Word: the bookmark at the caret). */
+  /** Open beside the document on its bookmarks, the Name box holding `suggested` (Word: the
+   *  bookmark at the caret); already open, bring the focus to it. */
   show(suggested = ""): void {
-    this.wentTo = null;
+    if (this.dialog.open) { this.fill(); this.input("name").focus(); return; }
     this.input("hidden").checked = false;
     this.fill();
     const name = this.input("name");
@@ -112,33 +124,46 @@ export class BookmarkDialog {
     this.showError(null);
     this.enable();
     this.dialog.returnValue = "";
-    this.dialog.showModal();
-    restoreDialogPlace(this.dialog);
+    this.dialog.show();
+    if (this.dialog.style.left) restoreDialogPlace(this.dialog);
+    else {
+      // (first time: at the window's right, below the ribbon, where it hides the least text)
+      const view = this.dialog.ownerDocument.defaultView ?? window;
+      placeDialogAt(this.dialog, view.innerWidth - this.dialog.getBoundingClientRect().width - 24, 150);
+    }
     name.focus();
     name.select();
   }
 
-  private close(): void {
+  /** Close it (also when the document closes or another opens). */
+  close(): void {
+    if (!this.dialog.open) return;
     this.dialog.close("close");
-    // (the dialog gave the focus back to where it came from: the selection Go To made goes with it)
-    if (this.wentTo) this.host.goTo(this.wentTo);
-    this.wentTo = null;
+    this.host.closed();
+  }
+
+  /** True when `node` is in the dialog (its keys are its own). */
+  contains(node: Node | null): boolean {
+    return !!node && this.dialog.contains(node);
   }
 
   private add(): void {
     const name = this.input("name");
     const value = name.value.trim();
     if (!isBookmarkName(value)) { this.invalid(); return; }
-    this.dialog.close("add");
-    this.wentTo = null;
     const result = this.host.add(value);
     if (!result.ok) {
-      // (back open, with the reason: the selection it was opened on still stands)
-      this.dialog.showModal();
-      restoreDialogPlace(this.dialog);
       if (result.code === "invalid_bookmark_name") this.invalid();
       else this.showError("refused");
+      return;
     }
+    // (open still, the new bookmark listed and chosen, ready for the next)
+    this.showError(null);
+    this.fill();
+    this.list.value = Array.from(this.list.options).some((o) => o.value === value) ? value : "";
+    this.enable();
+    name.focus();
+    name.select();
   }
 
   private remove(): void {
@@ -147,7 +172,6 @@ export class BookmarkDialog {
     if (!known) return;
     const result = this.host.remove(known);
     if (!result.ok) { this.showError(result.code === "bookmark_in_use" ? "inUse" : "refused"); return; }
-    if (this.wentTo === known) this.wentTo = null;
     this.fill();
     this.input("name").value = "";
     this.enable();
@@ -157,13 +181,8 @@ export class BookmarkDialog {
   private goTo(): void {
     const known = this.find(this.input("name").value.trim());
     if (!known) return;
-    // (a modal dialog leaves the document inert, where no selection can be made: Go To closes it,
-    // then selects; Word's stays open)
-    this.dialog.close("goto");
-    this.wentTo = null;
-    if (this.host.goTo(known)) return;
-    this.dialog.showModal();
-    restoreDialogPlace(this.dialog);
+    // (the document shows the selection while the dialog stays open, as in Word)
+    if (this.host.goTo(known)) { this.showError(null); return; }
     this.showError("notShown");
   }
 

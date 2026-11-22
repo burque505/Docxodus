@@ -593,8 +593,6 @@ class RibbonSurface implements RibbonEditor {
   private focusRing: HTMLElement | null = null;
   private bookmarkDialog!: BookmarkDialog;
   private crossRefDialog!: CrossReferenceDialog;
-  /** The selection the Bookmark dialog was opened on: its Add puts the bookmark there. */
-  private bookmarkRange: DocumentRange | null = null;
   /** The layer Show bookmarks draws its brackets in (made the first time they show). */
   private bookmarkLayer: HTMLElement | null = null;
   private showBookmarks = false;
@@ -1059,6 +1057,7 @@ class RibbonSurface implements RibbonEditor {
 
   private finishOpen(candidate: DocxEditor, paginated: boolean, started: number, name?: string): DocxEditor {
     this.crossRefDialog?.close();
+    this.bookmarkDialog?.close();
     this.live?.close();
     candidate.adoptContainer(this.surface);
     this.surface.dataset.view = paginated ? "paginated" : "continuous";
@@ -1862,7 +1861,8 @@ class RibbonSurface implements RibbonEditor {
       list: (hidden) => this.live?.bookmarks(hidden) ?? [],
       add: (name) => {
         let result: { ok: boolean; code?: string } = { ok: false };
-        this.run("bookmark", () => { result = this.live!.addBookmark(name, this.bookmarkRange); },
+        // (the dialog is not modal: the bookmark goes on the document's selection as it is now)
+        this.run("bookmark", () => { result = this.live!.addBookmark(name, this.live!.selectionDocumentRange()); },
           () => result.ok ? cmd("addBookmark", { name }) : undefined);
         return result;
       },
@@ -1878,6 +1878,12 @@ class RibbonSurface implements RibbonEditor {
         if (ok) this.options.onCommand?.("go to bookmark", 0, cmd("goToBookmark", { name }));
         this.scheduleRuler();
         return ok;
+      },
+      closed: () => {
+        const live = this.live;
+        const at = live?.selectionDocumentRange();
+        if (live && at) live.placeCaretAt(at);
+        this.scheduleRuler();
       },
     });
     const button = this.require("bookmark");
@@ -1928,7 +1934,7 @@ class RibbonSurface implements RibbonEditor {
   }
 
   openCrossReferenceDialog(): boolean {
-    if (!this.live || this.bookmarkDialog.open || this.paragraphDialog.open || this.listDialog.open) return false;
+    if (!this.live || this.paragraphDialog.open || this.listDialog.open) return false;
     this.closePopovers();
     this.crossRefDialog.show();
     return true;
@@ -2011,10 +2017,8 @@ class RibbonSurface implements RibbonEditor {
   }
 
   openBookmarkDialog(): boolean {
-    if (!this.live || this.bookmarkDialog.open || this.paragraphDialog.open || this.listDialog.open) return false;
+    if (!this.live || this.paragraphDialog.open || this.listDialog.open) return false;
     this.closePopovers();
-    // (the dialog takes the focus, and with it the document's selection: Add uses this one)
-    this.bookmarkRange = this.live.selectionDocumentRange();
     this.bookmarkDialog.show();
     return true;
   }
@@ -3219,9 +3223,11 @@ class RibbonSurface implements RibbonEditor {
 
   private handleShortcut(event: KeyboardEvent): void {
     // A dialog owns its keys while it is open.
-    if (this.paragraphDialog?.open || this.listDialog?.open || this.bookmarkDialog?.open) return;
-    // (the Cross-reference dialog stays open beside the document: only the keys typed in it are its own)
-    if (this.crossRefDialog?.open && this.crossRefDialog.contains(event.target instanceof Node ? event.target : null)) return;
+    if (this.paragraphDialog?.open || this.listDialog?.open) return;
+    // (the Bookmark and Cross-reference dialogs stay open beside the document: only the keys typed in them are their own)
+    const keyTarget = event.target instanceof Node ? event.target : null;
+    if (this.bookmarkDialog?.open && this.bookmarkDialog.contains(keyTarget)) return;
+    if (this.crossRefDialog?.open && this.crossRefDialog.contains(keyTarget)) return;
     // Alt+F opens the File menu, as in Word.
     if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && (event.key ?? "").toLowerCase() === "f") {
       event.preventDefault();

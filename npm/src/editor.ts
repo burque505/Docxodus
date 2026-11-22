@@ -2182,6 +2182,9 @@ export class DocxEditor {
     });
     if (typeof document !== "undefined") {
       document.addEventListener("selectionchange", this.onSelectionChange);
+      // (selectionchange comes later than the focus does: a dialog beside the document must find the
+      // selection the text had when the focus left it)
+      document.addEventListener("focusout", this.onFocusLeaving, true);
       document.addEventListener("mousedown", this.onMouseDown, true);
       document.addEventListener("mousemove", this.onMouseMove, true);
       document.addEventListener("mouseup", this.onMouseUp, true);
@@ -2284,6 +2287,7 @@ export class DocxEditor {
     const endBlock = this.editableBlockOf(range.endContainer);
     const block = startBlock ?? endBlock;
     this.shadeReferenceFields(block ? range : null);
+    if (startBlock && endBlock) this.snapshotSelection(range, startBlock, endBlock);
     if (!block) return; // selection is outside the editor (e.g. a toolbar field) — keep the cache
     if (range.collapsed) {
       this.lastSelection = null; // an explicit caret in a block — drop any stale selection
@@ -2316,6 +2320,40 @@ export class DocxEditor {
     const span = selectionSpanIn(block);
     if (span) this.lastSelection = { unid, span };
   };
+
+  /** The focus leaving the document for something outside it (a dialog beside it): remember the
+   *  selection the text has now. A move inside the editor (Ctrl+A, a click in another block) is
+   *  left to selectionchange: its selection is still changing. */
+  private readonly onFocusLeaving = (event: FocusEvent): void => {
+    const from = event.target instanceof Node ? event.target : null;
+    const to = event.relatedTarget instanceof Node ? event.relatedTarget : null;
+    // (no element to go to: a re-render took the focused block away, not a move to a dialog)
+    if (!from || !to || !this.container.contains(from) || this.container.contains(to)) return;
+    this.snapshotLiveSelection();
+  };
+
+  /** The selection the text last had, for {@link selectionDocumentRange} once the focus is in a
+   *  dialog beside the document. Its own record: the editor's other selection caches are untouched. */
+  private textSelection: { startUnid: string; startOffset: number; endUnid: string; endOffset: number } | null = null;
+
+  private snapshotSelection(range: Range, startBlock: HTMLElement, endBlock: HTMLElement): void {
+    const startUnid = startBlock.getAttribute("data-anchor");
+    const endUnid = endBlock.getAttribute("data-anchor");
+    if (!startUnid || !endUnid || this.ownerRoot(startBlock) !== this.ownerRoot(endBlock)) return;
+    this.textSelection = {
+      startUnid, startOffset: contentOffsetOf(startBlock, range.startContainer, range.startOffset),
+      endUnid, endOffset: contentOffsetOf(endBlock, range.endContainer, range.endOffset),
+    };
+  }
+
+  private snapshotLiveSelection(): void {
+    const sel = typeof window !== "undefined" ? window.getSelection() : null;
+    if (!sel || sel.rangeCount === 0) return;
+    const range = sel.getRangeAt(0);
+    const startBlock = this.editableBlockOf(range.startContainer);
+    const endBlock = this.editableBlockOf(range.endContainer);
+    if (startBlock && endBlock) this.snapshotSelection(range, startBlock, endBlock);
+  }
 
   /** Start tracking a normal primary-button text drag inside one editable block. */
   private readonly onMouseDown = (event: MouseEvent): void => {
@@ -2771,6 +2809,7 @@ export class DocxEditor {
     this.container.removeEventListener("paste", this.onPaste);
     if (typeof document !== "undefined") {
       document.removeEventListener("selectionchange", this.onSelectionChange);
+      document.removeEventListener("focusout", this.onFocusLeaving, true);
       document.removeEventListener("mousedown", this.onMouseDown, true);
       document.removeEventListener("mousemove", this.onMouseMove, true);
       document.removeEventListener("mouseup", this.onMouseUp, true);
@@ -7138,6 +7177,13 @@ export class DocxEditor {
    */
   selectionDocumentRange(): DocumentRange | null {
     if (this.closed) return null;
+    // (the focus is outside the document, in a dialog that stays open beside it: the selection the
+    // document last had, as the editor remembered it)
+    const live = typeof window !== "undefined" ? window.getSelection() : null;
+    if (!live || live.rangeCount === 0 || !this.container.contains(live.anchorNode)) {
+      const remembered = this.rememberedDocumentRange();
+      if (remembered) return remembered;
+    }
     const blocks = this.crossBlockSelection();
     if (blocks) {
       const targets = this.multiBlockTargets(blocks);
@@ -7165,6 +7211,25 @@ export class DocxEditor {
     const id = this.syncBlock(block, fullId);
     if (!id) return null;
     return { startAnchorId: id, startOffset: span.start, endAnchorId: id, endOffset: span.start + span.length };
+  }
+
+  /** The document range of the selection (or caret) the editor last saw in the text, its blocks'
+   *  typing committed; null when it saw none, or its blocks are gone. */
+  private rememberedDocumentRange(): DocumentRange | null {
+    const blockOf = (unid: string) =>
+      this.container.querySelector<HTMLElement>(`[data-anchor="${CSS.escape(unid)}"][contenteditable="true"]`);
+    const idOf = (block: HTMLElement | null) => {
+      const fullId = block ? this.anchorIdOf(block) : null;
+      return block && fullId ? this.syncBlock(block, fullId) : null;
+    };
+    const seen = this.textSelection;
+    if (!seen) return null;
+    const startId = idOf(blockOf(seen.startUnid));
+    const endId = seen.endUnid === seen.startUnid ? startId : idOf(blockOf(seen.endUnid));
+    if (!startId || !endId) return null;
+    // (the DOM counts the placeholder space an empty or trailing line shows: keep within the text)
+    const clamp = (id: string, offset: number) => Math.min(offset, this.sessionTextOf(id)?.length ?? offset);
+    return { startAnchorId: startId, startOffset: clamp(startId, seen.startOffset), endAnchorId: endId, endOffset: clamp(endId, seen.endOffset) };
   }
 
   /**
@@ -7220,6 +7285,7 @@ export class DocxEditor {
     } else {
       this.selectBetween(contentPositionIn(startBlock, first.span.start), contentPositionIn(endBlock, last.span.start + last.span.length));
     }
+    this.snapshotLiveSelection();
     return true;
   }
 
@@ -7371,6 +7437,7 @@ export class DocxEditor {
     if (range.endAnchorId === range.startAnchorId && range.endOffset > range.startOffset)
       selectRange(el, range.startOffset, range.endOffset - range.startOffset);
     else placeCaretAtOffset(el, range.startOffset);
+    this.snapshotLiveSelection();
     return true;
   }
 

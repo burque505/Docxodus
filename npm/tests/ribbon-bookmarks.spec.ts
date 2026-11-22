@@ -52,6 +52,9 @@ async function addViaDialog(page: Page, name: string) {
   await expect(dialog(page)).toBeVisible();
   await bm(page, 'name').fill(name);
   await bm(page, 'add').click();
+  // (the dialog stays open after Add, with the bookmark listed; Close puts the focus back in the text)
+  await expect(bm(page, 'list').locator(`option[value="${name}"]`)).toHaveCount(1);
+  await dialog(page).locator('button[value="cancel"]').click();
   await expect(dialog(page)).toBeHidden();
 }
 
@@ -104,10 +107,44 @@ test('Go To closes the dialog and selects the bookmarked text; sort by name or l
   await bm(page, 'name').fill('alpha');    // (as Word: the case does not matter)
   await expect(bm(page, 'goto')).toBeEnabled();
   await bm(page, 'goto').click();
+  // (Go To selects while the dialog stays open; Escape closes it and leaves the selection)
+  await expect(dialog(page)).toBeVisible();
+  await expect.poll(() => selected(page)).toBe('Gamma three');
+  await bm(page, 'name').focus();
+  await page.keyboard.press('Escape');
   await expect(dialog(page)).toBeHidden();
   await expect.poll(() => selected(page)).toBe('Gamma three');
   await page.keyboard.type('X');
   await expect(page.locator(blocks).nth(2)).toHaveText('X');
+});
+
+test('the dialog is not modal: select in the text and Add again, Go To from one to the next, all while it stays open', async ({ page }) => {
+  await mount(page);
+  await selectParagraph(page, 0);
+  await page.locator(`${HOST} [data-dxr="bookmark"]`).click();
+  expect(await dialog(page).evaluate((d) => d.matches(':modal'))).toBe(false);
+  await bm(page, 'name').fill('First');
+  await bm(page, 'add').click();
+  // into the text with the dialog still open: a new selection, then Add takes it
+  await selectParagraph(page, 2);
+  await bm(page, 'name').fill('Third');
+  await bm(page, 'add').click();
+  await expect(dialog(page)).toBeVisible();
+  expect(await marks(page)).toEqual([{ name: 'First', text: 'Alpha one' }, { name: 'Third', text: 'Gamma three' }]);
+  await expect(bm(page, 'list').locator('option')).toHaveText(['First', 'Third']);
+  // Go To one, then the other, without reopening
+  await bm(page, 'list').selectOption('First');
+  await bm(page, 'goto').click();
+  await expect.poll(() => selected(page)).toBe('Alpha one');
+  await bm(page, 'list').selectOption('Third');
+  await bm(page, 'goto').click();
+  await expect.poll(() => selected(page)).toBe('Gamma three');
+  // Ctrl+Shift+F5 in the text with the dialog open brings the focus back to it
+  await page.locator(blocks).nth(1).click();
+  await page.keyboard.press('Control+Shift+F5');
+  await expect(bm(page, 'name')).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(dialog(page)).toBeHidden();
 });
 
 test('a name Word does not take is refused in the dialog', async ({ page }) => {
