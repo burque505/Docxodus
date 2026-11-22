@@ -4771,6 +4771,98 @@ export class DocxEditor {
     if (setSelectionBetween(anchor, focus)) this.extendedSelection = { anchor, focus };
   }
 
+  /** Put a collapsed caret at `point` (in an editable block) and scroll it into view. */
+  private moveCaretTo(point: DomSelectionPoint, scrollTo?: HTMLElement): void {
+    const block = this.editableBlockOf(point.node);
+    if (!block) return;
+    // (as an offset: moving the focus may render the block left behind afresh)
+    const offset = contentOffsetOf(block, point.node, point.offset);
+    if (document.activeElement !== block) block.focus({ preventScroll: true });
+    const live = block.isConnected ? block : this.editableBlockOf(point.node) ?? block;
+    this.activeBlock = live;
+    placeCaretAtOffset(live, offset);
+    (scrollTo ?? live).scrollIntoView({ block: scrollTo ? "start" : "nearest" });
+  }
+
+  /**
+   * Where each page of the body starts, in document order: in page view the top of each page box
+   * (a paragraph carried over from the page before starts the page at its first line there); in
+   * continuous view the document's start and the place after each page break and section break.
+   */
+  private pageStarts(): Array<{ point: DomSelectionPoint; box?: HTMLElement }> {
+    const root = this.editRoot;
+    const body = Array.from(root.querySelectorAll<HTMLElement>('[data-anchor][contenteditable="true"]'))
+      .filter((b) => this.ownerRoot(b) === root && !this.isBandBlock(b));
+    if (body.length === 0) return [];
+    const out: Array<{ point: DomSelectionPoint; box?: HTMLElement }> = [];
+    if (this.options.paginated) {
+      const seen = new Set<string>();
+      for (const box of Array.from(root.querySelectorAll<HTMLElement>(".page-box:not([data-section-filler])"))) {
+        const first = body.find((b) => box.contains(b));
+        if (!first) continue;
+        const unid = first.getAttribute("data-anchor") ?? "";
+        let point = DocxEditor.blockEdge(first, false);
+        if (seen.has(unid)) {
+          // (the rest of a paragraph begun on the page before: its first line on this page)
+          const rect = first.getClientRects()[0];
+          const at = rect ? caretPointFromClient(document, rect.left + 1, rect.top + Math.min(4, rect.height / 2)) : null;
+          if (at && this.editableBlockOf(at.node) === first) point = at;
+        }
+        for (const b of body) if (box.contains(b)) seen.add(b.getAttribute("data-anchor") ?? "");
+        out.push({ point, box });
+      }
+      return out;
+    }
+    out.push({ point: DocxEditor.blockEdge(body[0], false) });
+    for (let i = 0; i < body.length; i++) {
+      const block = body[i];
+      const section = block.closest<HTMLElement>("[data-section-index]");
+      const before = i > 0 ? body[i - 1].closest<HTMLElement>("[data-section-index]") : section;
+      if (i > 0 && section && before && section !== before) out.push({ point: DocxEditor.blockEdge(block, false) });
+      if (i > 0 && block.hasAttribute("data-page-break-before")) out.push({ point: DocxEditor.blockEdge(block, false) });
+      for (const br of Array.from(block.querySelectorAll<HTMLElement>("[data-page-break], [data-docx-page-break]"))) {
+        const after = { node: br.parentNode!, offset: Array.prototype.indexOf.call(br.parentNode!.childNodes, br) + 1 };
+        // (a break that ends its paragraph: the page starts with the next one)
+        const rest = blockContentText(block).slice(contentOffsetOf(block, after.node, after.offset)).replace(/[\s\u00a0\u200e\u200f]/g, "") === "";
+        if (rest && body[i + 1]) out.push({ point: DocxEditor.blockEdge(body[i + 1], false) });
+        else if (!rest) out.push({ point: after });
+      }
+    }
+    return out;
+  }
+
+  /** Ctrl+PgDn / Ctrl+PgUp: the caret to the top of the next or previous page (the body only). */
+  private browsePage(el: HTMLElement, next: boolean, ev: KeyboardEvent): boolean {
+    if (this.isBandBlock(el)) return false;
+    const starts = this.pageStarts();
+    const sel = window.getSelection();
+    if (starts.length === 0 || !sel || sel.rangeCount === 0) return false;
+    ev.preventDefault();
+    const caret = sel.getRangeAt(0);
+    // (the page the caret is on: the last whose start is not after it)
+    let current = 0;
+    for (let i = 0; i < starts.length; i++) {
+      const p = starts[i].point;
+      if (caret.comparePoint(p.node, p.offset) <= 0 || (caret.collapsed && caret.startContainer === p.node && caret.startOffset === p.offset)) current = i;
+      else break;
+    }
+    if (next) {
+      const target = starts[current + 1];
+      if (target) this.moveCaretTo(target.point, target.box);
+      else {
+        // (the last page: its end, as Word's goes no further)
+        const body = Array.from(this.editRoot.querySelectorAll<HTMLElement>('[data-anchor][contenteditable="true"]'))
+          .filter((b) => this.ownerRoot(b) === this.editRoot && !this.isBandBlock(b));
+        const last = body[body.length - 1];
+        if (last) this.moveCaretTo(DocxEditor.blockEdge(last, true));
+      }
+    } else {
+      const target = starts[Math.max(0, current - 1)];
+      this.moveCaretTo(target.point, target.box);
+    }
+    return true;
+  }
+
   /** The point where `block`'s text starts or ends. */
   private static blockEdge(block: HTMLElement, end: boolean): DomSelectionPoint {
     return contentPositionIn(block, end ? blockContentText(block).length : 0);
@@ -5037,6 +5129,19 @@ export class DocxEditor {
       ev.preventDefault();
       this.selectStory(el);
       return true;
+    }
+    // Ctrl+Home / Ctrl+End: the start or end of the story (the browser's own stops at the paragraph's).
+    if (ctrl && !ev.altKey && !ev.shiftKey && (ev.key === "Home" || ev.key === "End")) {
+      const story = this.storyBlocks(el);
+      const target = ev.key === "End" ? story[story.length - 1] : story[0];
+      if (!target) return false;
+      ev.preventDefault();
+      this.moveCaretTo(DocxEditor.blockEdge(target, ev.key === "End"));
+      return true;
+    }
+    // Ctrl+PgUp / Ctrl+PgDn: the top of the previous or next page, as in Word.
+    if (ctrl && !ev.altKey && !ev.shiftKey && (ev.key === "PageUp" || ev.key === "PageDown")) {
+      return this.browsePage(el, ev.key === "PageDown", ev);
     }
     const blocks = this.crossBlockSelection();
     if (!blocks || !this.crossBlockEditable(blocks)) return false;
@@ -9695,6 +9800,8 @@ export class DocxEditor {
       comments: this.options.comments,
       // (cross-references come marked, so they stay whole and Ctrl+click follows them)
       referenceFields: true,
+      // (and page breaks, so the continuous view's Ctrl+PgUp / Ctrl+PgDn can find the pages)
+      pageBreaks: true,
     });
   }
 
