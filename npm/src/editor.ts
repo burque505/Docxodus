@@ -45,6 +45,9 @@ import type {
   EditErrorCode,
   EditResult,
   FormattingInspection,
+  FormatOp,
+  RunFormattingInfo,
+  StyleDefinitionOp,
   InlineSpan,
   HeaderFooterKind,
   HyperlinkInfo,
@@ -307,6 +310,8 @@ export interface DocxEditorExports {
     SetTabStops?: (handle: number, anchorId: string, stopsJson: string) => string;
     GetTabStops?: (handle: number, anchorId: string) => string;
     SetDefaultTabStop?: (handle: number, twips: number) => string;
+    /** Create or change a style (optional: older engine builds lack it). */
+    SetStyle?: (handle: number, opJson: string) => string;
     /** Word's Layout > Breaks (optional: absent on older bundles). */
     InsertSectionBreak?: (handle: number, anchor: string, offset: number, sectionStart: string) => string;
     RemoveSectionBreak?: (handle: number, anchor: string) => string;
@@ -6145,6 +6150,88 @@ export class DocxEditor {
     return true;
   }
 
+  /** Create or change a paragraph or character style (Word's Create New Style and Modify Style).
+   *  One undo step; the whole document is laid out again. Returns the style's id, or null when the
+   *  engine refused (`lastStyleError` says why). */
+  setStyle(op: StyleDefinitionOp): string | null {
+    const bridge = this.exports.DocxSessionBridge;
+    this.lastStyleError = null;
+    if (this.closed || typeof bridge.SetStyle !== "function") return null;
+    // Typing not yet committed goes in first, so the remount does not lose it.
+    const block = this.activeBlock;
+    const fullId = block ? this.anchorIdOf(block) : null;
+    if (block && fullId) this.syncBlock(block, fullId);
+    const raw = JSON.parse(bridge.SetStyle(this.handle, JSON.stringify(op))) as EditResult;
+    if (!raw.success) {
+      this.lastStyleError = raw.error ? { code: raw.error.code, message: raw.error.message } : null;
+      return null;
+    }
+    this.parseEdit(JSON.stringify(raw));
+    this.stylesEdited = true;
+    this.stylesVersion++;
+    this.remount(this.activeBlock ? this.blockIndex(this.activeBlock) : -1, false);
+    return raw.styleId ?? op.styleId ?? null;
+  }
+
+  /** Why the last `setStyle` was refused (the engine's error), or null. */
+  lastStyleError: { code: string; message: string } | null = null;
+
+  /** Goes up whenever the document's styles change (a `setStyle`, or an Undo or Redo of one), so
+   *  a styles gallery knows to read them again. */
+  stylesVersion = 0;
+
+  /** Whether a style was edited in this session: only then can Undo and Redo change the styles,
+   *  and only then are they compared around a step (reading them costs a little). */
+  private stylesEdited = false;
+
+  private stylesSignature(): string {
+    const bridge = this.exports.DocxSessionBridge;
+    try { return typeof bridge.ListStyles === "function" ? bridge.ListStyles(this.handle) : ""; } catch { return ""; }
+  }
+
+  /** Apply character formatting to the selection (with none, to the caret's paragraph), as the
+   *  Font dialog's OK and a character style do. One `ApplyFormat` per paragraph. */
+  applyRunFormat(op: FormatOp): void {
+    const block = this.activeBlock;
+    if (this.closed || !block) return;
+    const blocks = this.selectedBlocks();
+    if (blocks.length > 1 && this.applyInlineOpAcrossBlocks(blocks, op)) return;
+    const unid = block.getAttribute("data-anchor");
+    if (!unid) return;
+    let fullId = this.anchorIdOf(block);
+    if (!fullId) return;
+    let span = selectionSpanIn(block);
+    if (!span && this.lastSelection && this.lastSelection.unid === unid) span = this.lastSelection.span;
+    fullId = this.syncBlock(block, fullId);
+    if (!fullId) return;
+    const res = this.parseEdit(
+      this.exports.DocxSessionBridge.ApplyFormat(this.handle, fullId, span ? JSON.stringify(span) : "", JSON.stringify(op)),
+    );
+    if (!res.success) return;
+    if (this.affectsList(res)) { this.refreshAfter(block, this.blockIndex(block), false); return; }
+    const fresh = this.swapBlock(block, unid, res.modified?.[0]);
+    if (fresh && span) selectRange(fresh, span.start, span.length);
+    else fresh?.focus();
+  }
+
+  /** The effective character formatting where the selection starts (or at the caret): what a Font
+   *  dialog shows. Null when there is no paragraph. */
+  runFormatAtSelection(): RunFormattingInfo | null {
+    const block = this.activeBlock;
+    const info = this.paragraphFormatting();
+    if (!block || !info) return null;
+    const unid = block.getAttribute("data-anchor");
+    let span = selectionSpanIn(block);
+    if (!span && this.lastSelection && this.lastSelection.unid === unid) span = this.lastSelection.span;
+    const at = span?.start ?? 0;
+    const runs = info.runs.filter((r) => r.span.length > 0);
+    // The run the selection starts in; at a run's end with nothing selected, the run before (Word
+    // types in the formatting to the left).
+    const hit = runs.find((r) => at >= r.span.start && at < r.span.start + r.span.length)
+      ?? runs.filter((r) => r.span.start < at).pop() ?? runs[0];
+    return hit ? { ...hit.effective } : {};
+  }
+
   /** Word's "Suppress line numbers" for the active paragraph (or every selected one). */
   setSuppressLineNumbers(on = true): void {
     this.applyParagraphFormat({ suppressLineNumbers: on });
@@ -6215,9 +6302,16 @@ export class DocxEditor {
       }
     }
     const sectionsBefore = this.sectionSignature();
+    const stylesBefore = this.stylesEdited ? this.stylesSignature() : null;
     if (!step(this.handle)) return;
     this.invalidateBlockMoveTargets();
     this.reconcile();
+    // Style definitions live in the styles part, which the paragraph diff cannot see: when an
+    // undone or redone step changed them, every paragraph in them looks different.
+    if (stylesBefore !== null && this.stylesSignature() !== stylesBefore) {
+      this.stylesVersion++;
+      this.remount();
+    }
     // A section's columns, start and page live in its w:sectPr, which the paragraph diff cannot
     // see either: when an undone or redone step changed them, the whole flow renders again.
     if (this.sectionSignature() !== sectionsBefore) this.remount();

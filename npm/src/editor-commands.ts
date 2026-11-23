@@ -12,7 +12,7 @@
  * matching ribbon control is.
  */
 import type { DocxEditor, EditorAlignment, EditorPageSetup, EditorParagraphFormat, FormatKey, PasteFormatting } from "./editor.js";
-import type { FloatingImageLayout, ListFormat, ListLevelSpec, NumberFormat, TableBorderSpec, TableOfContentsOptions, TablePropertiesOp, TableRowOptions, CellPropertiesOp } from "./types.js";
+import type { FloatingImageLayout, ListFormat, ListLevelSpec, NumberFormat, TableBorderSpec, TableOfContentsOptions, StyleDefinitionOp, TablePropertiesOp, TableRowOptions, CellPropertiesOp } from "./types.js";
 import { TrackedChangeMode } from "./types.js";
 import { FIND_OPTION_KEYS, type FindOptions } from "./find-query.js";
 import { CROSS_REFERENCE_INSERTS, CROSS_REFERENCE_TYPES, crossReferenceOptionsFor } from "./cross-reference.js";
@@ -271,6 +271,56 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   style: {
     group: "paragraph", description: "Give the paragraph a style, by its id (\"Heading1\", \"Normal\", …; see the \"styles\" query).",
     args: { styleId: "string" }, run: (e, a) => e.setParagraphStyle(a.string("styleId")),
+  },
+  characterStyle: {
+    group: "font", description: "Give the selection a character style, by its id (\"Strong\", \"Emphasis\", …; see the \"styles\" query).",
+    args: { styleId: "string" }, run: (e, a) => e.applyRunFormat({ runStyle: a.string("styleId") }),
+  },
+  fontFormat: {
+    group: "font",
+    description: "Word's Font dialog: set any of these on the selection (the whole paragraph with none); what is left out stays. size in points, color #RRGGBB, vertAlign superscript|subscript|baseline.",
+    args: {
+      "font?": "string", "size?": "number", "bold?": "boolean", "italic?": "boolean", "underline?": "boolean",
+      "strike?": "boolean", "color?": "string", "smallCaps?": "boolean", "caps?": "boolean", "vertAlign?": "superscript|subscript|baseline",
+    },
+    run: (e, a) => {
+      const op: Record<string, unknown> = {};
+      const font = a.optString("font"); if (font !== undefined) op.fontFamily = font;
+      const size = a.optNumber("size");
+      if (size !== undefined) {
+        if (!(size >= 1 && size <= 1638)) throw new EditorCommandError("bad_arguments", "fontFormat", "fontFormat: \"size\" must be 1 to 1638");
+        op.fontSizePts = size;
+      }
+      for (const key of ["bold", "italic", "underline", "strike", "smallCaps", "caps"] as const) {
+        const v = a.optBool(key); if (v !== undefined) op[key] = v;
+      }
+      const color = a.optString("color"); if (color !== undefined) op.color = color.replace(/^#/, "").toUpperCase();
+      const vert = a.optOneOf("vertAlign", ["superscript", "subscript", "baseline"] as const); if (vert !== undefined) op.vertAlign = vert;
+      if (Object.keys(op).length === 0) throw new EditorCommandError("bad_arguments", "fontFormat", "fontFormat: give at least one setting");
+      e.applyRunFormat(op);
+    },
+  },
+  setStyle: {
+    group: "paragraph",
+    description: "Word's Modify Style / Create New Style: create a paragraph or character style (no styleId; name required) or change one. paragraph takes paragraphFormat's settings, run fontFormat's engine names (fontFamily, fontSizePts, bold, …). Every paragraph in the style changes.",
+    args: {
+      "styleId?": "string", "name?": "string", "type?": "paragraph|character", "basedOn?": "string", "next?": "string",
+      "quickFormat?": "boolean", "paragraph?": "object", "run?": "object",
+    },
+    run: (e, a) => {
+      const op: Record<string, unknown> = {};
+      for (const key of ["styleId", "name", "basedOn", "next"] as const) {
+        const v = a.optString(key); if (v !== undefined) op[key] = v;
+      }
+      const type = a.optOneOf("type", ["paragraph", "character"] as const); if (type !== undefined) op.type = type;
+      const quick = a.optBool("quickFormat"); if (quick !== undefined) op.quickFormat = quick;
+      const paragraph = a.optObject("paragraph"); if (paragraph) op.paragraph = paragraph;
+      const run = a.optObject("run"); if (run) op.run = run;
+      if (op.styleId === undefined && op.name === undefined) throw new EditorCommandError("bad_arguments", "setStyle", "setStyle: give styleId to change a style, or name to create one");
+      const id = e.setStyle(op as StyleDefinitionOp);
+      must(id !== null, "setStyle", e.lastStyleError?.message ?? "the engine refused it");
+      return id;
+    },
   },
   indent: {
     group: "paragraph", description: "Change the left indent by this many twips (1440 an inch; negative to decrease).",

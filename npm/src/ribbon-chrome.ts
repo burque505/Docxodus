@@ -30,7 +30,7 @@
 import { NAV_PANE_HTML } from "./ribbon-navpane.js";
 
 /** Bumped whenever RIBBON_CSS changes, so a stale injected stylesheet is replaced. */
-export const RIBBON_STYLE_VERSION = "25";
+export const RIBBON_STYLE_VERSION = "26";
 export const RIBBON_STYLE_ATTR = "data-docxodus-ribbon-styles";
 
 /** Width of the comment gutter the surface reserves beside the sheet, in px. */
@@ -1025,7 +1025,7 @@ export const RIBBON_HTML = `
       </div>
 
       <div class="dxr-group">
-        <span class="dxr-glabel">Font</span>
+        <span class="dxr-glabel">Font<button type="button" class="dxr-launch" data-dxr="fontlaunch" title="Font settings (Ctrl+D)" aria-label="Font settings">${ICON_LAUNCH}</button></span>
         <div class="dxr-row">
           <select data-dxr="fontfamily" title="Font family — applies to the selection">
             <option value="">Font&#8230;</option>
@@ -1136,6 +1136,8 @@ export const RIBBON_HTML = `
             <option value="Heading3">Heading 3</option>
             <option value="Title">Title</option>
           </select>
+          <button type="button" class="dxr-icon" data-dxr="stylemenubtn" aria-haspopup="menu" aria-expanded="false"
+                  title="Modify, create and update styles">&#9662;</button>
         </div>
         <div class="dxr-row">
           <button type="button" data-dxr="delblock" class="dxr-danger" title="Delete the block the caret is in">Delete block</button>
@@ -1679,6 +1681,12 @@ ${NAV_PANE_HTML}
   <button type="button" role="menuitem" data-paste="keep" title="The source's fonts, sizes and colors come along"><span>Keep Source Formatting</span><kbd aria-hidden="true"></kbd></button>
   <button type="button" role="menuitem" data-paste="merge" title="Paragraphs, headings, lists, tables, links and emphasis come along; fonts, sizes and colors are the document's" aria-keyshortcuts="Control+V"><span>Merge Formatting</span><kbd aria-hidden="true">Ctrl+V</kbd></button>
   <button type="button" role="menuitem" data-paste="text" title="The text only, taking the formatting where it lands" aria-keyshortcuts="Control+Alt+Shift+V"><span>Keep Text Only</span><kbd aria-hidden="true">Ctrl+Alt+Shift+V</kbd></button>
+</div>
+
+<div class="dxr-pop dxr-filemenu" data-dxr="stylemenu" role="menu" aria-label="Styles">
+  <button type="button" role="menuitem" data-stylecmd="modify"><span data-stylecmd-label>Modify Style&#8230;</span><kbd aria-hidden="true"></kbd></button>
+  <button type="button" role="menuitem" data-stylecmd="new"><span>New Style&#8230;</span><kbd aria-hidden="true"></kbd></button>
+  <button type="button" role="menuitem" data-stylecmd="update"><span data-stylecmd-label>Update Style to Match Selection</span><kbd aria-hidden="true"></kbd></button>
 </div>
 
 <div class="dxr-pop dxr-filemenu" data-dxr="casemenu" role="menu" aria-label="Change Case">

@@ -62,11 +62,13 @@ import { LIST_DIALOG_CSS, LIST_DIALOG_HTML, ListDialog } from "./ribbon-list-dia
 import { COLUMNS_DIALOG_CSS, COLUMNS_DIALOG_HTML, ColumnsDialog } from "./ribbon-columns-dialog.js";
 import { LINE_NUMBERS_DIALOG_CSS, LINE_NUMBERS_DIALOG_HTML, LineNumbersDialog } from "./ribbon-linenumbers-dialog.js";
 import { TABS_DIALOG_CSS, TABS_DIALOG_HTML, TabsDialog } from "./ribbon-tabs-dialog.js";
+import { FONT_DIALOG_CSS, FONT_DIALOG_HTML, FontDialog } from "./ribbon-font-dialog.js";
+import { STYLE_DIALOG_CSS, STYLE_DIALOG_HTML, StyleDialog, paragraphDifference, paragraphOf, runDifference } from "./ribbon-style-dialog.js";
 import { BOOKMARK_DIALOG_CSS, BOOKMARK_DIALOG_HTML, BookmarkDialog } from "./ribbon-bookmark-dialog.js";
 import { CROSSREF_DIALOG_CSS, CROSSREF_DIALOG_HTML, CrossReferenceDialog } from "./ribbon-crossref-dialog.js";
 import { crossReferenceOptionsFor } from "./cross-reference.js";
 import { NAV_PANE_CSS, NavPane, type NavPaneCommand } from "./ribbon-navpane.js";
-import type { OutlineEntry } from "./types.js";
+import type { FormatOp, OutlineEntry, StyleDefinitionOp } from "./types.js";
 import { Ruler, RULER_CSS } from "./ruler.js";
 import { TABLE_DIALOG_CSS, TABLE_DIALOG_HTML, TableDialog, type TableDialogResult, type TableDialogTab } from "./ribbon-table-dialog.js";
 import { PICTURE_DIALOG_CSS, PICTURE_DIALOG_HTML, PICTURE_MENU_HTML, PictureDialog, type PictureDialogResult, type PictureDialogTab } from "./ribbon-picture-dialog.js";
@@ -297,6 +299,19 @@ export interface RibbonCommand {
 type CommandOf = RibbonCommand | (() => RibbonCommand | undefined);
 const cmd = (name: string, args: EditorCommandArgs = {}): RibbonCommand => ({ name, args });
 
+/** A Font dialog op as the fontFormat command's arguments. */
+function fontCommandArgs(op: FormatOp): EditorCommandArgs {
+  const args: Record<string, unknown> = {};
+  if (op.fontFamily !== undefined) args.font = op.fontFamily;
+  if (op.fontSizePts !== undefined) args.size = op.fontSizePts;
+  for (const key of ["bold", "italic", "underline", "strike", "smallCaps", "caps"] as const) {
+    if (op[key] !== undefined) args[key] = op[key];
+  }
+  if (op.color !== undefined) args.color = `#${op.color}`;
+  if (op.vertAlign !== undefined) args.vertAlign = op.vertAlign;
+  return args as EditorCommandArgs;
+}
+
 /** The commands that only read the document (DocxEditor.commands(), group "query"). */
 const QUERY_COMMANDS: ReadonlySet<string> = new Set(DocxEditor.commands().filter((c) => c.group === "query").map((c) => c.name));
 
@@ -344,6 +359,15 @@ export interface RibbonEditor {
   /** Open the Paragraph dialog on the selected paragraphs (as the Paragraph group's launcher
    *  does); false when no document is open or no paragraph is active. */
   openParagraphDialog(): boolean;
+  /** Open the Font dialog on the selection (Home > Font launcher, Ctrl+D); false when no
+   *  paragraph is active. */
+  openFontDialog(): boolean;
+  /** Open Modify Style on a style (default: the caret paragraph's), or Create New Style from
+   *  Formatting with `"new"`; false when there is no such style or no paragraph. */
+  openStyleDialog(styleId?: string): boolean;
+  /** Word's Update [style] to Match Selection: the caret paragraph's style takes its formatting.
+   *  False when there is nothing to update. */
+  updateStyleToMatch(): boolean;
   /** Show the Paragraph dialog's indents in inches or centimetres (the `measurementUnit` option). */
   setMeasurementUnit(unit: MeasurementUnit): void;
   /** Open the List Levels dialog on the caret's list; false when no document is open. */
@@ -446,7 +470,7 @@ const CONTROL_NAMES = [
   "docname", "new", "file", "recent", "save", "undo", "redo", "status", "ribbon",
   "fontsize", "fontsizes", "fontfamily", "fontgrow", "fontshrink", "clearformat", "smallcaps",
   "fontcolorbtn", "fontcolorbar", "fontcolor", "highlight", "listmenu", "linespacing",
-  "style", "delblock", "findtoggle", "replacetoggle",
+  "style", "delblock", "findtoggle", "replacetoggle", "fontlaunch", "stylemenubtn", "stylemenu", "fontdialog", "styledialog",
   "table", "picturefile", "link", "unlink", "insertcomment", "gotoheader", "gotofooter", "pagenummenu",
   "hr", "hrThick", "hrDouble", "rulepos", "hrClear",
   "margins", "orientation", "pagesize", "breaks", "sectionstart", "pagesetupnote", "spacebefore", "spaceafter",
@@ -484,7 +508,7 @@ function ensureStyles(doc: Document): void {
   existing?.remove();
   const style = doc.createElement("style");
   style.setAttribute(RIBBON_STYLE_ATTR, RIBBON_STYLE_VERSION);
-  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + BOOKMARK_DIALOG_CSS + CROSSREF_DIALOG_CSS + NAV_PANE_CSS + RULER_CSS;
+  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + FONT_DIALOG_CSS + STYLE_DIALOG_CSS + BOOKMARK_DIALOG_CSS + CROSSREF_DIALOG_CSS + NAV_PANE_CSS + RULER_CSS;
   (doc.head ?? doc.documentElement).appendChild(style);
 }
 
@@ -582,6 +606,8 @@ class RibbonSurface implements RibbonEditor {
   private recentEntries: RibbonRecentEntry[] = [];
   private fileMenuItems: RibbonFileMenuItem[] = [];
   private paragraphDialog!: ParagraphDialog;
+  private fontDialog!: FontDialog;
+  private styleDialog!: StyleDialog;
   private columnsDialog!: ColumnsDialog;
   // (the selection the Columns dialog opened on: its fields take the focus, OK puts it back)
   private columnsRange: Range | null = null;
@@ -646,7 +672,7 @@ class RibbonSurface implements RibbonEditor {
     root.className = "dxr";
     root.dataset.state = "idle";
     root.dataset.frame = this.options.frame ?? "flush";
-    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML + TABLE_DIALOG_HTML + LINE_NUMBERS_DIALOG_HTML + TABS_DIALOG_HTML + BOOKMARK_DIALOG_HTML + CROSSREF_DIALOG_HTML;
+    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML + TABLE_DIALOG_HTML + LINE_NUMBERS_DIALOG_HTML + TABS_DIALOG_HTML + FONT_DIALOG_HTML + STYLE_DIALOG_HTML + BOOKMARK_DIALOG_HTML + CROSSREF_DIALOG_HTML;
     for (const el of Array.from(root.querySelectorAll<HTMLElement>("[data-dxr]"))) {
       el.id = this.idPrefix + el.dataset.dxr;
     }
@@ -840,6 +866,21 @@ class RibbonSurface implements RibbonEditor {
       opt.textContent = style.name;
       select.appendChild(opt);
     }
+    // The gallery's character styles (Strong, Emphasis, your own): they format the selection.
+    const characterStyles = styles.filter((s) => s.type === "character" && s.quickFormat && !s.semiHidden)
+      .sort((a, b) => (a.uiPriority ?? 99) - (b.uiPriority ?? 99) || a.name.localeCompare(b.name));
+    this.characterStyleIds = new Set(characterStyles.map((s) => s.id));
+    if (characterStyles.length > 0) {
+      const group = document.createElement("optgroup");
+      group.label = "Character styles";
+      for (const style of characterStyles) {
+        const opt = document.createElement("option");
+        opt.value = style.id;
+        opt.textContent = style.name;
+        group.appendChild(opt);
+      }
+      select.appendChild(group);
+    }
     this.styleNames = new Map(styles.filter((s) => s.type === "paragraph").map((s) => [s.id, s.name]));
     this.defaultStyleId = styles.find((s) => s.type === "paragraph" && s.isDefault)?.id ?? "Normal";
     this.syncStyleBox();
@@ -847,6 +888,8 @@ class RibbonSurface implements RibbonEditor {
 
   /** Paragraph style names by id (for a style the gallery leaves out) and the default one. */
   private styleNames = new Map<string, string>();
+  private characterStyleIds = new Set<string>();
+  private stylesSeen = 0;
   private defaultStyleId = "Normal";
 
   /** The Styles box shows the caret paragraph's style, as Word's gallery marks it. A style the
@@ -854,6 +897,12 @@ class RibbonSurface implements RibbonEditor {
   private syncStyleBox(): void {
     const select = this.control<HTMLSelectElement>("style");
     if (!select || !this.live || select.ownerDocument.activeElement === select) return;
+    // The styles changed (a style edited, or that undone): read them again.
+    if (this.live.stylesVersion !== this.stylesSeen) {
+      this.stylesSeen = this.live.stylesVersion;
+      this.populateStyles();
+      return;
+    }
     let id: string | null = null;
     try { id = this.live.styleAtCaret(); } catch { id = null; }
     id ??= this.selectionElement() ? this.defaultStyleId : null;
@@ -2254,6 +2303,127 @@ class RibbonSurface implements RibbonEditor {
     return this.paragraphDialog.show();
   }
 
+  /** The fonts the Font box offers. */
+  private fontNames(): string[] {
+    const select = this.control<HTMLSelectElement>("fontfamily");
+    return select ? Array.from(select.options).map((o) => o.value).filter(Boolean) : [];
+  }
+
+  /** The Font dialog (Home > Font launcher, Ctrl+D), the style dialog and the Styles menu. */
+  private wireStyleDialogs(): void {
+    this.fontDialog = new FontDialog(this.require<HTMLDialogElement>("fontdialog"), {
+      read: () => this.live?.runFormatAtSelection() ?? null,
+      fonts: () => this.fontNames(),
+      apply: (op) => this.run("font", () => this.live!.applyRunFormat(op), cmd("fontFormat", fontCommandArgs(op))),
+    });
+    this.styleDialog = new StyleDialog(this.require<HTMLDialogElement>("styledialog"), {
+      styles: () => this.live?.styles() ?? [],
+      fonts: () => this.fontNames(),
+      source: () => {
+        const live = this.live;
+        const paragraph = live?.paragraphFormats()[0];
+        if (!live || !paragraph) return null;
+        const text = live.paragraphFormatting()?.runs.map((r) => r.text).join("").trim().slice(0, 40) ?? "";
+        return { styleId: live.styleAtCaret() ?? this.defaultStyleId, paragraph, run: live.runFormatAtSelection() ?? {}, text };
+      },
+      apply: (op, create) => {
+        const live = this.live;
+        if (!live) return "No document is open.";
+        let id: string | null = null;
+        this.run(create ? "new style" : "modify style", () => {
+          id = live.setStyle(op);
+          if (id === null) return;
+          // Word gives the selection the new style.
+          if (create) {
+            if (op.type === "character") live.applyRunFormat({ runStyle: id });
+            else live.setParagraphStyle(id);
+          }
+        }, () => (id === null ? undefined : cmd("setStyle", { ...op } as EditorCommandArgs)));
+        if (id === null) return live.lastStyleError?.message ?? "The style could not be saved.";
+        this.populateStyles();
+        return null;
+      },
+      openFont: (host, sample) => { this.fontDialog.show(host, sample); },
+      openParagraph: (host) => { this.paragraphDialog.show(host); },
+    });
+    const launcher = this.control("fontlaunch");
+    if (launcher) {
+      this.keepSelection(launcher);
+      launcher.addEventListener("click", () => this.openFontDialog());
+    }
+    const button = this.control("stylemenubtn"), menu = this.control("stylemenu");
+    if (!button || !menu) return;
+    this.keepSelection(button);
+    button.addEventListener("click", () => {
+      if (menu.hasAttribute("data-open")) { this.closePopovers(); return; }
+      this.closePopovers();
+      // The menu names the caret paragraph's style, as Word's right-click on the gallery does.
+      const id = this.live?.styleAtCaret() ?? this.defaultStyleId;
+      const name = this.styleNames.get(id) ?? id;
+      const labels = menu.querySelectorAll<HTMLElement>("[data-stylecmd-label]");
+      labels[0].textContent = `Modify ${name}…`;
+      labels[1].textContent = `Update ${name} to Match Selection`;
+      menu.setAttribute("data-open", "");
+      button.setAttribute("aria-expanded", "true");
+      this.positionPopover(menu, button);
+      menu.querySelector<HTMLElement>("button")?.focus();
+    });
+    menu.addEventListener("mousedown", (event) => event.preventDefault());
+    menu.addEventListener("click", (event) => {
+      const chosen = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-stylecmd]");
+      if (!chosen) return;
+      this.closePopovers();
+      const which = chosen.dataset.stylecmd;
+      if (which === "modify") this.openStyleDialog();
+      else if (which === "new") this.openStyleDialog("new");
+      else this.updateStyleToMatch();
+    });
+    menu.addEventListener("keydown", (event) => {
+      const items = Array.from(menu.querySelectorAll<HTMLButtonElement>("button"));
+      const at = items.indexOf(event.target as HTMLButtonElement);
+      let next = -1;
+      if (event.key === "ArrowDown") next = (at + 1) % items.length;
+      else if (event.key === "ArrowUp") next = (at - 1 + items.length) % items.length;
+      else if (event.key === "Escape") { event.preventDefault(); this.closePopovers(); button.focus(); return; }
+      if (next >= 0) { event.preventDefault(); items[next].focus(); }
+    });
+  }
+
+  openFontDialog(): boolean {
+    if (!this.live || this.fontDialog.open) return false;
+    this.closePopovers();
+    return this.fontDialog.show();
+  }
+
+  openStyleDialog(styleId?: string): boolean {
+    if (!this.live || this.styleDialog.open) return false;
+    this.closePopovers();
+    if (styleId === "new") return this.styleDialog.showNew();
+    return this.styleDialog.showModify(styleId ?? this.live.styleAtCaret() ?? this.defaultStyleId);
+  }
+
+  updateStyleToMatch(): boolean {
+    const live = this.live;
+    if (!live) return false;
+    const id = live.styleAtCaret() ?? this.defaultStyleId;
+    const style = live.styles().find((s) => s.id === id);
+    const paragraph = live.paragraphFormats()[0];
+    const run = live.runFormatAtSelection();
+    if (!style || !paragraph || !run) return false;
+    const op: StyleDefinitionOp = { styleId: id };
+    const runOp = runDifference(run, style.resolvedRun ?? {});
+    if (Object.keys(runOp).length) op.run = runOp;
+    const paraOp = paragraphDifference(paragraph, paragraphOf(style.resolvedParagraph));
+    if (Object.keys(paraOp).length) op.paragraph = paraOp;
+    const name = this.styleNames.get(id) ?? id;
+    if (!op.run && !op.paragraph) { this.setStatus(`${name} already matches the selection.`); return false; }
+    let done = false;
+    this.run("update style", () => { done = live.setStyle(op) !== null; }, () => (done ? cmd("setStyle", { ...op } as EditorCommandArgs) : undefined));
+    if (!done) { this.setStatus(live.lastStyleError?.message ?? `${name} could not be updated.`); return false; }
+    this.populateStyles();
+    return true;
+  }
+
   setMeasurementUnit(unit: MeasurementUnit): void {
     this.paragraphDialog.setUnit(unit);
     this.listDialog.setUnit(unit);
@@ -2270,6 +2440,7 @@ class RibbonSurface implements RibbonEditor {
 
   private wire(): void {
     this.wireParagraphDialog();
+    this.wireStyleDialogs();
     this.wireListDialog();
     this.wireColumns();
     this.wirePicture();
@@ -2429,7 +2600,9 @@ class RibbonSurface implements RibbonEditor {
     const styleBox = this.require<HTMLSelectElement>("style");
     styleBox.addEventListener("change", () => {
       const value = styleBox.value;
-      if (this.live && value) this.run("style", () => this.live!.setParagraphStyle(value), cmd("style", { styleId: value }));
+      if (this.live && value && this.characterStyleIds.has(value)) {
+        this.run("character style", () => this.live!.applyRunFormat({ runStyle: value }), cmd("characterStyle", { styleId: value }));
+      } else if (this.live && value) this.run("style", () => this.live!.setParagraphStyle(value), cmd("style", { styleId: value }));
       // (then back to what the caret's paragraph has, the new style when it took)
       styleBox.blur();
       this.syncStyleBox();
@@ -3320,6 +3493,12 @@ class RibbonSurface implements RibbonEditor {
     // (by its path, not by where the target is now: the editor's own chords re-render the block they
     // were pressed in, which has left the document by the time the key bubbles up here)
     const inDocument = event.composedPath().includes(this.surface);
+    // Ctrl+D: Word's Font dialog.
+    if (key === "d" && !event.shiftKey && !event.altKey && inDocument) {
+      event.preventDefault();
+      this.openFontDialog();
+      return;
+    }
     // Ctrl+Alt+M is Word's New Comment; every other chord here is plain Ctrl.
     if (event.altKey) {
       if (key === "m" && inDocument) { event.preventDefault(); this.beginComment(); }
@@ -3497,6 +3676,8 @@ class RibbonSurface implements RibbonEditor {
     this.control("pastemore")?.setAttribute("aria-expanded", "false");
     this.control("casemenu")?.removeAttribute("data-open");
     this.control("changecase")?.setAttribute("aria-expanded", "false");
+    this.control("stylemenu")?.removeAttribute("data-open");
+    this.control("stylemenubtn")?.setAttribute("aria-expanded", "false");
     this.control("findoptmenu")?.removeAttribute("data-open");
     this.control("findoptions")?.setAttribute("aria-expanded", "false");
     this.control("findspecialmenu")?.removeAttribute("data-open");
@@ -3511,7 +3692,7 @@ class RibbonSurface implements RibbonEditor {
     const target = event.target as Node;
     const picMenu = this.control("picturemenu");
     if (picMenu?.hasAttribute("data-open") && !picMenu.contains(target)) picMenu.removeAttribute("data-open");
-    for (const [popName, buttonName] of [["gridpicker", "table"], ["linkpop", "link"], ["filemenu", "filebutton"], ["pastemenu", "pastemore"], ["casemenu", "changecase"], ["findoptmenu", "findoptions"], ["findspecialmenu", "findspecial"]] as const) {
+    for (const [popName, buttonName] of [["gridpicker", "table"], ["linkpop", "link"], ["filemenu", "filebutton"], ["pastemenu", "pastemore"], ["casemenu", "changecase"], ["stylemenu", "stylemenubtn"], ["findoptmenu", "findoptions"], ["findspecialmenu", "findspecial"]] as const) {
       const pop = this.control(popName);
       if (!pop?.hasAttribute("data-open")) continue;
       if (pop.contains(target) || this.control(buttonName)?.contains(target)) continue;
@@ -3519,6 +3700,7 @@ class RibbonSurface implements RibbonEditor {
       if (popName === "filemenu") this.control("filebutton")?.setAttribute("aria-expanded", "false");
       if (popName === "pastemenu") this.control("pastemore")?.setAttribute("aria-expanded", "false");
       if (popName === "casemenu") this.control("changecase")?.setAttribute("aria-expanded", "false");
+      if (popName === "stylemenu") this.control("stylemenubtn")?.setAttribute("aria-expanded", "false");
       if (popName === "findoptmenu") this.control("findoptions")?.setAttribute("aria-expanded", "false");
       if (popName === "findspecialmenu") this.control("findspecial")?.setAttribute("aria-expanded", "false");
     }

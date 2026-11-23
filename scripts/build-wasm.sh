@@ -233,7 +233,8 @@ du -sh "$WASM_DIST"
 # and the next small ops. Assembly roots, dependencies and the AOT profile are unchanged.
 # 2026-11-22 (dAHKxodus fork): merging upstream main 3d9efb03 (budget 5972 KiB, which already holds the
 # Table Properties the fork carried) keeps the fork's 6048 KiB: the fork's own ops above stay on top.
-WIRE_BUDGET_BYTES=$((6048 * 1024))
+# SetStyle (style definitions) adds about 9 KB: 6,193,424 measured, 272 over 6048 KiB. Fork-only.
+WIRE_BUDGET_BYTES=$((6056 * 1024))
 WIRE_BYTES=$(cat "$WASM_DIST/_framework/.wire-size")
 rm -f "$WASM_DIST/_framework/.wire-size"
 echo ""

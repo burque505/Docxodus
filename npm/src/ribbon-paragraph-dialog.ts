@@ -263,8 +263,12 @@ export class ParagraphDialog {
   private unit: MeasurementUnit;
   private initial = new Map<string, string>();
 
-  constructor(private readonly dialog: HTMLDialogElement, private readonly host: ParagraphDialogHost, unit: MeasurementUnit = "in") {
+  /** The host of the current opening (the ribbon's, or Modify Style's for a style). */
+  private host: ParagraphDialogHost;
+
+  constructor(private readonly dialog: HTMLDialogElement, private readonly defaultHost: ParagraphDialogHost, unit: MeasurementUnit = "in") {
     this.unit = unit;
+    this.host = defaultHost;
     const form = dialog.querySelector("form")!;
     for (const tab of Array.from(dialog.querySelectorAll<HTMLElement>("[data-pd-tab]"))) {
       tab.addEventListener("click", () => this.showTab(tab.dataset.pdTab!));
@@ -300,7 +304,6 @@ export class ParagraphDialog {
       // Tabs… is OK, then the Tabs dialog (Word): its stops are set on the paragraphs as now formatted.
       if (submitter?.value === "tabs") this.host.openTabs?.();
     });
-    this.dialog.querySelector<HTMLElement>("[data-pd-tabs]")!.hidden = !host.openTabs;
     // Esc closes the dialog by itself.
     dialog.addEventListener("cancel", (event) => {
       event.preventDefault();
@@ -316,8 +319,11 @@ export class ParagraphDialog {
     this.unit = unit;
   }
 
-  /** Open on the selection's paragraphs; false when there is none. */
-  show(): boolean {
+  /** Open on the selection's paragraphs (or, with `host`, on what that host reads: Modify Style
+   *  edits a style through it); false when there is none. */
+  show(host?: ParagraphDialogHost): boolean {
+    this.host = host ?? this.defaultHost;
+    this.dialog.querySelector<HTMLElement>("[data-pd-tabs]")!.hidden = !this.host.openTabs;
     const formats = this.host.read();
     if (formats.length === 0) return false;
     const pick = <K extends keyof EditorParagraphFormat>(key: K) => common(formats.map((f) => f[key]));
