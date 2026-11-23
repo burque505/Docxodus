@@ -872,7 +872,7 @@ class RibbonSurface implements RibbonEditor {
     this.characterStyleIds = new Set(characterStyles.map((s) => s.id));
     if (characterStyles.length > 0) {
       const group = document.createElement("optgroup");
-      group.label = "Character styles";
+      group.label = this.translateText(RIBBON_STATUS_TEXTS.characterStyles);
       for (const style of characterStyles) {
         const opt = document.createElement("option");
         opt.value = style.id;
@@ -2345,6 +2345,7 @@ class RibbonSurface implements RibbonEditor {
       },
       openFont: (host, sample) => { this.fontDialog.show(host, sample); },
       openParagraph: (host) => { this.paragraphDialog.show(host); },
+      t: (text) => this.translateText(text),
     });
     const launcher = this.control("fontlaunch");
     if (launcher) {
@@ -2361,8 +2362,8 @@ class RibbonSurface implements RibbonEditor {
       const id = this.live?.styleAtCaret() ?? this.defaultStyleId;
       const name = this.styleNames.get(id) ?? id;
       const labels = menu.querySelectorAll<HTMLElement>("[data-stylecmd-label]");
-      labels[0].textContent = `Modify ${name}…`;
-      labels[1].textContent = `Update ${name} to Match Selection`;
+      labels[0].textContent = this.translateText(RIBBON_STATUS_TEXTS.modifyStyle).replace("{0}", name);
+      labels[1].textContent = this.translateText(RIBBON_STATUS_TEXTS.updateStyle).replace("{0}", name);
       menu.setAttribute("data-open", "");
       button.setAttribute("aria-expanded", "true");
       this.positionPopover(menu, button);
@@ -2416,10 +2417,10 @@ class RibbonSurface implements RibbonEditor {
     const paraOp = paragraphDifference(paragraph, paragraphOf(style.resolvedParagraph));
     if (Object.keys(paraOp).length) op.paragraph = paraOp;
     const name = this.styleNames.get(id) ?? id;
-    if (!op.run && !op.paragraph) { this.setStatus(`${name} already matches the selection.`); return false; }
+    if (!op.run && !op.paragraph) { this.setStatus(this.translateText(RIBBON_STATUS_TEXTS.styleMatches).replace("{0}", name)); return false; }
     let done = false;
     this.run("update style", () => { done = live.setStyle(op) !== null; }, () => (done ? cmd("setStyle", { ...op } as EditorCommandArgs) : undefined));
-    if (!done) { this.setStatus(live.lastStyleError?.message ?? `${name} could not be updated.`); return false; }
+    if (!done) { this.setStatus(live.lastStyleError?.message ?? this.translateText(RIBBON_STATUS_TEXTS.styleNotUpdated).replace("{0}", name)); return false; }
     this.populateStyles();
     return true;
   }

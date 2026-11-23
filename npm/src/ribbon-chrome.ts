@@ -1780,6 +1780,16 @@ export const RIBBON_STATUS_TEXTS = {
   fieldsRefused: "Fields cannot be updated here, nor while changes are tracked",
   headingMoveRefused: "This heading cannot move there: a section break or a range of the document is in the way, or changes are tracked",
   headingRefused: "This heading cannot be changed that way",
+  modifyStyle: "Modify {0}…",
+  updateStyle: "Update {0} to Match Selection",
+  styleMatches: "{0} already matches the selection.",
+  styleNotUpdated: "{0} could not be updated.",
+  characterStyles: "Character styles",
+  modifyStyleTitle: "Modify Style",
+  newStyleTitle: "Create New Style from Formatting",
+  noStyle: "(no style)",
+  thisStyle: "(this style)",
+  sameStyle: "(same style)",
 } as const;
 
 /** The default hint copy, shown above the document in full chrome. */

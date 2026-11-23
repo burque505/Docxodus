@@ -8,6 +8,7 @@ import type { EditorParagraphFormat } from "./editor.js";
 import type { FormatOp, ParagraphFormatting, RunFormattingInfo, StyleDefinitionOp, StyleInfo } from "./types.js";
 import type { FontDialogHost } from "./ribbon-font-dialog.js";
 import { formatPoints, makeDialogMovable, restoreDialogPlace, type ParagraphDialogHost } from "./ribbon-paragraph-dialog.js";
+import { RIBBON_STATUS_TEXTS } from "./ribbon-chrome.js";
 
 export const STYLE_DIALOG_CSS = `
 .dxr-styledialog { width: min(520px, calc(100vw - 32px)); }
@@ -134,6 +135,8 @@ export interface StyleDialogHost {
   /** Open the Font / Paragraph dialog over this one with `host`. */
   openFont(host: FontDialogHost, sample: string): void;
   openParagraph(host: ParagraphDialogHost): void;
+  /** The text in the page's language (the ribbon's labels); English without it. */
+  t?(text: string): string;
 }
 
 const RUN_KEYS = ["bold", "italic", "underline", "strike", "color", "fontSizePts", "fontFamily", "caps", "smallCaps", "vertAlign"] as const;
@@ -291,7 +294,7 @@ export class StyleDialog {
     this.baseRun = { ...(style.resolvedRun ?? {}) };
     this.basePara = paragraphOf(style.resolvedParagraph);
     this.sample = this.host.source()?.text || style.name;
-    return this.start("Modify Style", style.name, style.type, style.basedOn ?? "", style.next ?? "", !!style.quickFormat);
+    return this.start(this.tr(RIBBON_STATUS_TEXTS.modifyStyleTitle), style.name, style.type, style.basedOn ?? "", style.next ?? "", !!style.quickFormat);
   }
 
   /** Create New Style from Formatting: starts from the caret's formatting and style. */
@@ -309,10 +312,14 @@ export class StyleDialog {
     let n = 1;
     while (taken.has(`style${n}`)) n++;
     const basedOn = source.styleId ?? styles.find((s) => s.type === "paragraph" && s.isDefault)?.id ?? "";
-    return this.start("Create New Style from Formatting", `Style${n}`, "paragraph", basedOn, "", true);
+    return this.start(this.tr(RIBBON_STATUS_TEXTS.newStyleTitle), `Style${n}`, "paragraph", basedOn, "", true);
   }
 
   // ── internals ──
+
+  private tr(text: string): string {
+    return this.host.t?.(text) ?? text;
+  }
 
   private start(title: string, name: string, type: string, basedOn: string, next: string, gallery: boolean): boolean {
     this.run = {};
@@ -354,12 +361,12 @@ export class StyleDialog {
     const option = (value: string, text: string) => Object.assign(document.createElement("option"), { value, textContent: text });
     const basedOn = this.select("basedOn");
     const keep = basedOn.value;
-    basedOn.replaceChildren(option("", "(no style)"),
+    basedOn.replaceChildren(option("", this.tr(RIBBON_STATUS_TEXTS.noStyle)),
       ...styles.filter((s) => s.type === this.type()).sort(byName).map((s) => option(s.id, s.name)));
     basedOn.value = Array.from(basedOn.options).some((o) => o.value === keep) ? keep : "";
     const next = this.select("next");
     const keepNext = next.value;
-    next.replaceChildren(option("", this.create ? "(this style)" : "(same style)"),
+    next.replaceChildren(option("", this.tr(this.create ? RIBBON_STATUS_TEXTS.thisStyle : RIBBON_STATUS_TEXTS.sameStyle)),
       ...this.host.styles().filter((s) => s.type === "paragraph" && s.id !== this.styleId).sort(byName).map((s) => option(s.id, s.name)));
     next.value = Array.from(next.options).some((o) => o.value === keepNext) ? keepNext : "";
     const paragraph = this.type() === "paragraph";
