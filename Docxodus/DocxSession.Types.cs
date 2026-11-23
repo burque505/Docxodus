@@ -761,6 +761,47 @@ public sealed record TableStyleFormatting
     public string? CellShadingFill { get; init; }
 }
 
+/// <summary>
+/// A paragraph or character style to create or change, for <see cref="DocxSession.SetStyle"/>: what
+/// Word's Create New Style and Modify Style dialogs write. Every field is tri-state: <c>null</c>
+/// leaves it as it is (or, for a new style, takes the default).
+/// </summary>
+public sealed record StyleDefinitionOp
+{
+    /// <summary>The style to change (<c>w:styleId</c>); <c>null</c> creates a new style, whose id
+    /// is made from its name (the result's <see cref="EditResult.StyleId"/>).</summary>
+    public string? StyleId { get; init; }
+
+    /// <summary>The style's name, required for a new style. A name another style has (or one Word
+    /// keeps for a built-in style) is refused, and so is renaming a built-in style.</summary>
+    public string? Name { get; init; }
+
+    /// <summary><c>"paragraph"</c> (the default) or <c>"character"</c>. Fixed once the style
+    /// exists.</summary>
+    public string? Type { get; init; }
+
+    /// <summary>The style this one is based on (<c>w:basedOn</c>), of the same type; <c>""</c> for
+    /// none. A new style is based on the default style of its type.</summary>
+    public string? BasedOn { get; init; }
+
+    /// <summary>The style for the paragraph after this one (<c>w:next</c>), paragraph styles only;
+    /// <c>""</c> removes it. A new paragraph style is followed by itself.</summary>
+    public string? Next { get; init; }
+
+    /// <summary>Shown in the Styles gallery (<c>w:qFormat</c>). A new style is.</summary>
+    public bool? QuickFormat { get; init; }
+
+    /// <summary>Paragraph formatting for a paragraph style's <c>w:pPr</c>, written as
+    /// <see cref="DocxSession.SetParagraphFormat"/> writes a paragraph's.</summary>
+    public ParagraphFormatOp? Paragraph { get; init; }
+
+    /// <summary>Character formatting for the style's <c>w:rPr</c>, written as
+    /// <see cref="DocxSession.ApplyFormat(string, CharSpan?, FormatOp)"/> writes a run's. Turning off
+    /// what the based-on style turns on writes an explicit off. A paragraph style's linked
+    /// character style (<c>w:link</c>) gets the same change, as in Word.</summary>
+    public FormatOp? Run { get; init; }
+}
+
 /// <summary>One explicit style definition from the document's style catalog.</summary>
 public sealed record StyleInfo
 {
@@ -2121,6 +2162,13 @@ public enum EditErrorCode
     /// <c>LineSpacingRule</c> without the <c>LineSpacing</c> it qualifies.</summary>
     InvalidParagraphFormat,
 
+    /// <summary>A <see cref="StyleDefinitionOp"/> that cannot be written: no name for a new style, a
+    /// name another style already has, renaming a built-in style, a type other than paragraph or
+    /// character (or changing a style's type), a based-on style of another type or one that would
+    /// make a loop, a following style that is not a paragraph style, paragraph formatting on a
+    /// character style, or a highlight (Word's styles have none).</summary>
+    InvalidStyleDefinition,
+
     /// <summary>A table-styling value the op cannot express: a column-width list whose length
     /// doesn't match the table's column count (or a non-positive width), a shading fill that is
     /// neither a hex RRGGBB triplet nor "auto", or a negative border size.</summary>
@@ -2271,6 +2319,9 @@ public sealed class EditResult
 
     /// <summary>The affected native image occurrence identity, when applicable.</summary>
     public string? ImageId { get; init; }
+
+    /// <summary>The style created or changed, by <see cref="DocxSession.SetStyle"/>.</summary>
+    public string? StyleId { get; init; }
 
     internal static EditResult Fail(EditErrorCode code, string message, string? anchorId = null) =>
         new() { Success = false, Error = new EditError(code, message, anchorId) };

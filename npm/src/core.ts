@@ -199,6 +199,7 @@ export type {
   PageSetupOp,
   ParagraphBorderEdge,
   ParagraphFormatOp,
+  StyleDefinitionOp,
   RevisionDiagnostic,
   RevisionFamily,
   RevisionResolutionStatus,

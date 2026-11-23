@@ -57,6 +57,7 @@ import type {
   PackageManifest,
   ParagraphBorderEdge,
   ParagraphFormatOp,
+  StyleDefinitionOp,
   TableBorderSpec,
   TableInsertOptions,
   TableMetadataResult,
@@ -1692,6 +1693,12 @@ export class DocxSession {
 
   setParagraphStyle(anchorId: string, styleId: string): EditResult {
     return JSON.parse(this.wasm.SetParagraphStyle(this.handle, anchorId, styleId)) as EditResult;
+  }
+
+  /** Create or change a paragraph or character style. One undo step; the result's `styleId` names
+   *  the style. Every paragraph in the style changes, so re-render the whole document. */
+  setStyle(op: StyleDefinitionOp): EditResult {
+    return JSON.parse(this.wasm.SetStyle(this.handle, JSON.stringify(op))) as EditResult;
   }
 
   /** Set paragraph alignment / indent / page-break-before (omitted fields are left unchanged). */

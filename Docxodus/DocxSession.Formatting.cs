@@ -317,19 +317,8 @@ public sealed partial class DocxSession
         if (element is null) return EditResult.Fail(EditErrorCode.AnchorNotFound, "element null", anchorId);
         if (RefuseNestedTrackedParagraphPropertyChange(element, anchorId) is { } pending) return pending;
 
-        if (op.FirstLineIndent is not null && op.HangingIndent is not null)
-            return EditResult.Fail(EditErrorCode.InvalidParagraphFormat,
-                "firstLineIndent and hangingIndent are mutually exclusive (w:ind holds one or the other)", anchorId);
-        if (op.FirstLineIndent is < 0 || op.HangingIndent is < 0 ||
-            op.SpacingBefore is < 0 || op.SpacingAfter is < 0 || op.LineSpacing is < 0)
-            return EditResult.Fail(EditErrorCode.InvalidParagraphFormat,
-                "indent/spacing values are unsigned twips and must be >= 0", anchorId);
-        if (op.LineSpacingRule is not null && op.LineSpacing is null)
-            return EditResult.Fail(EditErrorCode.InvalidParagraphFormat,
-                "lineSpacingRule requires lineSpacing (w:lineRule qualifies w:line)", anchorId);
-        if (op.LeftIndent is not null && op.IndentDelta is not null)
-            return EditResult.Fail(EditErrorCode.InvalidParagraphFormat,
-                "leftIndent and indentDelta are mutually exclusive (both set w:ind/@w:left)", anchorId);
+        if (ParagraphFormatProblem(op) is { } problem)
+            return EditResult.Fail(EditErrorCode.InvalidParagraphFormat, problem, anchorId);
 
         var oldPPr = new XElement(element.Element(W.pPr) ?? new XElement(W.pPr));
         _history.RecordPreOp(TakeSnapshot());
@@ -338,116 +327,7 @@ public sealed partial class DocxSession
             var pPr = element.Element(W.pPr);
             if (pPr is null) { pPr = new XElement(W.pPr); element.AddFirst(pPr); }
 
-            if (op.Alignment is { } align)
-            {
-                var val = align switch
-                {
-                    ParagraphAlignment.Left => "left",
-                    ParagraphAlignment.Center => "center",
-                    ParagraphAlignment.Right => "right",
-                    ParagraphAlignment.Justify => "both",
-                    _ => "left",
-                };
-                SetPPrChildInOrder(pPr, new XElement(W.jc, new XAttribute(W.val, val)));
-            }
-
-            if (op.PageBreakBefore is { } pbb)
-            {
-                pPr.Element(W.pageBreakBefore)?.Remove();
-                if (pbb) SetPPrChildInOrder(pPr, new XElement(W.pageBreakBefore));
-            }
-
-            if (op.IndentDelta is { } delta && delta != 0)
-            {
-                var ind = pPr.Element(W.ind);
-                // Parse the current left indent tolerantly: documents exported by Google Docs (and
-                // others) emit non-integer twips like w:left="12.996749877929688", which a bare
-                // (int?) cast rejects with a FormatException. AttributeToTwips is the same helper the
-                // HTML converter uses (decimal → truncate), so we read what the doc renders and write
-                // back a clean integer.
-                // Adjust the edge in whichever spelling the paragraph already uses (w:start or
-                // w:left), so the value written is the one every reader sees.
-                var leading = WordprocessingMLUtil.IndLeadingAttribute(ind);
-                int cur = WordprocessingMLUtil.AttributeToTwips(leading) ?? 0;
-                int next = Math.Max(0, cur + delta);
-                if (ind is null)
-                {
-                    ind = new XElement(W.ind);
-                    SetPPrChildInOrder(pPr, ind);
-                }
-                ind.SetAttributeValue(leading?.Name ?? W.left, next);
-            }
-
-            // Absolute left/right edges, in whichever spelling (left/start, right/end) the
-            // paragraph already uses, so the value written is the one every reader sees. An indent
-            // in character units (leftChars/startChars, rightChars/endChars) wins over the twips one
-            // in Word, so it goes: otherwise the new value would not show.
-            if (op.LeftIndent is { } left)
-            {
-                var ind = GetOrCreatePPrChild(pPr, W.ind);
-                ind.SetAttributeValue(WordprocessingMLUtil.IndLeadingAttribute(ind)?.Name ?? W.left, left);
-                ind.SetAttributeValue(W.leftChars, null);
-                ind.SetAttributeValue(W.startChars, null);
-            }
-            if (op.RightIndent is { } right)
-            {
-                var ind = GetOrCreatePPrChild(pPr, W.ind);
-                ind.SetAttributeValue(WordprocessingMLUtil.IndTrailingAttribute(ind)?.Name ?? W.right, right);
-                ind.SetAttributeValue(W.rightChars, null);
-                ind.SetAttributeValue(W.endChars, null);
-            }
-
-            if (op.KeepNext is { } keepNext) SetPPrToggle(element, pPr, W.keepNext, keepNext, false);
-            if (op.KeepLines is { } keepLines) SetPPrToggle(element, pPr, W.keepLines, keepLines, false);
-            if (op.WidowControl is { } widow) SetPPrToggle(element, pPr, W.widowControl, widow, true);
-            if (op.ContextualSpacing is { } contextual)
-                SetPPrToggle(element, pPr, W.contextualSpacing, contextual, false);
-
-            // firstLine/hanging share one w:ind slot in Word: writing either evicts the other
-            // (validation above already rejected an op carrying both).
-            if (op.FirstLineIndent is { } firstLine)
-            {
-                var ind = GetOrCreatePPrChild(pPr, W.ind);
-                ind.SetAttributeValue(W.firstLine, firstLine);
-                ind.SetAttributeValue(W.hanging, null);
-            }
-            if (op.HangingIndent is { } hanging)
-            {
-                var ind = GetOrCreatePPrChild(pPr, W.ind);
-                ind.SetAttributeValue(W.hanging, hanging);
-                ind.SetAttributeValue(W.firstLine, null);
-            }
-
-            if (op.SpacingBefore is not null || op.SpacingAfter is not null || op.LineSpacing is not null)
-            {
-                var spacing = GetOrCreatePPrChild(pPr, W.spacing);
-                // A direct beforeAutospacing/afterAutospacing flag makes Word ignore the explicit
-                // value, so writing one clears the matching flag — Word's own Paragraph dialog
-                // does the same when a typed value replaces "Auto".
-                if (op.SpacingBefore is { } before)
-                {
-                    spacing.SetAttributeValue(W.before, before);
-                    spacing.SetAttributeValue(W.beforeAutospacing, null);
-                }
-                if (op.SpacingAfter is { } after)
-                {
-                    spacing.SetAttributeValue(W.after, after);
-                    spacing.SetAttributeValue(W.afterAutospacing, null);
-                }
-                if (op.LineSpacing is { } line)
-                {
-                    spacing.SetAttributeValue(W.line, line);
-                    spacing.SetAttributeValue(W.lineRule, (op.LineSpacingRule ?? LineSpacingRule.Auto) switch
-                    {
-                        LineSpacingRule.Exact => "exact",
-                        LineSpacingRule.AtLeast => "atLeast",
-                        _ => "auto",
-                    });
-                }
-            }
-
-            if (op.ClearBorders is true || op.TopBorder is not null || op.BottomBorder is not null)
-                ApplyParagraphBorders(pPr, op.TopBorder, op.BottomBorder, op.ClearBorders is true);
+            WriteParagraphFormat(pPr, op, element);
 
             if (_trackedChanges == TrackedChangeMode.RenderInline)
                 TrackPropertyMutation(pPr, oldPPr, W.pPrChange,
@@ -470,6 +350,140 @@ public sealed partial class DocxSession
         {
             return FailInternal(ex, anchorId);
         }
+    }
+
+    /// <summary>Why <paramref name="op"/> cannot be written, or null when it can.</summary>
+    private static string? ParagraphFormatProblem(ParagraphFormatOp op)
+    {
+        if (op.FirstLineIndent is not null && op.HangingIndent is not null)
+            return "firstLineIndent and hangingIndent are mutually exclusive (w:ind holds one or the other)";
+        if (op.FirstLineIndent is < 0 || op.HangingIndent is < 0 ||
+            op.SpacingBefore is < 0 || op.SpacingAfter is < 0 || op.LineSpacing is < 0)
+            return "indent/spacing values are unsigned twips and must be >= 0";
+        if (op.LineSpacingRule is not null && op.LineSpacing is null)
+            return "lineSpacingRule requires lineSpacing (w:lineRule qualifies w:line)";
+        if (op.LeftIndent is not null && op.IndentDelta is not null)
+            return "leftIndent and indentDelta are mutually exclusive (both set w:ind/@w:left)";
+        return null;
+    }
+
+    /// <summary>
+    /// Write the non-null fields of <paramref name="op"/> into <paramref name="pPr"/>, a paragraph's
+    /// or a style's. An on/off property inherits what <paramref name="probe"/>'s styles give it: the
+    /// paragraph itself, or for a style a paragraph in the style it is based on.
+    /// </summary>
+    private void WriteParagraphFormat(XElement pPr, ParagraphFormatOp op, XElement probe)
+    {
+        if (op.Alignment is { } align)
+        {
+            var val = align switch
+            {
+                ParagraphAlignment.Left => "left",
+                ParagraphAlignment.Center => "center",
+                ParagraphAlignment.Right => "right",
+                ParagraphAlignment.Justify => "both",
+                _ => "left",
+            };
+            SetPPrChildInOrder(pPr, new XElement(W.jc, new XAttribute(W.val, val)));
+        }
+
+        if (op.PageBreakBefore is { } pbb)
+        {
+            pPr.Element(W.pageBreakBefore)?.Remove();
+            if (pbb) SetPPrChildInOrder(pPr, new XElement(W.pageBreakBefore));
+        }
+
+        if (op.IndentDelta is { } delta && delta != 0)
+        {
+            var ind = pPr.Element(W.ind);
+            // Parse the current left indent tolerantly: documents exported by Google Docs (and
+            // others) emit non-integer twips like w:left="12.996749877929688", which a bare
+            // (int?) cast rejects with a FormatException. AttributeToTwips is the same helper the
+            // HTML converter uses (decimal → truncate), so we read what the doc renders and write
+            // back a clean integer.
+            // Adjust the edge in whichever spelling the paragraph already uses (w:start or
+            // w:left), so the value written is the one every reader sees.
+            var leading = WordprocessingMLUtil.IndLeadingAttribute(ind);
+            int cur = WordprocessingMLUtil.AttributeToTwips(leading) ?? 0;
+            int next = Math.Max(0, cur + delta);
+            if (ind is null)
+            {
+                ind = new XElement(W.ind);
+                SetPPrChildInOrder(pPr, ind);
+            }
+            ind.SetAttributeValue(leading?.Name ?? W.left, next);
+        }
+
+        // Absolute left/right edges, in whichever spelling (left/start, right/end) the
+        // paragraph already uses, so the value written is the one every reader sees. An indent
+        // in character units (leftChars/startChars, rightChars/endChars) wins over the twips one
+        // in Word, so it goes: otherwise the new value would not show.
+        if (op.LeftIndent is { } left)
+        {
+            var ind = GetOrCreatePPrChild(pPr, W.ind);
+            ind.SetAttributeValue(WordprocessingMLUtil.IndLeadingAttribute(ind)?.Name ?? W.left, left);
+            ind.SetAttributeValue(W.leftChars, null);
+            ind.SetAttributeValue(W.startChars, null);
+        }
+        if (op.RightIndent is { } right)
+        {
+            var ind = GetOrCreatePPrChild(pPr, W.ind);
+            ind.SetAttributeValue(WordprocessingMLUtil.IndTrailingAttribute(ind)?.Name ?? W.right, right);
+            ind.SetAttributeValue(W.rightChars, null);
+            ind.SetAttributeValue(W.endChars, null);
+        }
+
+        if (op.KeepNext is { } keepNext) SetPPrToggle(probe, pPr, W.keepNext, keepNext, false);
+        if (op.KeepLines is { } keepLines) SetPPrToggle(probe, pPr, W.keepLines, keepLines, false);
+        if (op.WidowControl is { } widow) SetPPrToggle(probe, pPr, W.widowControl, widow, true);
+        if (op.ContextualSpacing is { } contextual)
+            SetPPrToggle(probe, pPr, W.contextualSpacing, contextual, false);
+
+        // firstLine/hanging share one w:ind slot in Word: writing either evicts the other
+        // (validation above already rejected an op carrying both).
+        if (op.FirstLineIndent is { } firstLine)
+        {
+            var ind = GetOrCreatePPrChild(pPr, W.ind);
+            ind.SetAttributeValue(W.firstLine, firstLine);
+            ind.SetAttributeValue(W.hanging, null);
+        }
+        if (op.HangingIndent is { } hanging)
+        {
+            var ind = GetOrCreatePPrChild(pPr, W.ind);
+            ind.SetAttributeValue(W.hanging, hanging);
+            ind.SetAttributeValue(W.firstLine, null);
+        }
+
+        if (op.SpacingBefore is not null || op.SpacingAfter is not null || op.LineSpacing is not null)
+        {
+            var spacing = GetOrCreatePPrChild(pPr, W.spacing);
+            // A direct beforeAutospacing/afterAutospacing flag makes Word ignore the explicit
+            // value, so writing one clears the matching flag — Word's own Paragraph dialog
+            // does the same when a typed value replaces "Auto".
+            if (op.SpacingBefore is { } before)
+            {
+                spacing.SetAttributeValue(W.before, before);
+                spacing.SetAttributeValue(W.beforeAutospacing, null);
+            }
+            if (op.SpacingAfter is { } after)
+            {
+                spacing.SetAttributeValue(W.after, after);
+                spacing.SetAttributeValue(W.afterAutospacing, null);
+            }
+            if (op.LineSpacing is { } line)
+            {
+                spacing.SetAttributeValue(W.line, line);
+                spacing.SetAttributeValue(W.lineRule, (op.LineSpacingRule ?? LineSpacingRule.Auto) switch
+                {
+                    LineSpacingRule.Exact => "exact",
+                    LineSpacingRule.AtLeast => "atLeast",
+                    _ => "auto",
+                });
+            }
+        }
+
+        if (op.ClearBorders is true || op.TopBorder is not null || op.BottomBorder is not null)
+            ApplyParagraphBorders(pPr, op.TopBorder, op.BottomBorder, op.ClearBorders is true);
     }
 
     /// <summary>
