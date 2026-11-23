@@ -150,3 +150,18 @@ test('a gallery character style is offered in the Styles box and formats the sel
   expect(variant).toBe('small-caps');
   expect(await commands(page)).toContain('characterStyle');
 });
+
+test('the fonts on the computer are offered in the Font box and both dialogs, whatever font is chosen', async ({ page }) => {
+  await mount(page);
+  await page.evaluate(() => (window as any).__ribbon.setSystemFonts(['Zephyr Sans', 'Bodoni Test', 'Calibri']));
+  await expect(page.locator(`${HOST} [data-dxr="fontfamily"] option[value="Zephyr Sans"]`)).toHaveCount(1);
+  await page.keyboard.press('Control+d');
+  const font = fontDialog(page).locator('[data-fd="font"]');
+  await expect(font.locator('option[value="Bodoni Test"]')).toHaveCount(1);
+  await expect(font.locator('option[value="Zephyr Sans"]')).toHaveCount(1);
+  await font.selectOption('Zephyr Sans');
+  await fontDialog(page).locator('button[value="ok"]').click();
+  expect(await page.evaluate(() => (window as any).__reported.at(-1).command.args.font)).toBe('Zephyr Sans');
+  await styleMenu(page, 'modify');
+  await expect(styleDialog(page).locator('[data-sd="font"] option[value="Bodoni Test"]')).toHaveCount(1);
+});

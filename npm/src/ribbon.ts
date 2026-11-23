@@ -359,6 +359,8 @@ export interface RibbonEditor {
   /** Open the Paragraph dialog on the selected paragraphs (as the Paragraph group's launcher
    *  does); false when no document is open or no paragraph is active. */
   openParagraphDialog(): boolean;
+  /** The fonts installed on the computer, listed in the Font box and the dialogs. */
+  setSystemFonts(names: string[]): void;
   /** Open the Font dialog on the selection (Home > Font launcher, Ctrl+D); false when no
    *  paragraph is active. */
   openFontDialog(): boolean;
@@ -824,6 +826,22 @@ class RibbonSurface implements RibbonEditor {
     common.label = "Common fonts";
     for (const name of COMMON_FONTS) add(name, common);
     select.appendChild(common);
+    // The fonts on the computer (setSystemFonts), as Word lists them.
+    if (this.systemFonts.length > 0) {
+      const all = document.createElement("optgroup");
+      all.label = this.translateText(RIBBON_STATUS_TEXTS.allFonts);
+      for (const name of this.systemFonts) add(name, all);
+      select.appendChild(all);
+    }
+  }
+
+  private systemFonts: string[] = [];
+
+  /** The fonts installed on the computer, for the Font box and the Font and style dialogs (a
+   *  browser page cannot list them itself; the host can). */
+  setSystemFonts(names: string[]): void {
+    this.systemFonts = Array.from(new Set(names.filter(Boolean))).sort((a, b) => a.localeCompare(b));
+    this.populateFonts(this.live ? this.documentFonts() : []);
   }
 
   /** The style gallery: every paragraph style the document defines, quick styles first, plus
@@ -2303,10 +2321,12 @@ class RibbonSurface implements RibbonEditor {
     return this.paragraphDialog.show();
   }
 
-  /** The fonts the Font box offers. */
+  /** Every font the Font box offers, once each, in alphabetical order (the dialogs' lists). */
   private fontNames(): string[] {
     const select = this.control<HTMLSelectElement>("fontfamily");
-    return select ? Array.from(select.options).map((o) => o.value).filter(Boolean) : [];
+    const names = select ? Array.from(select.options).map((o) => o.value).filter(Boolean) : [];
+    const seen = new Set<string>();
+    return names.filter((n) => !seen.has(n.toLowerCase()) && !!seen.add(n.toLowerCase())).sort((a, b) => a.localeCompare(b));
   }
 
   /** The Font dialog (Home > Font launcher, Ctrl+D), the style dialog and the Styles menu. */

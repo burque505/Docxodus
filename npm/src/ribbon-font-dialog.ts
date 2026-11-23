@@ -29,7 +29,7 @@ export const FONT_DIALOG_HTML = `
     <div class="dxr-fontbody">
       <div class="dxr-fontrow">
         <label for="dxr-fd-font">Font</label><label for="dxr-fd-style">Font style</label><label for="dxr-fd-size">Size</label>
-        <input id="dxr-fd-font" type="text" autocomplete="off" list="dxr-fd-fonts" data-fd="font" />
+        <select id="dxr-fd-font" data-fd="font"></select>
         <select id="dxr-fd-style" data-fd="style">
           <option value="" hidden></option>
           <option value="regular">Regular</option>
@@ -39,7 +39,6 @@ export const FONT_DIALOG_HTML = `
         </select>
         <input id="dxr-fd-size" type="text" autocomplete="off" list="dxr-fd-sizes" data-fd="size" />
       </div>
-      <datalist id="dxr-fd-fonts" data-fd-fonts></datalist>
       <datalist id="dxr-fd-sizes">
         <option>8</option><option>9</option><option>10</option><option>11</option><option>12</option><option>14</option>
         <option>16</option><option>18</option><option>20</option><option>24</option><option>28</option><option>36</option>
@@ -75,6 +74,18 @@ export const FONT_DIALOG_HTML = `
   </form>
 </dialog>
 `;
+
+/** Fill a font list: the fonts given, `current` among them (added when missing), chosen. */
+export function fillFontList(select: HTMLSelectElement, fonts: string[], current: string | undefined): void {
+  const names = current && !fonts.some((f) => f.toLowerCase() === current.toLowerCase()) ? [current, ...fonts] : fonts;
+  const blank = Object.assign(document.createElement("option"), { value: "", hidden: true });
+  select.replaceChildren(blank, ...names.map((name) => {
+    const opt = Object.assign(document.createElement("option"), { value: name, textContent: name });
+    opt.style.fontFamily = `"${name}", sans-serif`;
+    return opt;
+  }));
+  select.value = names.find((n) => n.toLowerCase() === (current ?? "").toLowerCase()) ?? "";
+}
 
 export interface FontDialogHost {
   /** The formatting to show (the selection's, or a style's), or null when there is nothing. */
@@ -141,9 +152,7 @@ export class FontDialog {
     if (host) this.host = host;
     const f = this.host.read();
     if (!f) return false;
-    const list = this.dialog.querySelector<HTMLDataListElement>("[data-fd-fonts]")!;
-    list.replaceChildren(...this.host.fonts().map((name) => Object.assign(document.createElement("option"), { value: name })));
-    this.value("font").value = f.fontFamily ?? "";
+    fillFontList(this.dialog.querySelector<HTMLSelectElement>('[data-fd="font"]')!, this.host.fonts(), f.fontFamily);
     (this.field("style") as unknown as HTMLSelectElement).value = f.bold ? (f.italic ? "bolditalic" : "bold") : f.italic ? "italic" : "regular";
     this.value("size").value = f.fontSizePts !== undefined ? String(f.fontSizePts) : "";
     this.value("color").value = colorInput(f.color);
@@ -165,7 +174,6 @@ export class FontDialog {
     this.dialog.showModal();
     restoreDialogPlace(this.dialog);
     this.value("font").focus();
-    this.value("font").select();
     return true;
   }
 

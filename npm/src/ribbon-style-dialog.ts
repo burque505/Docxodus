@@ -6,7 +6,7 @@
  */
 import type { EditorParagraphFormat } from "./editor.js";
 import type { FormatOp, ParagraphFormatting, RunFormattingInfo, StyleDefinitionOp, StyleInfo } from "./types.js";
-import type { FontDialogHost } from "./ribbon-font-dialog.js";
+import { fillFontList, type FontDialogHost } from "./ribbon-font-dialog.js";
 import { formatPoints, makeDialogMovable, restoreDialogPlace, type ParagraphDialogHost } from "./ribbon-paragraph-dialog.js";
 import { RIBBON_STATUS_TEXTS } from "./ribbon-chrome.js";
 
@@ -17,7 +17,7 @@ export const STYLE_DIALOG_CSS = `
 .dxr-styledialog .dxr-dgrid input, .dxr-styledialog .dxr-dgrid select { width: 100%; box-sizing: border-box; }
 .dxr-styledialog .dxr-stylebar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 4px 0; }
 .dxr-styledialog .dxr-stylebar input[type="text"] { height: 28px; }
-.dxr-styledialog .dxr-stylebar [data-sd="font"] { width: 11em; }
+.dxr-styledialog .dxr-stylebar [data-sd="font"] { width: 12em; height: 28px; }
 .dxr-styledialog .dxr-stylebar [data-sd="size"] { width: 4em; }
 .dxr-styledialog .dxr-stylebar button {
   min-width: 28px; min-height: 28px; padding: 0 6px; border: 1px solid var(--dxr-rule-strong); border-radius: 6px;
@@ -63,8 +63,7 @@ export const STYLE_DIALOG_HTML = `
       <fieldset>
         <legend>Formatting</legend>
         <div class="dxr-stylebar">
-          <input type="text" autocomplete="off" list="dxr-sd-fonts" data-sd="font" aria-label="Font" />
-          <datalist id="dxr-sd-fonts" data-sd-fonts></datalist>
+          <select data-sd="font" aria-label="Font"></select>
           <input type="text" autocomplete="off" list="dxr-fd-sizes" data-sd="size" aria-label="Font size" />
           <button type="button" data-sd-toggle="bold" aria-pressed="false" title="Bold"><b>B</b></button>
           <button type="button" data-sd-toggle="italic" aria-pressed="false" title="Italic"><i>I</i></button>
@@ -336,8 +335,7 @@ export class StyleDialog {
     this.select("basedOn").value = basedOn;
     this.select("next").value = this.create ? "" : next;
     this.field("gallery").checked = gallery;
-    const fonts = this.dialog.querySelector<HTMLDataListElement>("[data-sd-fonts]")!;
-    fonts.replaceChildren(...this.host.fonts().map((f) => Object.assign(document.createElement("option"), { value: f })));
+    fillFontList(this.select("font"), this.host.fonts(), this.baseRun.fontFamily);
     this.initialFields = this.snapshot();
     this.closeMenu();
     this.showError(null);
@@ -410,7 +408,13 @@ export class StyleDialog {
     const run = this.effectiveRun();
     const para = this.effectivePara();
     const active = this.dialog.ownerDocument.activeElement;
-    if (active !== this.field("font")) this.field("font").value = run.fontFamily ?? "";
+    if (active !== this.field("font")) {
+      const font = this.select("font");
+      if (run.fontFamily && !Array.from(font.options).some((o) => o.value === run.fontFamily)) {
+        fillFontList(font, Array.from(font.options).map((o) => o.value).filter(Boolean), run.fontFamily);
+      }
+      font.value = run.fontFamily ?? "";
+    }
     if (active !== this.field("size")) this.field("size").value = run.fontSizePts !== undefined ? String(run.fontSizePts) : "";
     this.field("color").value = colorInput(run.color);
     for (const b of Array.from(this.dialog.querySelectorAll<HTMLElement>("[data-sd-toggle]"))) {

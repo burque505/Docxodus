@@ -1790,6 +1790,7 @@ export const RIBBON_STATUS_TEXTS = {
   noStyle: "(no style)",
   thisStyle: "(this style)",
   sameStyle: "(same style)",
+  allFonts: "All fonts",
 } as const;
 
 /** The default hint copy, shown above the document in full chrome. */
