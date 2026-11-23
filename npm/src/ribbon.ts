@@ -229,6 +229,10 @@ export interface RibbonOptions extends DocxEditorOptions {
   navigationPane?: boolean;
   /** The Navigation Pane was opened or closed, for a host to keep. */
   onNavigationPaneChange?: (on: boolean) => void;
+  /** The fonts used last, newest first (Word's "Recently Used Fonts"), kept by a host from one session to the next. */
+  recentFonts?: string[];
+  /** The recently used fonts changed (a font was applied), for a host to keep. */
+  onRecentFontsChange?: (names: string[]) => void;
   /** Find's options at the start (Match case, whole words, wildcards...: see find-query.ts);
    *  `setFindOptions` changes them later. */
   findOptions?: FindOptions;
@@ -299,6 +303,9 @@ export interface RibbonCommand {
 type CommandOf = RibbonCommand | (() => RibbonCommand | undefined);
 const cmd = (name: string, args: EditorCommandArgs = {}): RibbonCommand => ({ name, args });
 
+/** How many recently used fonts are listed (Word's own number varies; ten fit above the rest). */
+const RECENT_FONTS_MAX = 10;
+
 /** A Font dialog op as the fontFormat command's arguments. */
 function fontCommandArgs(op: FormatOp): EditorCommandArgs {
   const args: Record<string, unknown> = {};
@@ -361,6 +368,8 @@ export interface RibbonEditor {
   openParagraphDialog(): boolean;
   /** The fonts installed on the computer, listed in the Font box and the dialogs. */
   setSystemFonts(names: string[]): void;
+  /** The recently used fonts, newest first (as the `recentFonts` option), listed first. */
+  setRecentFonts(names: string[]): void;
   /** Open the Font dialog on the selection (Home > Font launcher, Ctrl+D); false when no
    *  paragraph is active. */
   openFontDialog(): boolean;
@@ -794,6 +803,7 @@ class RibbonSurface implements RibbonEditor {
       opt.style.color = color.css;
       highlight.appendChild(opt);
     }
+    this.recentFonts = (this.options.recentFonts ?? []).filter(Boolean).slice(0, RECENT_FONTS_MAX);
     this.populateFonts([]);
   }
 
@@ -816,6 +826,18 @@ class RibbonSurface implements RibbonEditor {
       opt.style.fontFamily = `"${name}", sans-serif`;
       group.appendChild(opt);
     };
+    if (this.recentFonts.length > 0) {
+      const recent = document.createElement("optgroup");
+      recent.label = this.translateText(RIBBON_STATUS_TEXTS.recentFonts);
+      for (const name of this.recentFonts) {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        opt.style.fontFamily = `"${name}", sans-serif`;
+        recent.appendChild(opt);
+      }
+      select.appendChild(recent);
+    }
     if (documentFonts.length > 0) {
       const group = document.createElement("optgroup");
       group.label = "In this document";
@@ -836,6 +858,23 @@ class RibbonSurface implements RibbonEditor {
   }
 
   private systemFonts: string[] = [];
+  private recentFonts: string[] = [];
+
+  setRecentFonts(names: string[]): void {
+    const seen = new Set<string>();
+    this.recentFonts = names.filter((n) => n && !seen.has(n.toLowerCase()) && !!seen.add(n.toLowerCase())).slice(0, RECENT_FONTS_MAX);
+    this.populateFonts(this.live ? this.documentFonts() : []);
+  }
+
+  /** A font was applied: first among the recently used ones (and the host told). */
+  private noteFont(name: string | undefined): void {
+    if (!name) return;
+    const next = [name, ...this.recentFonts.filter((n) => n.toLowerCase() !== name.toLowerCase())].slice(0, RECENT_FONTS_MAX);
+    if (next.join("\n") === this.recentFonts.join("\n")) return;
+    this.recentFonts = next;
+    this.populateFonts(this.live ? this.documentFonts() : []);
+    this.options.onRecentFontsChange?.([...next]);
+  }
 
   /** The fonts installed on the computer, for the Font box and the Font and style dialogs (a
    *  browser page cannot list them itself; the host can). */
@@ -2334,11 +2373,17 @@ class RibbonSurface implements RibbonEditor {
     this.fontDialog = new FontDialog(this.require<HTMLDialogElement>("fontdialog"), {
       read: () => this.live?.runFormatAtSelection() ?? null,
       fonts: () => this.fontNames(),
-      apply: (op) => this.run("font", () => this.live!.applyRunFormat(op), cmd("fontFormat", fontCommandArgs(op))),
+      recentFonts: () => this.recentFonts,
+      t: (text) => this.translateText(text),
+      apply: (op) => {
+        this.run("font", () => this.live!.applyRunFormat(op), cmd("fontFormat", fontCommandArgs(op)));
+        this.noteFont(op.fontFamily);
+      },
     });
     this.styleDialog = new StyleDialog(this.require<HTMLDialogElement>("styledialog"), {
       styles: () => this.live?.styles() ?? [],
       fonts: () => this.fontNames(),
+      recentFonts: () => this.recentFonts,
       source: () => {
         const live = this.live;
         const paragraph = live?.paragraphFormats()[0];
@@ -2360,6 +2405,7 @@ class RibbonSurface implements RibbonEditor {
           }
         }, () => (id === null ? undefined : cmd("setStyle", { ...op } as EditorCommandArgs)));
         if (id === null) return live.lastStyleError?.message ?? "The style could not be saved.";
+        this.noteFont(op.run?.fontFamily);
         this.populateStyles();
         return null;
       },
@@ -2617,7 +2663,7 @@ class RibbonSurface implements RibbonEditor {
       }
     });
 
-    this.wireSelect("fontfamily", "font family", (v) => this.live!.setFontFamily(v), (v) => cmd("fontFamily", { name: v }));
+    this.wireSelect("fontfamily", "font family", (v) => { this.live!.setFontFamily(v); this.noteFont(v); }, (v) => cmd("fontFamily", { name: v }));
     const styleBox = this.require<HTMLSelectElement>("style");
     styleBox.addEventListener("change", () => {
       const value = styleBox.value;

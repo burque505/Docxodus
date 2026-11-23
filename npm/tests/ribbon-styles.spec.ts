@@ -165,3 +165,53 @@ test('the fonts on the computer are offered in the Font box and both dialogs, wh
   await styleMenu(page, 'modify');
   await expect(styleDialog(page).locator('[data-sd="font"] option[value="Bodoni Test"]')).toHaveCount(1);
 });
+
+test('a font applied goes first among the recently used fonts, at the top of the Font box and the dialogs', async ({ page }) => {
+  await mount(page);
+  await page.evaluate(() => {
+    const r = (window as any).__ribbon;
+    (window as any).__recent = [];
+    r.setSystemFonts(['Zephyr Sans', 'Bodoni Test', 'Calibri', 'Arial']);
+    r.setRecentFonts(['Arial']);
+  });
+  const box = page.locator(`${HOST} [data-dxr="fontfamily"]`);
+  await expect(box.locator('optgroup').first()).toHaveAttribute('label', 'Recently used fonts');
+  await box.selectOption({ label: 'Bodoni Test' });
+  const recent = box.locator('optgroup').first().locator('option');
+  await expect(recent).toHaveText(['Bodoni Test', 'Arial']);
+  // (and still listed below: now in the document, so under "In this document")
+  await expect(box.locator('option[value="Bodoni Test"]')).toHaveCount(2);
+
+  await page.locator(blocks).first().click();
+  await page.keyboard.press('Control+d');
+  const font = fontDialog(page).locator('[data-fd="font"]');
+  await expect(font.locator('optgroup').first().locator('option')).toHaveText(['Bodoni Test', 'Arial']);
+  await font.selectOption({ label: 'Zephyr Sans' });
+  await fontDialog(page).locator('button[value="ok"]').click();
+  await expect(recent).toHaveText(['Zephyr Sans', 'Bodoni Test', 'Arial']);
+});
+
+test('the recent fonts given at mount are listed, and a change is reported for the host to keep', async ({ page }) => {
+  await page.goto('/test-harness.html');
+  await page.waitForFunction(() => (window as any).DocxodusReady === true, { timeout: 30000 });
+  await page.evaluate(() => {
+    const host = document.createElement('div');
+    host.id = 'st-host';
+    host.style.height = '700px';
+    document.body.appendChild(host);
+    (window as any).__kept = null;
+    const r = (window as any).DocxodusEditor.mountRibbon(host, {
+      recentFonts: ['Georgia', 'Arial'],
+      onRecentFontsChange: (names: string[]) => { (window as any).__kept = names; },
+    });
+    r.setExports((window as any).Docxodus);
+    r.openBlank('recent.docx');
+    r.loader.done();
+    (window as any).__ribbon = r;
+  });
+  const box = page.locator(`${HOST} [data-dxr="fontfamily"]`);
+  await expect(box.locator('optgroup').first().locator('option')).toHaveText(['Georgia', 'Arial']);
+  await page.locator(blocks).first().click();
+  await box.selectOption({ label: 'Arial' });
+  expect(await page.evaluate(() => (window as any).__kept)).toEqual(['Arial', 'Georgia']);
+});

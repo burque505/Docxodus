@@ -126,6 +126,8 @@ export interface StyleSource {
 export interface StyleDialogHost {
   styles(): StyleInfo[];
   fonts(): string[];
+  /** The recently used fonts, listed first. */
+  recentFonts?(): string[];
   /** The caret's formatting (New Style starts from it), or null when there is no paragraph. */
   source(): StyleSource | null;
   /** Create or change the style; the engine's message when it refuses, else null. Called before
@@ -335,7 +337,8 @@ export class StyleDialog {
     this.select("basedOn").value = basedOn;
     this.select("next").value = this.create ? "" : next;
     this.field("gallery").checked = gallery;
-    fillFontList(this.select("font"), this.host.fonts(), this.baseRun.fontFamily);
+    fillFontList(this.select("font"), this.host.fonts(), this.baseRun.fontFamily, this.host.recentFonts?.() ?? [],
+      { recent: this.tr(RIBBON_STATUS_TEXTS.recentFonts), all: this.tr(RIBBON_STATUS_TEXTS.allFonts) });
     this.initialFields = this.snapshot();
     this.closeMenu();
     this.showError(null);
@@ -411,9 +414,10 @@ export class StyleDialog {
     if (active !== this.field("font")) {
       const font = this.select("font");
       if (run.fontFamily && !Array.from(font.options).some((o) => o.value === run.fontFamily)) {
-        fillFontList(font, Array.from(font.options).map((o) => o.value).filter(Boolean), run.fontFamily);
+        fillFontList(font, this.host.fonts(), run.fontFamily, this.host.recentFonts?.() ?? [],
+          { recent: this.tr(RIBBON_STATUS_TEXTS.recentFonts), all: this.tr(RIBBON_STATUS_TEXTS.allFonts) });
       }
-      font.value = run.fontFamily ?? "";
+      if (font.value !== (run.fontFamily ?? "")) font.value = run.fontFamily ?? "";
     }
     if (active !== this.field("size")) this.field("size").value = run.fontSizePts !== undefined ? String(run.fontSizePts) : "";
     this.field("color").value = colorInput(run.color);
@@ -479,6 +483,8 @@ export class StyleDialog {
     this.host.openFont({
       read: () => this.effectiveRun(),
       fonts: () => this.host.fonts(),
+      recentFonts: () => this.host.recentFonts?.() ?? [],
+      t: (text) => this.tr(text),
       apply: (op) => { Object.assign(this.run, op); this.refresh(); this.focusBack(); },
       cancelled: () => this.focusBack(),
     }, this.sample);

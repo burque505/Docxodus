@@ -75,16 +75,29 @@ export const FONT_DIALOG_HTML = `
 </dialog>
 `;
 
-/** Fill a font list: the fonts given, `current` among them (added when missing), chosen. */
-export function fillFontList(select: HTMLSelectElement, fonts: string[], current: string | undefined): void {
+/** Fill a font list: the recently used fonts first (when there are any, under `labels.recent`), then the fonts
+ *  given, `current` among them (added when missing), chosen. */
+export function fillFontList(select: HTMLSelectElement, fonts: string[], current: string | undefined,
+  recent: string[] = [], labels: { recent: string; all: string } = { recent: "Recently used fonts", all: "All fonts" }): void {
   const names = current && !fonts.some((f) => f.toLowerCase() === current.toLowerCase()) ? [current, ...fonts] : fonts;
-  const blank = Object.assign(document.createElement("option"), { value: "", hidden: true });
-  select.replaceChildren(blank, ...names.map((name) => {
+  const option = (name: string) => {
     const opt = Object.assign(document.createElement("option"), { value: name, textContent: name });
     opt.style.fontFamily = `"${name}", sans-serif`;
     return opt;
-  }));
-  select.value = names.find((n) => n.toLowerCase() === (current ?? "").toLowerCase()) ?? "";
+  };
+  const blank = Object.assign(document.createElement("option"), { value: "", hidden: true });
+  if (recent.length === 0) select.replaceChildren(blank, ...names.map(option));
+  else {
+    const recentGroup = Object.assign(document.createElement("optgroup"), { label: labels.recent });
+    recentGroup.append(...recent.map(option));
+    const allGroup = Object.assign(document.createElement("optgroup"), { label: labels.all });
+    allGroup.append(...names.map(option));
+    select.replaceChildren(blank, recentGroup, allGroup);
+  }
+  // (the current font chosen in the full list, so the recent group stays as it is)
+  const match = names.find((n) => n.toLowerCase() === (current ?? "").toLowerCase());
+  const pick = Array.from(select.options).reverse().find((o) => o.value === match);
+  if (pick) pick.selected = true; else select.value = "";
 }
 
 export interface FontDialogHost {
@@ -92,6 +105,10 @@ export interface FontDialogHost {
   read(): RunFormattingInfo | null;
   /** The fonts to offer. */
   fonts(): string[];
+  /** The recently used fonts, listed first. */
+  recentFonts?(): string[];
+  /** The text in the page's language; English without it. */
+  t?(text: string): string;
   /** Apply what the user changed; called after the dialog has closed. */
   apply(op: FormatOp): void;
   cancelled?(): void;
@@ -152,7 +169,9 @@ export class FontDialog {
     if (host) this.host = host;
     const f = this.host.read();
     if (!f) return false;
-    fillFontList(this.dialog.querySelector<HTMLSelectElement>('[data-fd="font"]')!, this.host.fonts(), f.fontFamily);
+    const t = (text: string) => this.host.t?.(text) ?? text;
+    fillFontList(this.dialog.querySelector<HTMLSelectElement>('[data-fd="font"]')!, this.host.fonts(), f.fontFamily,
+      this.host.recentFonts?.() ?? [], { recent: t("Recently used fonts"), all: t("All fonts") });
     (this.field("style") as unknown as HTMLSelectElement).value = f.bold ? (f.italic ? "bolditalic" : "bold") : f.italic ? "italic" : "regular";
     this.value("size").value = f.fontSizePts !== undefined ? String(f.fontSizePts) : "";
     this.value("color").value = colorInput(f.color);
