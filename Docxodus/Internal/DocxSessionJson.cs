@@ -726,6 +726,33 @@ internal static class DocxSessionJson
         return settings;
     }
 
+    /// <summary>
+    /// Parse a <see cref="StyleDefinitionOp"/>: <c>{ styleId?, name?, type?: "paragraph"|"character",
+    /// basedOn?, next?, quickFormat?: bool, paragraph?: ParagraphFormatOp, run?: FormatOp }</c>. A
+    /// missing field stays null; <c>""</c> for basedOn or next removes it.
+    /// </summary>
+    public static StyleDefinitionOp ParseStyleDefinitionOp(string json)
+    {
+        if (string.IsNullOrEmpty(json)) return new StyleDefinitionOp();
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        string? Nested(string name) =>
+            root.TryGetProperty(name, out var e) && e.ValueKind == JsonValueKind.Object ? e.GetRawText() : null;
+        var paragraph = Nested("paragraph");
+        var run = Nested("run");
+        return new StyleDefinitionOp
+        {
+            StyleId = TryGetString(root, "styleId", null),
+            Name = TryGetString(root, "name", null),
+            Type = TryGetString(root, "type", null),
+            BasedOn = TryGetString(root, "basedOn", null),
+            Next = TryGetString(root, "next", null),
+            QuickFormat = TryGetBoolNullable(root, "quickFormat"),
+            Paragraph = paragraph is null ? null : ParseParagraphFormatOp(paragraph),
+            Run = run is null ? null : ParseFormatOp(run),
+        };
+    }
+
     public static FormatOp ParseFormatOp(string json)
     {
         if (string.IsNullOrEmpty(json)) return new FormatOp();
@@ -1458,6 +1485,8 @@ internal static class DocxSessionJson
         if (r.Caret is not null)
             sb.Append(",\"caret\":{\"anchorId\":").Append(JsonString(r.Caret.AnchorId))
               .Append(",\"offset\":").Append(r.Caret.Offset).Append('}');
+        if (r.StyleId is not null)
+            sb.Append(",\"styleId\":").Append(JsonString(r.StyleId));
         if (r.Patch is not null)
         {
             sb.Append(",\"patch\":{")

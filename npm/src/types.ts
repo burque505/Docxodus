@@ -2020,6 +2020,7 @@ export interface DocxodusWasmExports {
     ApplyFormatBySubstring: (handle: number, anchor: string, substring: string, opJson: string) => string;
     SetParagraphStyle: (handle: number, anchor: string, styleId: string) => string;
     SetParagraphFormat: (handle: number, anchor: string, opJson: string) => string;
+    SetStyle: (handle: number, opJson: string) => string;
     SetListLevel: (handle: number, anchor: string, delta: number) => string;
     RemoveListMembership: (handle: number, anchor: string) => string;
     ApplyListFormat: (handle: number, anchor: string, kind: string) => string;
@@ -2445,6 +2446,8 @@ export interface EditResult {
   imageId?: string;
   /** Where the caret belongs after the edit, for ops that say (InsertHtml, InsertPastedText). */
   caret?: { anchorId: string; offset: number };
+  /** Set by `setStyle` with the id of the style created or changed. */
+  styleId?: string;
 }
 
 export type HyperlinkKind = "external" | "internal";
@@ -2871,6 +2874,29 @@ export type ListFormat =
  * the value is in 240ths of a line (240 = single, 360 = 1.5×, 480 = double); under
  * `"exact"`/`"atLeast"` it is a height in twips (20 twips = 1pt). */
 export type LineSpacingRule = "auto" | "exact" | "atLeast";
+
+/** A paragraph or character style to create or change, for `DocxSession.setStyle` (what Word's
+ *  Create New Style and Modify Style dialogs write). Omit a field to leave it unchanged, or for a new
+ *  style to take the default. */
+export interface StyleDefinitionOp {
+  /** The style to change; omit to create a new style (its id is made from its name). */
+  styleId?: string;
+  /** Required for a new style. A name another style has, or renaming a built-in style, is refused. */
+  name?: string;
+  /** Default "paragraph"; fixed once the style exists. */
+  type?: "paragraph" | "character";
+  /** Style this one is based on, of the same type; "" for none. Default: the type's default style. */
+  basedOn?: string;
+  /** Style for the following paragraph (paragraph styles); "" removes it. Default: the style itself. */
+  next?: string;
+  /** Shown in the Styles gallery. Default for a new style: true. */
+  quickFormat?: boolean;
+  /** Paragraph formatting (paragraph styles), as `setParagraphFormat` writes it. */
+  paragraph?: ParagraphFormatOp;
+  /** Character formatting, as `applyFormat` writes it (no `code` or `runStyle`). Also written to a
+   *  paragraph style's linked character style. */
+  run?: FormatOp;
+}
 
 /** Paragraph-level formatting for `DocxSession.setParagraphFormat`. Omit a field to leave it unchanged. */
 export interface ParagraphFormatOp {

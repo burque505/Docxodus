@@ -1129,6 +1129,14 @@ public static partial class DocxSessionBridge
     public static string SetParagraphFormat(int h, string anchor, string opJson) =>
         DocxSessionOps.SetParagraphFormat(h, anchor, DocxSessionJson.ParseParagraphFormatOp(opJson));
 
+    /// <summary>
+    /// Bridge for <see cref="DocxSession.SetStyle"/>. <paramref name="opJson"/> is a
+    /// StyleDefinitionOp: { styleId?, name?, type?, basedOn?, next?, quickFormat?, paragraph?, run? }.
+    /// </summary>
+    [JSExport]
+    public static string SetStyle(int h, string opJson) =>
+        DocxSessionOps.SetStyle(h, DocxSessionJson.ParseStyleDefinitionOp(opJson));
+
     [JSExport]
     public static string SetListLevel(int h, string anchor, int delta) =>
         DocxSessionOps.SetListLevel(h, anchor, delta);

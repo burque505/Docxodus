@@ -1383,6 +1383,10 @@ internal static class DocxSessionOps
         MutationPreconditions? preconditions = null) =>
         Mutate(handle, preconditions, anchorId, s => s.SetParagraphStyle(anchorId, styleId));
 
+    /// <summary>Create or change a paragraph or character style; the result's styleId names it.</summary>
+    public static string SetStyle(int handle, StyleDefinitionOp op, MutationPreconditions? preconditions = null) =>
+        Mutate(handle, preconditions, null, s => s.SetStyle(op));
+
     public static string SetParagraphFormat(int handle, string anchorId, ParagraphFormatOp? op,
         MutationPreconditions? preconditions = null) =>
         Mutate(handle, preconditions, anchorId, s => s.SetParagraphFormat(anchorId, op ?? new ParagraphFormatOp()));

@@ -201,6 +201,7 @@ export type {
   ColumnsApplyTo,
   ParagraphBorderEdge,
   ParagraphFormatOp,
+  StyleDefinitionOp,
   RevisionDiagnostic,
   RevisionFamily,
   RevisionResolutionStatus,
