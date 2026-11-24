@@ -64,6 +64,7 @@ import { LINE_NUMBERS_DIALOG_CSS, LINE_NUMBERS_DIALOG_HTML, LineNumbersDialog } 
 import { TABS_DIALOG_CSS, TABS_DIALOG_HTML, TabsDialog } from "./ribbon-tabs-dialog.js";
 import { FONT_DIALOG_CSS, FONT_DIALOG_HTML, FontDialog } from "./ribbon-font-dialog.js";
 import { STYLE_DIALOG_CSS, STYLE_DIALOG_HTML, StyleDialog, paragraphDifference, paragraphOf, runDifference } from "./ribbon-style-dialog.js";
+import { COPY_STYLES_DIALOG_CSS, COPY_STYLES_DIALOG_HTML, CopyStylesDialog } from "./ribbon-copy-styles-dialog.js";
 import { BOOKMARK_DIALOG_CSS, BOOKMARK_DIALOG_HTML, BookmarkDialog } from "./ribbon-bookmark-dialog.js";
 import { CROSSREF_DIALOG_CSS, CROSSREF_DIALOG_HTML, CrossReferenceDialog } from "./ribbon-crossref-dialog.js";
 import { crossReferenceOptionsFor } from "./cross-reference.js";
@@ -376,6 +377,9 @@ export interface RibbonEditor {
   /** Open Modify Style on a style (default: the caret paragraph's), or Create New Style from
    *  Formatting with `"new"`; false when there is no such style or no paragraph. */
   openStyleDialog(styleId?: string): boolean;
+  /** Word's Organizer from a file: the Copy Styles from Document dialog. False when no document
+   *  is open. */
+  openCopyStylesDialog(): boolean;
   /** Word's Update [style] to Match Selection: the caret paragraph's style takes its formatting.
    *  False when there is nothing to update. */
   updateStyleToMatch(): boolean;
@@ -481,7 +485,7 @@ const CONTROL_NAMES = [
   "docname", "new", "file", "recent", "save", "undo", "redo", "status", "ribbon",
   "fontsize", "fontsizes", "fontfamily", "fontgrow", "fontshrink", "clearformat", "smallcaps",
   "fontcolorbtn", "fontcolorbar", "fontcolor", "highlight", "listmenu", "linespacing",
-  "style", "delblock", "findtoggle", "replacetoggle", "fontlaunch", "stylemenubtn", "stylemenu", "fontdialog", "styledialog",
+  "style", "delblock", "findtoggle", "replacetoggle", "fontlaunch", "stylemenubtn", "stylemenu", "fontdialog", "styledialog", "copystylesdialog",
   "table", "picturefile", "link", "unlink", "insertcomment", "gotoheader", "gotofooter", "pagenummenu",
   "hr", "hrThick", "hrDouble", "rulepos", "hrClear",
   "margins", "orientation", "pagesize", "breaks", "sectionstart", "pagesetupnote", "spacebefore", "spaceafter",
@@ -519,7 +523,7 @@ function ensureStyles(doc: Document): void {
   existing?.remove();
   const style = doc.createElement("style");
   style.setAttribute(RIBBON_STYLE_ATTR, RIBBON_STYLE_VERSION);
-  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + FONT_DIALOG_CSS + STYLE_DIALOG_CSS + BOOKMARK_DIALOG_CSS + CROSSREF_DIALOG_CSS + NAV_PANE_CSS + RULER_CSS;
+  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + FONT_DIALOG_CSS + STYLE_DIALOG_CSS + COPY_STYLES_DIALOG_CSS + BOOKMARK_DIALOG_CSS + CROSSREF_DIALOG_CSS + NAV_PANE_CSS + RULER_CSS;
   (doc.head ?? doc.documentElement).appendChild(style);
 }
 
@@ -619,6 +623,7 @@ class RibbonSurface implements RibbonEditor {
   private paragraphDialog!: ParagraphDialog;
   private fontDialog!: FontDialog;
   private styleDialog!: StyleDialog;
+  private copyStylesDialog!: CopyStylesDialog;
   private columnsDialog!: ColumnsDialog;
   // (the selection the Columns dialog opened on: its fields take the focus, OK puts it back)
   private columnsRange: Range | null = null;
@@ -683,7 +688,7 @@ class RibbonSurface implements RibbonEditor {
     root.className = "dxr";
     root.dataset.state = "idle";
     root.dataset.frame = this.options.frame ?? "flush";
-    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML + TABLE_DIALOG_HTML + LINE_NUMBERS_DIALOG_HTML + TABS_DIALOG_HTML + FONT_DIALOG_HTML + STYLE_DIALOG_HTML + BOOKMARK_DIALOG_HTML + CROSSREF_DIALOG_HTML;
+    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML + TABLE_DIALOG_HTML + LINE_NUMBERS_DIALOG_HTML + TABS_DIALOG_HTML + FONT_DIALOG_HTML + STYLE_DIALOG_HTML + COPY_STYLES_DIALOG_HTML + BOOKMARK_DIALOG_HTML + CROSSREF_DIALOG_HTML;
     for (const el of Array.from(root.querySelectorAll<HTMLElement>("[data-dxr]"))) {
       el.id = this.idPrefix + el.dataset.dxr;
     }
@@ -2413,6 +2418,19 @@ class RibbonSurface implements RibbonEditor {
       openParagraph: (host) => { this.paragraphDialog.show(host); },
       t: (text) => this.translateText(text),
     });
+    this.copyStylesDialog = new CopyStylesDialog(this.require<HTMLDialogElement>("copystylesdialog"), {
+      styles: () => this.live?.styles() ?? [],
+      read: (base64) => this.live?.stylesInFile(base64) ?? null,
+      copy: (base64, ids) => {
+        const live = this.live;
+        if (!live) return "No document is open.";
+        let ok = false;
+        this.run("copy styles", () => { ok = live.copyStyles(base64, ids); });
+        if (!ok) return live.lastStyleError?.message ?? "The styles could not be copied.";
+        this.populateStyles();
+        return null;
+      },
+    });
     const launcher = this.control("fontlaunch");
     if (launcher) {
       this.keepSelection(launcher);
@@ -2443,6 +2461,7 @@ class RibbonSurface implements RibbonEditor {
       const which = chosen.dataset.stylecmd;
       if (which === "modify") this.openStyleDialog();
       else if (which === "new") this.openStyleDialog("new");
+      else if (which === "copy") this.openCopyStylesDialog();
       else this.updateStyleToMatch();
     });
     menu.addEventListener("keydown", (event) => {
@@ -2467,6 +2486,12 @@ class RibbonSurface implements RibbonEditor {
     this.closePopovers();
     if (styleId === "new") return this.styleDialog.showNew();
     return this.styleDialog.showModify(styleId ?? this.live.styleAtCaret() ?? this.defaultStyleId);
+  }
+
+  openCopyStylesDialog(): boolean {
+    if (!this.live || this.copyStylesDialog.open) return false;
+    this.closePopovers();
+    return this.copyStylesDialog.show();
   }
 
   updateStyleToMatch(): boolean {

@@ -314,6 +314,9 @@ export interface DocxEditorExports {
     SetDefaultTabStop?: (handle: number, twips: number) => string;
     /** Create or change a style (optional: older engine builds lack it). */
     SetStyle?: (handle: number, opJson: string) => string;
+    /** Copy Styles from another file (optional: older engine builds lack it). */
+    ListStylesIn?: (documentBase64: string) => string;
+    CopyStyles?: (handle: number, documentBase64: string, styleIdsJson: string) => string;
     /** Word's Layout > Breaks (optional: absent on older bundles). */
     InsertSectionBreak?: (handle: number, anchor: string, offset: number, sectionStart: string) => string;
     RemoveSectionBreak?: (handle: number, anchor: string) => string;
@@ -6481,6 +6484,41 @@ export class DocxEditor {
     this.stylesVersion++;
     this.remount(this.activeBlock ? this.blockIndex(this.activeBlock) : -1, false);
     return raw.styleId ?? op.styleId ?? null;
+  }
+
+  /** The styles of another document or template (its bytes as base64), or null when it is not a
+   *  Word package (or the engine build has no Copy Styles). */
+  stylesInFile(documentBase64: string): StyleInfo[] | null {
+    const bridge = this.exports.DocxSessionBridge;
+    if (this.closed || typeof bridge.ListStylesIn !== "function") return null;
+    try {
+      const parsed = JSON.parse(bridge.ListStylesIn(documentBase64)) as StyleInfo[] | { error?: unknown };
+      return Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Copy styles (ids in the other file) from another document or template (its bytes as base64),
+   *  as Word's Organizer does. One undo step; the whole document is laid out again. False when the
+   *  engine refused (`lastStyleError` says why). */
+  copyStyles(documentBase64: string, styleIds: string[]): boolean {
+    const bridge = this.exports.DocxSessionBridge;
+    this.lastStyleError = null;
+    if (this.closed || typeof bridge.CopyStyles !== "function") return false;
+    const block = this.activeBlock;
+    const fullId = block ? this.anchorIdOf(block) : null;
+    if (block && fullId) this.syncBlock(block, fullId);
+    const raw = JSON.parse(bridge.CopyStyles(this.handle, documentBase64, JSON.stringify(styleIds))) as EditResult;
+    if (!raw.success) {
+      this.lastStyleError = raw.error ? { code: raw.error.code, message: raw.error.message } : null;
+      return false;
+    }
+    this.parseEdit(JSON.stringify(raw));
+    this.stylesEdited = true;
+    this.stylesVersion++;
+    this.remount(this.activeBlock ? this.blockIndex(this.activeBlock) : -1, false);
+    return true;
   }
 
   /** Why the last `setStyle` was refused (the engine's error), or null. */

@@ -30,7 +30,7 @@
 import { NAV_PANE_HTML } from "./ribbon-navpane.js";
 
 /** Bumped whenever RIBBON_CSS changes, so a stale injected stylesheet is replaced. */
-export const RIBBON_STYLE_VERSION = "26";
+export const RIBBON_STYLE_VERSION = "27";
 export const RIBBON_STYLE_ATTR = "data-docxodus-ribbon-styles";
 
 /** Width of the comment gutter the surface reserves beside the sheet, in px. */
@@ -1687,6 +1687,7 @@ ${NAV_PANE_HTML}
   <button type="button" role="menuitem" data-stylecmd="modify"><span data-stylecmd-label>Modify Style&#8230;</span><kbd aria-hidden="true"></kbd></button>
   <button type="button" role="menuitem" data-stylecmd="new"><span>New Style&#8230;</span><kbd aria-hidden="true"></kbd></button>
   <button type="button" role="menuitem" data-stylecmd="update"><span data-stylecmd-label>Update Style to Match Selection</span><kbd aria-hidden="true"></kbd></button>
+  <button type="button" role="menuitem" data-stylecmd="copy"><span>Copy Styles from Document&#8230;</span><kbd aria-hidden="true"></kbd></button>
 </div>
 
 <div class="dxr-pop dxr-filemenu" data-dxr="casemenu" role="menu" aria-label="Change Case">
