@@ -1095,7 +1095,8 @@ export class DocxSession {
     return JSON.parse(this.wasm.GetTabStops(this.handle, anchorId)) as TabStopsInfo | null;
   }
 
-  /** The document's default tab interval (settings w:defaultTabStop), twips. One undo step. */
+  /** The document's default tab interval (settings w:defaultTabStop), twips. One undo step; refused
+   *  while changes are tracked. */
   setDefaultTabStop(twips: number): EditResult {
     return JSON.parse(this.wasm.SetDefaultTabStop(this.handle, twips)) as EditResult;
   }
@@ -1642,6 +1643,15 @@ export class DocxSession {
       this.handle, anchorId, isChecked, JSON.stringify(options))) as EditResult;
   }
 
+  /**
+   * Fill a date control. The control stores a calendar day at midnight UTC and keeps no time
+   * of day: a string keeps the day it is written with (`"2032-03-04"`,
+   * `"2032-03-04T01:00:00+05:00"`), and a `Date` is sent as its UTC instant, so it stores its
+   * UTC day. Without `displayText` the control shows that day in its own format and language, as the
+   * desktop word processor shows a picked date (for example "15 December 2026"). In the browser a
+   * format that needs non-English month or day names, and anywhere a non-Gregorian calendar or a
+   * language whose usual calendar is another one, shows `yyyy-MM-dd`.
+   */
   setContentControlDate(anchorId: string, value: string | Date, displayText?: string,
     options: ContentControlFillOptions = {}): EditResult {
     const timestamp = value instanceof Date ? value.toISOString() : value;
@@ -1684,15 +1694,14 @@ export class DocxSession {
   /**
    * Word's Update Field (F9): tables of contents built again from the headings, REF and PAGEREF
    * fields given their targets' current text, number or page, SEQ fields numbered again. Page
-   * numbers come from `options.pages` (the session has no page layout). One undo step.
+   * numbers come from `options.pages` (the session has no page layout). A field it cannot work out
+   * exactly keeps its result. One undo step; refused while changes are tracked.
    */
   updateFields(options?: UpdateFieldsOptions): EditResult {
-    if (!this.wasm.UpdateFields) throw new Error("updateFields needs a newer WASM bundle");
     return JSON.parse(this.wasm.UpdateFields(this.handle, options ? JSON.stringify(options) : "")) as EditResult;
   }
 
   addReferenceBookmark(anchorId: string): EditResult {
-    if (!this.wasm.AddReferenceBookmark) throw new Error("addReferenceBookmark needs a newer WASM bundle");
     return JSON.parse(this.wasm.AddReferenceBookmark(this.handle, anchorId)) as EditResult;
   }
 

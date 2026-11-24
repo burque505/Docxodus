@@ -370,6 +370,45 @@ public class McpServerDispatcherTests : IDisposable
         Assert.Equal("anchor_not_found", result.GetProperty("error").GetProperty("code").GetString());
     }
 
+    [Fact]
+    public void MCP022_Edit_OutlineAndMoveBlockRange()
+    {
+        var sessionId = OpenSession();
+        var sessionArg = JsonSerializer.Serialize(sessionId);
+        var anchor = FirstBodyAnchorId(sessionId, _store);
+        var inserted = Parse(Dispatcher.Call(_store, "docxodus_edit", J(
+            $$"""{"sessionId":{{sessionArg}},"action":"insert_paragraph","anchorId":"{{anchor}}","position":"before","markdown":"Alpha\n\nalpha text\n\nBeta\n\nbeta text"}""")));
+        Assert.True(inserted.GetProperty("success").GetBoolean());
+        foreach (var index in new[] { 0, 2 })
+        {
+            var heading = inserted.GetProperty("created")[index].GetProperty("id").GetString();
+            Assert.True(Parse(Dispatcher.Call(_store, "docxodus_format", J(
+                $$"""{"sessionId":{{sessionArg}},"action":"set_paragraph_style","anchorId":"{{heading}}","styleId":"Heading1"}""")))
+                .GetProperty("success").GetBoolean());
+        }
+
+        JsonElement Entry(string text)
+        {
+            var outline = Parse(Dispatcher.Call(_store, "docxodus_get_content", J(
+                $$"""{"sessionId":{{sessionArg}},"format":"outline"}"""))).GetProperty("outline");
+            return outline.EnumerateArray().First(e => e.GetProperty("text").GetString() == text);
+        }
+        var alpha = Entry("Alpha");
+        var beta = Entry("Beta");
+        Assert.Equal(1, alpha.GetProperty("level").GetInt32());
+        var alphaId = alpha.GetProperty("anchorId").GetString();
+
+        var moved = Dispatcher.Call(_store, "docxodus_edit", J(
+            $$"""{"sessionId":{{sessionArg}},"action":"move_block_range","firstAnchorId":"{{alphaId}}","lastAnchorId":"{{alpha.GetProperty("lastAnchorId").GetString()}}","targetAnchorId":"{{beta.GetProperty("lastAnchorId").GetString()}}","position":"after"}"""));
+        Assert.True(Parse(moved).GetProperty("success").GetBoolean(), moved);
+        var outlineText = Parse(Dispatcher.Call(_store, "docxodus_get_content", J(
+            $$"""{"sessionId":{{sessionArg}},"format":"outline"}"""))).GetProperty("outline").GetRawText();
+        Assert.True(outlineText.IndexOf("\"Beta\"", StringComparison.Ordinal) < outlineText.IndexOf("\"Alpha\"", StringComparison.Ordinal), outlineText);
+
+        Assert.Throws<McpToolException>(() => Dispatcher.Call(_store, "docxodus_edit", J(
+            $$"""{"sessionId":{{sessionArg}},"action":"move_block_range","firstAnchorId":"{{alphaId}}","targetAnchorId":"{{alphaId}}"}""")));
+    }
+
     // ─── Search ─────────────────────────────────────────────────────────
 
     [Fact]
@@ -595,6 +634,63 @@ public class McpServerDispatcherTests : IDisposable
             """)));
         Assert.False(both.GetProperty("success").GetBoolean());
         Assert.Equal("invalid_paragraph_format", both.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public void MCP044_Format_TabStops_SetReadAndDefaultInterval()
+    {
+        var sessionId = OpenSession();
+        var sessionArg = JsonSerializer.Serialize(sessionId);
+        var anchor = FirstBodyAnchorId(sessionId, _store);
+
+        var set = Dispatcher.Call(_store, "docxodus_format", J(
+            $$$"""{"sessionId":{{{sessionArg}}},"action":"set_tab_stops","anchorId":"{{{anchor}}}","stops":[{"positionTwips":1440},{"positionTwips":4320,"alignment":"right","leader":"dot"}]}"""));
+        Assert.True(Parse(set).GetProperty("success").GetBoolean(), set);
+        var interval = Dispatcher.Call(_store, "docxodus_format", J(
+            $$"""{"sessionId":{{sessionArg}},"action":"set_default_tab_stop","twips":1080}"""));
+        Assert.True(Parse(interval).GetProperty("success").GetBoolean(), interval);
+
+        var info = Parse(Dispatcher.Call(_store, "docxodus_format", J(
+            $$"""{"sessionId":{{sessionArg}},"action":"get_tab_stops","anchorId":"{{anchor}}"}""")));
+        var stops = info.GetProperty("stops");
+        Assert.Equal(2, stops.GetArrayLength());
+        Assert.Equal(4320, stops[1].GetProperty("positionTwips").GetInt32());
+        Assert.Equal("right", stops[1].GetProperty("alignment").GetString());
+        Assert.Equal("dot", stops[1].GetProperty("leader").GetString());
+        Assert.Equal(1080, info.GetProperty("defaultTabStopTwips").GetInt32());
+
+        var bad = Assert.Throws<McpToolException>(() => Dispatcher.Call(_store, "docxodus_format", J(
+            $$"""{"sessionId":{{sessionArg}},"action":"set_tab_stops","anchorId":"{{anchor}}"}""")));
+        Assert.Contains("stops", bad.Message);
+    }
+
+    [Theory]
+    [InlineData("[1440]")]
+    [InlineData("[{\"alignment\":\"left\"}]")]
+    [InlineData("[{\"positionTwips\":720,\"alignment\":\"start\"}]")]
+    public void MCP044b_Format_BatchStepWithBadTabStopsIsRefusedBeforeAnyStepRuns(string stops)
+    {
+        var sessionId = OpenSession();
+        var sessionArg = JsonSerializer.Serialize(sessionId);
+        var anchor = FirstBodyAnchorId(sessionId, _store);
+
+        var batch = Parse(Dispatcher.Call(_store, "docxodus_mutations", J(
+            $$"""
+            {
+              "sessionId": {{sessionArg}},
+              "mode": "atomic",
+              "steps": [
+                { "tool": "docxodus_format", "args": { "action": "set_default_tab_stop", "twips": 500 } },
+                { "tool": "docxodus_format", "args": { "action": "set_tab_stops", "anchorId": "{{anchor}}", "stops": {{stops}} } }
+              ]
+            }
+            """)));
+
+        Assert.Equal("invalid_batch_step",
+            batch.GetProperty("failure").GetProperty("error").GetProperty("code").GetString());
+        var info = Parse(Dispatcher.Call(_store, "docxodus_format", J(
+            $$"""{"sessionId":{{sessionArg}},"action":"get_tab_stops","anchorId":"{{anchor}}"}""")));
+        Assert.NotEqual(500, info.GetProperty("defaultTabStopTwips").GetInt32());
     }
 
     // ─── Create / Table ─────────────────────────────────────────────────
@@ -3033,5 +3129,61 @@ public class McpServerDispatcherTests : IDisposable
         Assert.False(missing.GetProperty("success").GetBoolean());
         Assert.Equal("missing_bookmark_target",
             missing.GetProperty("error").GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public void MCP156_AddReferenceBookmark_ThenPageReference()
+    {
+        var sessionId = OpenSession();
+        var sessionArg = JsonSerializer.Serialize(sessionId);
+        var anchor = FirstBodyAnchorId(sessionId, _store);
+        Assert.True(ReplaceText(_store, sessionId, anchor, "Scope of the work.")
+            .GetProperty("success").GetBoolean());
+
+        var bookmark = Parse(Dispatcher.Call(_store, "docxodus_links", J(
+            $$"""{"sessionId":{{sessionArg}},"action":"add_reference_bookmark","anchorId":"{{anchor}}"}""")));
+        Assert.True(bookmark.GetProperty("success").GetBoolean(), bookmark.GetRawText());
+        var name = bookmark.GetProperty("bookmarkName").GetString()!;
+        Assert.StartsWith("_Ref", name);
+
+        var inserted = Parse(Dispatcher.Call(_store, "docxodus_links", J(
+            $$$"""{"sessionId":{{{sessionArg}}},"action":"insert_cross_reference","anchorId":"{{{anchor}}}","characterOffset":18,"bookmarkName":"{{{name}}}","options":{"pageNumber":true,"cachedPage":"7"}}""")));
+        Assert.True(inserted.GetProperty("success").GetBoolean(), inserted.GetRawText());
+        var text = Parse(Dispatcher.Call(_store, "docxodus_get_content", J(
+            $$"""{"sessionId":{{sessionArg}},"format":"text"}"""))).GetRawText();
+        Assert.Contains("work.7", text);
+    }
+
+    [Fact]
+    public void MCP157_Edit_UpdateFields_RefreshesAReferenceAndRefusesABadRange()
+    {
+        var sessionId = OpenSession();
+        var sessionArg = JsonSerializer.Serialize(sessionId);
+        var anchor = FirstBodyAnchorId(sessionId, _store);
+        Assert.True(ReplaceText(_store, sessionId, anchor, "Alpha clause.").GetProperty("success").GetBoolean());
+        var inserted = Parse(Dispatcher.Call(_store, "docxodus_edit", J(
+            $$"""{"sessionId":{{sessionArg}},"action":"insert_paragraph","anchorId":"{{anchor}}","position":"after","markdown":"See "}""")));
+        var second = inserted.GetProperty("created")[0].GetProperty("id").GetString();
+        Assert.True(Parse(Dispatcher.Call(_store, "docxodus_links", J(
+            $$"""{"sessionId":{{sessionArg}},"action":"add_bookmark","name":"Defs","startAnchorId":"{{anchor}}","startOffset":0,"endAnchorId":"{{anchor}}","endOffset":5}""")))
+            .GetProperty("success").GetBoolean());
+        Assert.True(Parse(Dispatcher.Call(_store, "docxodus_links", J(
+            $$"""{"sessionId":{{sessionArg}},"action":"insert_cross_reference","anchorId":"{{second}}","characterOffset":4,"bookmarkName":"Defs"}""")))
+            .GetProperty("success").GetBoolean());
+        Dispatcher.Call(_store, "docxodus_edit", J(
+            $$"""{"sessionId":{{sessionArg}},"action":"replace_text_range","anchorId":"{{anchor}}","find":"Alpha","replace":"Omega"}"""));
+        var before = Parse(Dispatcher.Call(_store, "docxodus_get_content", J(
+            $$"""{"sessionId":{{sessionArg}},"format":"text"}"""))).GetRawText();
+        Assert.True(before.Contains("Omega clause.") && before.Contains("See Alpha"), before);
+
+        var updated = Dispatcher.Call(_store, "docxodus_edit", J(
+            $$"""{"sessionId":{{sessionArg}},"action":"update_fields"}"""));
+        Assert.True(Parse(updated).GetProperty("success").GetBoolean(), updated);
+        var text = Parse(Dispatcher.Call(_store, "docxodus_get_content", J(
+            $$"""{"sessionId":{{sessionArg}},"format":"text"}"""))).GetRawText();
+        Assert.True(text.Contains("See Omega"), text);
+
+        Assert.ThrowsAny<ArgumentException>(() => Dispatcher.Call(_store, "docxodus_edit", J(
+            $$$"""{"sessionId":{{{sessionArg}}},"action":"update_fields","range":{"startAnchorId":"{{{anchor}}}"}}""")));
     }
 }

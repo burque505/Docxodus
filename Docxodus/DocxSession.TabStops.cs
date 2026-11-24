@@ -3,7 +3,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Linq;
 using System.Xml.Linq;
 using DocumentFormat.OpenXml.Packaging;
@@ -35,7 +34,8 @@ public sealed record TabStopsInfo
     public required IReadOnlyList<ParagraphTabStop> Stops { get; init; }
     /// <summary>The stops the paragraph's styles give it, by position.</summary>
     public required IReadOnlyList<ParagraphTabStop> StyleStops { get; init; }
-    /// <summary><c>w:defaultTabStop</c> from settings, twips (720, half an inch, when absent).</summary>
+    /// <summary><c>w:defaultTabStop</c> from settings, twips (720, half an inch, when absent; 0 is no
+    /// automatic stops).</summary>
     public int DefaultTabStopTwips { get; init; }
 }
 
@@ -62,8 +62,7 @@ public sealed partial class DocxSession
         if (paragraph?.Name != W.p) return null;
         return new TabStopsInfo
         {
-            Stops = ReadTabStops(FormattingAssembler.ResolveEffectiveParagraphProperties(_doc!, paragraph)
-                .Element(W.tabs)),
+            Stops = ReadTabStops(FormattingAssembler.ResolveEffectiveTabs(_doc!, paragraph, withDirect: true)),
             StyleStops = InheritedTabStops(paragraph),
             DefaultTabStopTwips = DefaultTabStopTwips(),
         };
@@ -87,9 +86,11 @@ public sealed partial class DocxSession
             return EditResult.Fail(EditErrorCode.AnchorWrongKind, "SetTabStops requires a paragraph anchor", anchorId);
         var element = target.Resolve(_doc!);
         if (element is null) return EditResult.Fail(EditErrorCode.AnchorNotFound, "element null", anchorId);
-        if (stops.Any(s => s is null || Math.Abs(s.PositionTwips) > MaxTabPositionTwips))
+        if (stops.Any(s => s is null || s.PositionTwips is < -MaxTabPositionTwips or > MaxTabPositionTwips))
             return EditResult.Fail(EditErrorCode.InvalidParagraphFormat,
                 $"tab positions must be within ±{MaxTabPositionTwips} twips", anchorId);
+        if (stops.Any(s => !Enum.IsDefined(s.Alignment) || !Enum.IsDefined(s.Leader)))
+            return EditResult.Fail(EditErrorCode.InvalidParagraphFormat, "unknown tab alignment or leader", anchorId);
         if (stops.GroupBy(s => s.PositionTwips).Any(g => g.Count() > 1))
             return EditResult.Fail(EditErrorCode.InvalidParagraphFormat,
                 "two tab stops cannot share a position", anchorId);
@@ -131,8 +132,8 @@ public sealed partial class DocxSession
 
     /// <summary>
     /// Set the document's default tab interval (<c>w:defaultTabStop</c> in settings), the spacing
-    /// of the automatic stops after the last set one. One undo step. Not tracked: Word records no
-    /// revision for a settings change.
+    /// of the automatic stops after the last set one. One undo step. Refused while changes are
+    /// tracked: OOXML has no revision element for a settings change, so no reject could take it back.
     /// </summary>
     public EditResult SetDefaultTabStop(int twips)
     {
@@ -144,6 +145,9 @@ public sealed partial class DocxSession
         if (main is null) return EditResult.Fail(EditErrorCode.InternalError, "no main document part", null);
         if (DefaultTabStopTwips() == twips && main.DocumentSettingsPart?.GetXDocument().Root?.Element(W.defaultTabStop) is not null)
             return new EditResult { Success = true };
+        if (_trackedChanges == TrackedChangeMode.RenderInline)
+            return EditResult.Fail(EditErrorCode.TrackedOperationUnsupported,
+                "the default tab stop is a document setting, which no revision can record; no changes were made", null);
 
         _history.RecordPreOp(TakeSnapshot());
         try
@@ -170,21 +174,17 @@ public sealed partial class DocxSession
     }
 
     /// <summary>The stops the paragraph's styles give it: its effective tabs without its own w:tabs.</summary>
-    private IReadOnlyList<ParagraphTabStop> InheritedTabStops(XElement paragraph)
-    {
-        var pPr = new XElement(paragraph.Element(W.pPr) ?? new XElement(W.pPr));
-        pPr.Elements(W.tabs).Remove();
-        var probe = new XElement(W.p, paragraph.Attributes(), pPr);
-        return ReadTabStops(FormattingAssembler.ResolveEffectiveParagraphProperties(_doc!, probe)
-            .Element(W.tabs));
-    }
+    private IReadOnlyList<ParagraphTabStop> InheritedTabStops(XElement paragraph) =>
+        ReadTabStops(FormattingAssembler.ResolveEffectiveTabs(_doc!, paragraph, withDirect: false));
 
     private int DefaultTabStopTwips()
     {
         var value = (string?)_doc!.MainDocumentPart?.DocumentSettingsPart?.GetXDocument().Root?
             .Element(W.defaultTabStop)?.Attribute(W.val);
-        return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n) && n > 0
-            ? n : WordDefaultTabStopTwips;
+        // ST_TwipsMeasure: a bare number of twips, or one with a unit ("0.5in"). Zero turns the automatic
+        // stops off.
+        return value is not null && WordprocessingMLUtil.StringToTwips(value) is >= 0 and var twips
+            ? twips : WordDefaultTabStopTwips;
     }
 
     /// <summary>The set stops of a merged w:tabs (clear entries dropped), by position. A

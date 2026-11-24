@@ -368,6 +368,9 @@ internal static partial class Dispatcher
             case "styles":
                 return $"{{\"styles\":{DocxSessionOps.ListStyles(session.Handle)}}}";
 
+            case "outline":
+                return $"{{\"outline\":{DocxSessionOps.ListOutline(session.Handle)}}}";
+
             case "formatting":
                 if (anchorId is null)
                     throw new McpToolException("formatting requires anchorId");
@@ -540,9 +543,13 @@ internal static partial class Dispatcher
         "delete_block" => DocxSessionOps.DeleteBlock(session.Handle, Str(args, "anchorId")),
         "move_block" => DocxSessionOps.MoveBlock(
             session.Handle, Str(args, "sourceAnchorId"), Str(args, "targetAnchorId"), ParsePos(args)),
+        "move_block_range" => DocxSessionOps.MoveBlockRange(
+            session.Handle, Str(args, "firstAnchorId"), Str(args, "lastAnchorId"), Str(args, "targetAnchorId"),
+            ParsePos(args)),
         "delete_range" => DocxSessionOps.DeleteRange(
             session.Handle, Str(args, "fromAnchorId"), Str(args, "toAnchorIdExclusive")),
         "delete_section" => DocxSessionOps.DeleteSection(session.Handle, Str(args, "headingAnchorId")),
+        "update_fields" => DocxSessionOps.UpdateFields(session.Handle, args.GetRawText()),
         "split_paragraph" => DocxSessionOps.SplitParagraph(
             session.Handle, Str(args, "anchorId"), Int(args, "characterOffset")),
         "merge_paragraphs" => DocxSessionOps.MergeParagraphs(
@@ -563,8 +570,11 @@ internal static partial class Dispatcher
         return RunFormatAction(session, Str(args, "action"), args);
     }
 
-    private static string RunFormatAction(DocSession session, string action, JsonElement args) =>
-        Guarded(session, ParsePreconditions(args, MutationTarget(args)), () => action switch
+    private static string RunFormatAction(DocSession session, string action, JsonElement args)
+    {
+        if (action == "get_tab_stops")
+            return DocxSessionOps.GetTabStops(session.Handle, Str(args, "anchorId"));
+        return Guarded(session, ParsePreconditions(args, MutationTarget(args)), () => action switch
         {
         "apply_format" => DocxSessionOps.ApplyFormat(
             session.Handle, Str(args, "anchorId"), ParseSpan(args, "span"), ParseFormatOp(args)),
@@ -579,8 +589,11 @@ internal static partial class Dispatcher
         "remove_list_membership" => DocxSessionOps.RemoveListMembership(session.Handle, Str(args, "anchorId")),
         "apply_list_format" => DocxSessionOps.ApplyListFormat(
             session.Handle, Str(args, "anchorId"), DocxSessionJson.ParseOptionalListFormat(OptStr(args, "listFormat"))),
+        "set_tab_stops" => DocxSessionOps.SetTabStops(session.Handle, Str(args, "anchorId"), RawArray(args, "stops")),
+        "set_default_tab_stop" => DocxSessionOps.SetDefaultTabStop(session.Handle, Int(args, "twips")),
         _ => throw new McpToolException($"unknown docxodus_format action: {action}"),
         });
+    }
 
     // An omitted format reaches the facade as null, and DocxSessionOps applies its default (the
     // empty op) — issue #1024.
@@ -755,6 +768,7 @@ internal static partial class Dispatcher
         "move_bookmark" => BookmarkRangeAction(session, args, move: true),
         "rename_bookmark" => DocxSessionOps.RenameBookmark(session.Handle, Str(args, "name"), Str(args, "newName")),
         "remove_bookmark" => DocxSessionOps.RemoveBookmark(session.Handle, Str(args, "name")),
+        "add_reference_bookmark" => DocxSessionOps.AddReferenceBookmark(session.Handle, Str(args, "anchorId")),
         "insert_cross_reference" => DocxSessionOps.InsertCrossReference(session.Handle,
             Str(args, "anchorId"), Int(args, "characterOffset"), Str(args, "bookmarkName"),
             DocxSessionJson.ParseCrossReferenceOptions(
@@ -992,8 +1006,11 @@ internal static partial class Dispatcher
         // fan_out: one redline PER revised version rather than one merged redline, with the
         // baseline read once for the whole set (issue #617). The default stays consolidate, so an
         // existing caller passing revisedPaths gets exactly what it always did.
+        var settings = DocxDiffOps.FrontDoorSettings(revisedPath is null ? null : OptStr(args, "author"), caseInsensitive: false);
+        if (OptInt(args, "minimumAnchorWordCount") is { } minimum)
+            settings.MinimumAnchorWordCount = minimum;
         if (hasMany && OptStr(args, "mode") is "fan_out")
-            return CompareFanOut(store, args, baseline, revisedPaths);
+            return CompareFanOut(store, args, baseline, revisedPaths, settings);
 
         byte[] redline;
         string revisionsJson;
@@ -1004,7 +1021,7 @@ internal static partial class Dispatcher
             // full comparison twice, once per product. It goes through the DocxCompare front door,
             // comparing the accepted view of each input as the CLI and the browser do (issue #1006).
             var products = DocxDiffOps.CompareFrontDoorProducts(
-                baseline, revised, DocxDiffOps.FrontDoorSettings(OptStr(args, "author"), caseInsensitive: false),
+                baseline, revised, settings,
                 redline: true, revisions: true, editScript: false, semanticChanges: false);
             redline = products.RedlineBytes!;
             revisionsJson = products.RevisionsJson!;
@@ -1039,7 +1056,8 @@ internal static partial class Dispatcher
             }));
             // One memoized consolidation pass serves both products (issue #617) — this used to
             // read the base and every reviewer twice, once per product.
-            var consolidated = DocxDiffOps.ConsolidateProducts(baseline, reviewersJson, null,
+            var diffOptions = JsonSerializer.Serialize(new { minimumAnchorWordCount = settings.MinimumAnchorWordCount });
+            var consolidated = DocxDiffOps.ConsolidateProducts(baseline, reviewersJson, diffOptions,
                 redline: true, revisions: true, editScript: false, conflicts: false);
             redline = consolidated.RedlineBytes!;
             revisionsJson = consolidated.RevisionsJson!;
@@ -1082,7 +1100,7 @@ internal static partial class Dispatcher
     /// of the fan-out still completes.
     /// </summary>
     private static string CompareFanOut(
-        SessionStore store, JsonElement args, byte[] baseline, JsonElement revisedPaths)
+        SessionStore store, JsonElement args, byte[] baseline, JsonElement revisedPaths, DocxDiffSettings settings)
     {
         var paths = revisedPaths.EnumerateArray().Select(value => value.GetString()).ToList();
         if (paths.Count < 2 || paths.Any(string.IsNullOrWhiteSpace))
@@ -1105,7 +1123,7 @@ internal static partial class Dispatcher
         }));
 
         using var batch = JsonDocument.Parse(DocxDiffOps.CompareBatchFrontDoorJson(
-            baseline, candidatesJson, new DocxDiffSettings(), "[\"redline\",\"revisions\"]"));
+            baseline, candidatesJson, settings, "[\"redline\",\"revisions\"]"));
 
         var summary = new StringBuilder(256);
         summary.Append("{\"results\":[");
@@ -1468,11 +1486,13 @@ internal static partial class Dispatcher
         {
             "docxodus_edit" => action is "insert_paragraph" or "replace_text" or "replace_text_range"
                 or "replace_text_at_span_with_format"
-                or "delete_block" or "move_block" or "delete_range" or "delete_section"
+                or "delete_block" or "move_block" or "move_block_range" or "delete_range" or "delete_section"
+                or "update_fields"
                 or "split_paragraph" or "merge_paragraphs",
             "docxodus_format" => action is "apply_format" or "apply_format_by_substring"
                 or "set_paragraph_style" or "set_paragraph_format" or "set_list_level"
-                or "remove_list_membership" or "apply_list_format",
+                or "remove_list_membership" or "apply_list_format"
+                or "set_tab_stops" or "set_default_tab_stop",
             "docxodus_create" => action is "insert_paragraph" or "insert_heading" or "insert_table"
                 or "insert_horizontal_rule" or "insert_footnote" or "insert_endnote"
                 or "insert_page_number_field" or "insert_table_of_contents"
@@ -1490,7 +1510,7 @@ internal static partial class Dispatcher
             "docxodus_comment" => action is "add" or "reply" or "resolve" or "update" or "remove",
             "docxodus_links" => action is "add_hyperlink" or "update_hyperlink" or "remove_hyperlink"
                 or "add_bookmark" or "move_bookmark" or "rename_bookmark" or "remove_bookmark"
-                or "insert_cross_reference",
+                or "add_reference_bookmark" or "insert_cross_reference",
             "docxodus_images" => action is "insert" or "replace" or "embed_linked" or "set_dimensions"
                 or "set_metadata" or "set_floating_layout" or "remove",
             "docxodus_content_controls" => action is "fill_text" or "fill_rich_text"
@@ -1568,11 +1588,18 @@ internal static partial class Dispatcher
                 RequireStrings(args, "sourceAnchorId", "targetAnchorId");
                 ValidateOptionalEnum(args, "position", "before", "after");
                 break;
+            case ("docxodus_edit", "move_block_range"):
+                RequireStrings(args, "firstAnchorId", "lastAnchorId", "targetAnchorId");
+                ValidateOptionalEnum(args, "position", "before", "after");
+                break;
             case ("docxodus_edit", "delete_range"):
                 RequireStrings(args, "fromAnchorId", "toAnchorIdExclusive");
                 break;
             case ("docxodus_edit", "delete_section"):
                 RequireStrings(args, "headingAnchorId");
+                break;
+            case ("docxodus_edit", "update_fields"):
+                _ = DocxSessionJson.ParseUpdateFieldsOptions(args.GetRawText());
                 break;
             case ("docxodus_edit", "split_paragraph"):
                 RequireStrings(args, "anchorId");
@@ -1600,6 +1627,13 @@ internal static partial class Dispatcher
                 RequireStrings(args, "anchorId");
                 ValidateOptionalObject(args, "paragraphFormat");
                 _ = ParseParagraphFormatOp(args);
+                break;
+            case ("docxodus_format", "set_tab_stops"):
+                RequireStrings(args, "anchorId");
+                _ = DocxSessionJson.ParseTabStops(RawArray(args, "stops"));
+                break;
+            case ("docxodus_format", "set_default_tab_stop"):
+                RequireNumbers(args, "twips");
                 break;
             case ("docxodus_format", "set_list_level"):
                 RequireStrings(args, "anchorId");
@@ -1808,6 +1842,9 @@ internal static partial class Dispatcher
                 break;
             case ("docxodus_links", "remove_bookmark"):
                 RequireStrings(args, "name");
+                break;
+            case ("docxodus_links", "add_reference_bookmark"):
+                RequireStrings(args, "anchorId");
                 break;
 
             case ("docxodus_images", "insert"):

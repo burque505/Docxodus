@@ -1,6 +1,8 @@
 #nullable enable
 
+using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Text.RegularExpressions;
 
 namespace Docxodus.Internal;
@@ -837,7 +839,7 @@ internal static class DocxSessionOps
             s => s.MoveBlockRange(firstAnchorId, lastAnchorId, targetAnchorId, position ?? DefaultInsertPosition));
 
     /// <summary><see cref="DocxSession.ListOutline"/> as a JSON array of
-    /// <c>{ anchorId, level, text, styleId? }</c>.</summary>
+    /// <c>{ anchorId, level, text, styleId?, lastAnchorId }</c>.</summary>
     public static string ListOutline(int handle) =>
         DocxSessionJson.SerializeOutline(SessionRegistry.Get(handle).ListOutline());
 
@@ -1057,36 +1059,11 @@ internal static class DocxSessionOps
         DocxSessionJson.SerializeBookmarks(SessionRegistry.Get(handle).ListBookmarks(scopes));
 
     /// <summary>Word's Update Field; see <see cref="DocxSession.UpdateFields"/>.
-    /// <paramref name="optionsJson"/>: <c>""</c> (every field, no pages) or
-    /// <c>{"range":{"startAnchorId","startOffset","endAnchorId","endOffset"}?,"pages":{"anchorOrUnid":"page"}?}</c>.</summary>
-    public static string UpdateFields(int handle, string? optionsJson)
-    {
-        UpdateFieldsOptions? options = null;
-        if (!string.IsNullOrWhiteSpace(optionsJson))
-        {
-            using var doc = System.Text.Json.JsonDocument.Parse(optionsJson);
-            var root = doc.RootElement;
-            DocumentRange? range = null;
-            if (root.TryGetProperty("range", out var r) && r.ValueKind == System.Text.Json.JsonValueKind.Object)
-                range = new DocumentRange(
-                    r.GetProperty("startAnchorId").GetString() ?? "", r.GetProperty("startOffset").GetInt32(),
-                    r.GetProperty("endAnchorId").GetString() ?? "", r.GetProperty("endOffset").GetInt32());
-            Dictionary<string, string>? pages = null;
-            if (root.TryGetProperty("pages", out var p) && p.ValueKind == System.Text.Json.JsonValueKind.Object)
-            {
-                pages = new Dictionary<string, string>(StringComparer.Ordinal);
-                foreach (var entry in p.EnumerateObject())
-                    pages[entry.Name] = entry.Value.ValueKind == System.Text.Json.JsonValueKind.Number
-                        ? entry.Value.GetRawText() : entry.Value.GetString() ?? "";
-            }
-            options = new UpdateFieldsOptions
-            {
-                Range = range, Pages = pages,
-                TablesOfContentsOnly = root.TryGetProperty("tablesOfContentsOnly", out var only) && only.ValueKind == System.Text.Json.JsonValueKind.True,
-            };
-        }
-        return DocxSessionJson.Serialize(SessionRegistry.Get(handle).UpdateFields(options));
-    }
+    /// <paramref name="optionsJson"/>: <c>""</c> (every field, no pages) or an object
+    /// <c>{ range?: DocumentRange, pages?: { anchorOrUnid: page }, tablesOfContentsOnly? }</c>
+    /// (see <see cref="DocxSessionJson.ParseUpdateFieldsOptions"/>).</summary>
+    public static string UpdateFields(int handle, string? optionsJson) =>
+        DocxSessionJson.Serialize(SessionRegistry.Get(handle).UpdateFields(DocxSessionJson.ParseUpdateFieldsOptions(optionsJson)));
 
     /// <summary>The hidden <c>_Ref</c> bookmark over a whole paragraph that a cross-reference to
     /// it targets; see <see cref="DocxSession.AddReferenceBookmark"/>.</summary>
@@ -1292,8 +1269,9 @@ internal static class DocxSessionOps
     public static string SetContentControlDate(int handle, string anchorId, string value,
         string? displayText, string optionsJson)
     {
-        if (!System.DateTimeOffset.TryParse(value, System.Globalization.CultureInfo.InvariantCulture,
-            System.Globalization.DateTimeStyles.RoundtripKind, out var parsed))
+        // The session stores the date as written, so an input without an offset needs none
+        // from the host.
+        if (!DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var parsed))
             return DocxSessionJson.Serialize(EditResult.Fail(EditErrorCode.InvalidContentControlValue,
                 "date value must be an ISO-8601 timestamp", anchorId));
         return ContentControlOptions(anchorId, optionsJson, options =>

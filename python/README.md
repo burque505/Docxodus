@@ -245,15 +245,15 @@ checkpoint and, with the default initial capture, compares it with the exact ope
 | **Lifecycle** | `save`, `close`, `undo`, `redo`, `get_version`, `get_package_manifest`, `verify_deliverable`, `execute_batch`, `preview_batch`, `to_html`, `register_page_map`, `get_page_map_status`, `get_page_citation` |
 | **Projection** | `project`, `project_anchor` |
 | **Discovery** | `grep`, `grep_cross_block`, `find_placeholders`, `find_by_text`, `find_all_by_text`, `find_by_regex`, `find_by_kind`, `find_by_annotation`, `find_by_label`, `find_by_bookmark`, `list_annotations`, `exists`, `get_anchor_info`, `get_anchor_infos`, `get_edit_summary`, `remaining_placeholders`, `get_diff` |
-| **Inspection** | `list_styles`, `get_formatting`, `list_inline_spans`, `get_block_metadata`, `get_block_metadatas`, `get_list_membership`, `get_list_levels`, `get_section_info` |
-| **Native links/bookmarks** | `list_hyperlinks`, `add_hyperlink`, `update_hyperlink`, `remove_hyperlink`, `list_bookmarks`, `add_bookmark`, `move_bookmark`, `rename_bookmark`, `remove_bookmark` |
+| **Inspection** | `list_styles`, `list_outline`, `get_formatting`, `list_inline_spans`, `get_block_metadata`, `get_block_metadatas`, `get_list_membership`, `get_list_levels`, `get_section_info` |
+| **Native links/bookmarks** | `list_hyperlinks`, `add_hyperlink`, `update_hyperlink`, `remove_hyperlink`, `list_bookmarks`, `add_bookmark`, `move_bookmark`, `rename_bookmark`, `remove_bookmark`, `add_reference_bookmark`, `update_fields` |
 | **Native images** | `get_image_capabilities`, `list_images`, `insert_image`, `replace_image`, `embed_linked_image`, `set_image_dimensions`, `set_image_metadata`, `set_image_floating_layout`, `remove_image` |
-| **A: text mutations** | `replace_text`, `replace_text_range`, `replace_text_at_span`, `replace_inner`, `replace_match`, `delete_block`, `move_block`, `delete_range`, `delete_section` |
+| **A: text mutations** | `replace_text`, `replace_text_range`, `replace_text_at_span`, `replace_inner`, `replace_match`, `delete_block`, `move_block`, `move_block_range`, `delete_range`, `delete_section` |
 | **B: structural** | `insert_paragraph`, `split_paragraph`, `merge_paragraphs`, `insert_horizontal_rule` |
 | **B: headers/footers/page numbers** | `set_header_text`, `set_footer_text`, `ensure_header_footer_visible`, `set_header_footer_kind_enabled`, `insert_page_number_field`, `set_page_numbering`, `clear_page_numbering`, `set_page_setup` |
 | **B: footnotes/endnotes** | `insert_footnote`, `insert_endnote`, `list_notes` |
 | **B: native comments** | `add_comment`, `add_comment_to_revision`, `add_comment_reply`, `update_comment`, `set_comment_resolved`, `remove_comment`, `list_comments` |
-| **C: formatting** | `apply_format`, `apply_format_by_substring`, `set_paragraph_style`, `set_paragraph_format`, `set_list_level`, `remove_list_membership`, `apply_list_format`, `apply_list_format_range`, `set_list_start_override`, `clear_list_start_override`, `set_list_levels`, `continue_numbering`, `set_list_membership` |
+| **C: formatting** | `apply_format`, `apply_format_by_substring`, `set_paragraph_style`, `set_paragraph_format`, `set_list_level`, `remove_list_membership`, `apply_list_format`, `apply_list_format_range`, `set_list_start_override`, `clear_list_start_override`, `set_list_levels`, `continue_numbering`, `set_list_membership`, `get_tab_stops`, `set_tab_stops`, `set_default_tab_stop` |
 | **D: tables** | `get_table_metadata`, `resolve_table_cell_anchor`, `resolve_table_cell_coordinate`, `insert_table`, `insert_table_row`, `insert_table_column`, `delete_table_row`, `delete_table_column`, `merge_cells`, `unmerge_cells`, `set_column_widths`, `set_table_style`, `set_table_borders`, `set_cell_shading`, `set_repeat_header_row`, `set_table_row_options`, `set_table_properties`, `set_cell_properties`, `get_table_properties`, `replace_cell_content` |
 | **D: tracked changes** | `set_tracked_changes`, `set_revision_author`, `list_revisions`, `accept_revision`, `reject_revision` |
 | **E: annotations** | `add_annotation`, `remove_annotation`, `update_annotation`, `move_annotation` |
@@ -301,6 +301,49 @@ The engine compares the accepted view of each input's body, but copies carried-o
 footers, unchanged notes) verbatim, so pending tracked changes in an input's header or footnotes
 survive into the redline under their original authors. To compare as Word's Compare does (and as the
 front door does), pass `DocxDiffSettings(pre_accept_input_revisions=True)`. Tune pairwise comparisons with `DocxDiffSettings` and N-way consolidation with `DocxDiffConsolidateSettings` (whose `conflict_resolution` takes a `ConflictResolution` value). `DetectMoves`/format-change tracking, header/footer comparison, and per-reviewer attribution all round-trip through these calls.
+
+**Two reviewers editing one phrase.** Consolidation reports a conflict when two reviewers make
+different changes to the same words, or add different text at the same spot. Reviewers who make
+the identical change agree, and that is not a conflict. Edits to different words are all kept. So
+if one reviewer changes "six dozen" to "nine dozen" and another adds "extra" after "dozen", there
+is no conflict, and accepting everything reads "nine dozen extra", which neither of them wrote.
+The desktop word processor's own combine feature does the same.
+
+If you would rather see that as a conflict, split the text only at sentence punctuation, so a
+whole sentence counts as one piece. Pass the same settings to both calls:
+
+```python
+from docx_scalpel import (
+    ConflictResolution, DocxDiffConsolidateSettings, DocxDiffSettings,
+    docx_diff_consolidate, docx_diff_get_conflicts,
+)
+
+settings = DocxDiffConsolidateSettings(
+    diff=DocxDiffSettings(word_separators=".;!?"),
+    conflict_resolution=ConflictResolution.BASE_WINS,
+)
+conflicts = docx_diff_get_conflicts(base, reviewers, settings)
+redline = docx_diff_consolidate(base, reviewers, settings)
+```
+
+This applies to the whole document, so two different edits to the same unbroken stretch of a
+sentence now conflict (reviewers who make the identical edit still agree). A change of
+formatting, punctuation or a picture still splits a sentence into separate pieces, and edits to
+different pieces do not conflict. Read the conflicts before you rely on the merged wording.
+
+**Numbered entries.** Some documents put a short label on its own line before each entry: "P1",
+then the entry's text, then "P2", and so on. Adding or removing an entry changes every later
+label, and the comparison can then report the entries' unchanged text as moved. Telling it that
+a paragraph needs at least two words before it is used to line the documents up makes it match
+the entries by their text instead, so each label just shows its number changing:
+
+```python
+from docx_scalpel import DocxDiffSettings, docx_diff_compare
+
+redline = docx_diff_compare(left, right, DocxDiffSettings(minimum_anchor_word_count=2))
+```
+
+Leave it at the default, 0, for other documents.
 
 For an open session, `session.get_semantic_changes()` compares the exact opening package with the
 current logical checkpoint. It requires the default

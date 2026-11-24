@@ -772,6 +772,30 @@ public sealed class DocxDiffSettings
     public int MoveMinimumWordCount { get; set; } = 3;
 
     /// <summary>
+    /// How many words a paragraph needs before the comparison uses it to line the two documents up.
+    /// The default, 0, lets any paragraph that appears once in each document do so.
+    /// Set it to 2 when each entry starts with a one-word number label on its own line, such as "P1".
+    /// Adding or removing an entry changes every later label, and with the default the comparison can
+    /// then report the entries' unchanged text as moved. With 2 it matches the entries by their text,
+    /// and each label shows only its number changing. A short paragraph that moved without changing is
+    /// still shown as moved.
+    /// </summary>
+    /// <example>
+    /// <code>
+    /// var redline = DocxDiff.Compare(original, revised, new DocxDiffSettings { MinimumAnchorWordCount = 2 });
+    /// </code>
+    /// </example>
+    public int MinimumAnchorWordCount
+    {
+        get;
+        set
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(value);
+            field = value;
+        }
+    }
+
+    /// <summary>
     /// How <see cref="DocxDiff.GetRevisions"/> projects the edit script to revisions. Default
     /// <see cref="DocxDiffRevisionGranularity.Fine"/> (the engine's native one-revision-per-token-span
     /// grain). Set <see cref="DocxDiffRevisionGranularity.WmlComparerCompatible"/> for revision counts/texts
@@ -989,6 +1013,7 @@ public sealed class DocxDiffSettings
             RenderMoves = DetectMoves,
             MoveSimilarityThreshold = MoveSimilarityThreshold,
             MoveMinimumTokenCount = MoveMinimumWordCount,
+            MinimumAnchorWordCount = MinimumAnchorWordCount,
             RevisionGranularity = RevisionGranularity == DocxDiffRevisionGranularity.WmlComparerCompatible
                 ? Docxodus.Ir.Diff.RevisionGranularity.WmlComparerCompatible
                 : Docxodus.Ir.Diff.RevisionGranularity.Fine,

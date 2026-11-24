@@ -80,7 +80,7 @@ internal sealed record HtmlConversionOptions
 
     /// <summary>Wrap REF / PAGEREF / NOTEREF field results in <c>&lt;span data-field&gt;</c> with the
     /// target bookmark (see <see cref="WmlToHtmlConverterSettings.StampReferenceFields"/>). Off by
-    /// default; the browser editor's render profile turns it on.</summary>
+    /// default; an editor turns it on with the <c>referenceFields</c> render option.</summary>
     public bool StampReferenceFields { get; init; }
 
     /// <summary>Mark page breaks outside paginated output with <c>data-docx-page-break</c> (see
@@ -1065,8 +1065,8 @@ internal static class HtmlConversionOps
 
     /// <summary>
     /// Clone a block element and declare the LIVE document's resolved list counters on the
-    /// clone's paragraphs (<see cref="PtOpenXml.LevelNumbers"/> and
-    /// <see cref="PtOpenXml.ListContinuation"/>, read by <see cref="ListItemRetriever"/>). The
+    /// clone's paragraphs (<see cref="PtOpenXml.LevelNumbers"/>, read by
+    /// <see cref="ListItemRetriever"/>). The
     /// converter rewrites the shell's markup before it numbers anything (markup simplification,
     /// formatting assembly), so an annotation transplanted onto the clone never reaches the
     /// retriever; an attribute rides through every rewrite the way the Unid does. Without it the
@@ -1086,8 +1086,6 @@ internal static class HtmlConversionOps
                 c.Current.SetAttributeValue(PtOpenXml.LevelNumbers, string.Join(",",
                     numbers.LevelNumbersArray.Select(n => n.ToString(CultureInfo.InvariantCulture))));
             }
-            if (s.Current.Annotation<ListItemRetriever.ContinuationInfo>() is { IsContinuation: true })
-                c.Current.SetAttributeValue(PtOpenXml.ListContinuation, true);
         }
         return clone;
     }
@@ -1284,6 +1282,9 @@ internal static class HtmlConversionOps
         Mix(num?.Elements(w + "num").Count() ?? -1);
         Mix(num?.Elements(w + "abstractNum").Count() ?? -1);
         Mix(num?.Descendants(w + "lvl").Count() ?? -1);
+        // The automatic tab interval, which a session can set and undo.
+        foreach (var c in (string?)main.DocumentSettingsPart?.GetXDocument().Root?.Element(w + "defaultTabStop")?.Attribute(w + "val") ?? "")
+            Mix(c);
         return sig;
     }
 

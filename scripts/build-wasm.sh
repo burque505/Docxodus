@@ -221,6 +221,16 @@ du -sh "$WASM_DIST"
 # main at 6,101,383 on the same job, which had 5,753 bytes of room under 5964 KiB, so the branch
 # was 258 bytes over. 8 KiB more covers it and the spread between runners; assembly roots,
 # dependencies and the AOT profile are unchanged.
+# Tab stops (GetTabStops, SetTabStops, SetDefaultTabStop, their JSON and bridge exports), with main's
+# content-control date formats (#1853) below it: CI measured the branch at 6,111,407 bytes on build and
+# build-npm and 6,115,564 on compare, up to 236 over 5972 KiB, and the outline on top of it at 6,118,046.
+# 8 KiB more covers both and the cross-references landing beside them; assembly roots, dependencies and
+# the AOT profile are unchanged.
+# Cross-references (AddReferenceBookmark, the number and page switches, reference markers in rendered
+# HTML, their JSON and bridge exports), on top of tab stops and the outline: CI measured the branch at
+# 6,112,865 bytes on one runner and 6,123,723 on another, 203 over 5980 KiB, and UpdateFields on top of it at
+# 6,123,332 and 6,123,941. 12 KiB more covers both and that spread; assembly roots, dependencies and the
+# AOT profile are unchanged.
 # (#1773/#1776 era) Both together: 5928 + 64 + 8 KiB.
 # 2026-11-19 (dAHKxodus fork): section breaks, page/column breaks and the fork's M5 editor ops
 # measured 6,145,117 bytes, 1,117 over 6000 KiB; 16 KiB more covers it and the next small ops.
@@ -234,6 +244,9 @@ du -sh "$WASM_DIST"
 # 2026-11-22 (dAHKxodus fork): merging upstream main 3d9efb03 (budget 5972 KiB, which already holds the
 # Table Properties the fork carried) keeps the fork's 6048 KiB: the fork's own ops above stay on top.
 # SetStyle (style definitions) adds about 9 KB: 6,193,424 measured, 272 over 6048 KiB. Fork-only.
+# 2026-11-24 (dAHKxodus fork): merging upstream main 9af576ec (budget 5992 KiB, which now holds the
+# tab stops, outline, cross-references and UpdateFields the fork carried) keeps the fork's own budget:
+# the fork-only ops (style definitions, page-break marker, M5/M6 editor ops) stay on top.
 WIRE_BUDGET_BYTES=$((6056 * 1024))
 WIRE_BYTES=$(cat "$WASM_DIST/_framework/.wire-size")
 rm -f "$WASM_DIST/_framework/.wire-size"

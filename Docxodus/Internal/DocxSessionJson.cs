@@ -520,6 +520,55 @@ internal static class DocxSessionJson
     /// <summary>Parse an <c>insertCrossReference</c> options object, <c>{ referenceNumber?,
     /// hyperlink?, includePosition?, pageNumber?, numberNoContext?, numberFullContext?,
     /// cachedPage? }</c>. Each switch is on only when it is literally true.</summary>
+    /// <summary>
+    /// <see cref="UpdateFieldsOptions"/> from <c>{ range?: { startAnchorId, startOffset, endAnchorId,
+    /// endOffset }, pages?: { anchorOrUnid: page }, tablesOfContentsOnly?: bool }</c>; members it
+    /// does not know are ignored, so a transport may pass its whole argument object. Null, "" or
+    /// an object with none of them gives null (every field in the body). A page may be a string
+    /// or a number.
+    /// </summary>
+    public static UpdateFieldsOptions? ParseUpdateFieldsOptions(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+        if (root.ValueKind != JsonValueKind.Object)
+            throw new ArgumentException("update fields options must be a JSON object");
+        DocumentRange? range = null;
+        if (root.TryGetProperty("range", out var r) && r.ValueKind != JsonValueKind.Null)
+        {
+            if (r.ValueKind != JsonValueKind.Object)
+                throw new ArgumentException("range must be an object { startAnchorId, startOffset, endAnchorId, endOffset }");
+            string Anchor(string name) =>
+                r.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String && v.GetString() is { Length: > 0 } s
+                    ? s : throw new ArgumentException($"range.{name} must be an anchor id");
+            int Offset(string name) =>
+                r.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var n)
+                    ? n : throw new ArgumentException($"range.{name} must be an integer");
+            range = new DocumentRange(Anchor("startAnchorId"), Offset("startOffset"), Anchor("endAnchorId"), Offset("endOffset"));
+        }
+        Dictionary<string, string>? pages = null;
+        if (root.TryGetProperty("pages", out var p) && p.ValueKind != JsonValueKind.Null)
+        {
+            if (p.ValueKind != JsonValueKind.Object)
+                throw new ArgumentException("pages must be an object mapping an anchor id or unid to its page");
+            pages = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var entry in p.EnumerateObject())
+                pages[entry.Name] = entry.Value.ValueKind switch
+                {
+                    JsonValueKind.Number => entry.Value.GetRawText(),
+                    JsonValueKind.String => entry.Value.GetString() ?? "",
+                    _ => throw new ArgumentException($"pages.{entry.Name} must be a string or a number"),
+                };
+        }
+        bool tocOnly = false;
+        if (root.TryGetProperty("tablesOfContentsOnly", out var only) && only.ValueKind != JsonValueKind.Null)
+            tocOnly = only.ValueKind is JsonValueKind.True or JsonValueKind.False ? only.GetBoolean()
+                : throw new ArgumentException("tablesOfContentsOnly must be a boolean");
+        if (range is null && pages is null && !tocOnly) return null;
+        return new UpdateFieldsOptions { Range = range, Pages = pages, TablesOfContentsOnly = tocOnly };
+    }
+
     public static CrossReferenceOptions ParseCrossReferenceOptions(JsonElement options)
     {
         if (options.ValueKind != JsonValueKind.Object) return new CrossReferenceOptions();
@@ -3783,16 +3832,22 @@ internal static class DocxSessionJson
         var stops = new List<ParagraphTabStop>();
         foreach (var item in doc.RootElement.EnumerateArray())
         {
-            var position = TryGetIntNullable(item, "positionTwips")
-                ?? throw new ArgumentException("a tab stop needs positionTwips");
+            if (item.ValueKind != JsonValueKind.Object
+                || !TryGetIntNullable(item, "positionTwips", out var position) || position is null)
+                throw new ArgumentException("a tab stop must be an object with an integer positionTwips");
             stops.Add(new ParagraphTabStop
             {
-                PositionTwips = position,
-                Alignment = ParseToken(TryGetString(item, "alignment", null), "tab alignment", TabStopAlignment.Left, TabAlignmentTokens),
-                Leader = ParseToken(TryGetString(item, "leader", null), "tab leader", TabStopLeader.None, TabLeaderTokens),
+                PositionTwips = position.Value,
+                Alignment = ParseToken(Token(item, "alignment"), "tab alignment", TabStopAlignment.Left, TabAlignmentTokens),
+                Leader = ParseToken(Token(item, "leader"), "tab leader", TabStopLeader.None, TabLeaderTokens),
             });
         }
         return stops;
+
+        static string? Token(JsonElement item, string name) =>
+            !item.TryGetProperty(name, out var value) || value.ValueKind == JsonValueKind.Null ? null
+            : value.ValueKind == JsonValueKind.String ? value.GetString()
+            : throw new ArgumentException($"a tab stop's {name} must be a string");
     }
 
     public static string SerializeTabStopsInfo(TabStopsInfo? info)

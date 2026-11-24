@@ -149,6 +149,9 @@ internal static partial class Dispatcher
         "move_block" => DocxSessionOps.MoveBlock(
             Handle(args), Str(args, "sourceAnchorId"), Str(args, "targetAnchorId"),
             OptPos(args)),
+        "move_block_range" => DocxSessionOps.MoveBlockRange(
+            Handle(args), Str(args, "firstAnchorId"), Str(args, "lastAnchorId"), Str(args, "targetAnchorId"),
+            OptPos(args)),
         "delete_range" => DocxSessionOps.DeleteRange(
             Handle(args), Str(args, "fromAnchorId"), Str(args, "toAnchorIdExclusive")),
         "delete_section" => DocxSessionOps.DeleteSection(
@@ -289,6 +292,8 @@ internal static partial class Dispatcher
             Handle(args), Str(args, "name"), Str(args, "startAnchorId"), Int(args, "startOffset"),
             Str(args, "endAnchorId"), Int(args, "endOffset")),
         "remove_bookmark" => DocxSessionOps.RemoveBookmark(Handle(args), Str(args, "name")),
+        "add_reference_bookmark" => DocxSessionOps.AddReferenceBookmark(Handle(args), Str(args, "anchorId")),
+        "update_fields" => DocxSessionOps.UpdateFields(Handle(args), args.GetRawText()),
 
         "list_revisions" => DocxSessionOps.ListRevisions(
             Handle(args), DocxSessionJson.ParseRevisionListFilter(args)),
@@ -309,6 +314,9 @@ internal static partial class Dispatcher
             Handle(args), Str(args, "anchorId"), ParseParagraphFormatOp(args, "paragraphFormat", "op")),
         "set_list_level" => DocxSessionOps.SetListLevel(
             Handle(args), Str(args, "anchorId"), Int(args, "levelDelta")),
+        "set_tab_stops" => DocxSessionOps.SetTabStops(Handle(args), Str(args, "anchorId"), RawArray(args, "stops")),
+        "get_tab_stops" => DocxSessionOps.GetTabStops(Handle(args), Str(args, "anchorId")),
+        "set_default_tab_stop" => DocxSessionOps.SetDefaultTabStop(Handle(args), Int(args, "twips")),
         "remove_list_membership" => DocxSessionOps.RemoveListMembership(
             Handle(args), Str(args, "anchorId")),
         "apply_list_format" => DocxSessionOps.ApplyListFormat(
@@ -426,6 +434,7 @@ internal static partial class Dispatcher
         "get_list_levels" => DocxSessionOps.GetListLevels(Handle(args), Str(args, "anchorId")),
         "get_section_info" => DocxSessionOps.GetSectionInfo(Handle(args), Str(args, "anchorId")),
         "list_styles" => DocxSessionOps.ListStyles(Handle(args)),
+        "list_outline" => DocxSessionOps.ListOutline(Handle(args)),
         "get_formatting" => DocxSessionOps.GetFormatting(Handle(args), Str(args, "anchorId")),
         "list_inline_spans" => DocxSessionOps.ListInlineSpans(Handle(args), Str(args, "anchorId")),
         "find_by_text" => DocxSessionOps.FindByText(Handle(args), Str(args, "needle"), ParseFindOptions(args)),
@@ -1168,20 +1177,22 @@ internal static partial class Dispatcher
             : null;
 
     private static bool IsMutation(string op) => op is
-        "replace_text" or "delete_block" or "move_block" or "delete_range" or "delete_section"
+        "replace_text" or "delete_block" or "move_block" or "move_block_range" or "delete_range" or "delete_section"
         or "replace_text_range" or "replace_text_at_span" or "replace_text_at_span_with_format" or "replace_inner"
         or "insert_paragraph" or "split_paragraph" or "merge_paragraphs" or "insert_horizontal_rule"
         or "set_header_text" or "set_footer_text" or "insert_page_number_field"
         or "ensure_header_footer_visible" or "set_page_numbering" or "clear_page_numbering"
         or "set_header_footer_kind_enabled" or "set_page_setup"
         or "insert_table_of_contents" or "insert_table_of_figures" or "insert_table_of_authorities"
-        or "insert_footnote" or "insert_endnote" or "insert_cross_reference"
+        or "insert_footnote" or "insert_endnote" or "insert_cross_reference" or "add_reference_bookmark"
+        or "update_fields"
         or "add_comment" or "add_comment_reply" or "update_comment"
         or "set_comment_resolved" or "remove_comment"
         or "accept_revision" or "reject_revision" or "repair_revisions"
         or "accept_all_revisions" or "reject_all_revisions"
         or "apply_format" or "apply_format_by_substring" or "set_paragraph_style"
         or "set_paragraph_format" or "set_list_level" or "remove_list_membership"
+        or "set_tab_stops" or "set_default_tab_stop"
         or "apply_list_format" or "apply_list_format_range" or "set_list_start_override"
         or "clear_list_start_override" or "set_list_levels" or "continue_numbering" or "set_list_membership"
         or "replace_cell_content" or "set_table_style"

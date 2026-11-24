@@ -327,7 +327,7 @@ namespace Docxodus
         
         /// <summary>
         /// Remove every annotation this retriever stamps on the paragraphs under
-        /// <paramref name="root"/> (ListItemInfo, LevelNumbers, ContinuationInfo, and the
+        /// <paramref name="root"/> (ListItemInfo, LevelNumbers, and the
         /// private ParagraphInfo/ReverseAxis), so the next RetrieveListItem call re-initializes
         /// and recounts. A live-session numbering mutation (e.g. DocxSession.SetListStartOverride
         /// repointing w:numPr at a different w:num) must call this: initialization is
@@ -341,7 +341,6 @@ namespace Docxodus
             {
                 p.RemoveAnnotations<ListItemInfo>();
                 p.RemoveAnnotations<LevelNumbers>();
-                p.RemoveAnnotations<ContinuationInfo>();
                 p.RemoveAnnotations<ParagraphInfo>();
                 p.RemoveAnnotations<ReverseAxis>();
                 p.RemoveAnnotations<NumberingStamp>();
@@ -473,7 +472,6 @@ namespace Docxodus
                         prefix.Add(ParagraphMarkIsDeleted(paragraph) ? 1 : 0);
                         prefix.Add(pPr?.Element(W.sectPr) is not null && FirstRunIsEmptySectionBreak(paragraph) ? 1 : 0);
                         prefix.Add((string?)paragraph.Attribute(PtOpenXml.LevelNumbers));
-                        prefix.Add((string?)paragraph.Attribute(PtOpenXml.ListContinuation));
 
                         if (stamp is null)
                         {
@@ -1020,26 +1018,12 @@ namespace Docxodus
         }
 
         /// <summary>
-        /// Tracks whether a paragraph is part of a "continuation pattern" where a deeper-level
-        /// item is effectively a continuation of a flat list rather than true nesting.
-        /// Word uses level 0's format string for such items instead of the declared level's format.
+        /// Formerly returned level 0 for a deeper item treated as continuing a flat list. A
+        /// deeper item now always formats at its declared level, so this equals
+        /// <see cref="GetParagraphLevel"/>.
         /// </summary>
-        internal class ContinuationInfo
-        {
-            public bool IsContinuation;
-        }
-
-        /// <summary>
-        /// Gets the effective level for formatting purposes. When a paragraph is in a continuation
-        /// pattern, returns 0 (to use level 0's formatting). Otherwise returns the paragraph's declared level.
-        /// </summary>
-        public static int GetEffectiveLevel(XElement paragraph)
-        {
-            var continuationInfo = paragraph.Annotation<ContinuationInfo>();
-            if (continuationInfo != null && continuationInfo.IsContinuation)
-                return 0;
-            return GetParagraphLevel(paragraph);
-        }
+        [Obsolete("A list paragraph always formats at its declared level; use GetParagraphLevel.")]
+        public static int GetEffectiveLevel(XElement paragraph) => GetParagraphLevel(paragraph);
 
         public static string? RetrieveListItem(WordprocessingDocument wordDoc, XElement paragraph)
         {
@@ -1091,27 +1075,10 @@ namespace Docxodus
             if (levelNumbersAnnotation == null)
                 throw new DocxodusException("Internal error");
 
-            int[] levelNumbers = levelNumbersAnnotation.LevelNumbersArray;
-            int effectiveLevel = paragraphLevel;
-
-            // Check for continuation pattern - when a deeper-level item effectively continues
-            // a flat list (e.g., items 1., 2., 3. at level 0, then 4. at level 1 should show "4." not "3.4")
-            // Word uses level 0's format string for these items
-            var continuationInfo = paragraph.Annotation<ContinuationInfo>();
-            if (continuationInfo != null && continuationInfo.IsContinuation)
-            {
-                // Use level 0's format string with current level's counter
-                var lvl0 = listItemInfo.Lvl(0);
-                lvlText = (string?)lvl0?.Elements(W.lvlText).Attributes(W.val).FirstOrDefault();
-                if (lvlText == null)
-                    return null;
-                // Create single-element array with current level's counter value
-                levelNumbers = new int[] { levelNumbers[paragraphLevel] };
-                effectiveLevel = 0;
-            }
-
+            // A deeper item keeps its declared level text even when its start value continues
+            // the parent's count: 1., 2., 3. followed by an ilvl 1 item starting at 4 reads 3.4.
             string languageIdentifier = GetLanguageIdentifier(paragraph, stylesXDoc);
-            string listItem = FormatListItem(listItemInfo, levelNumbers, effectiveLevel,
+            string listItem = FormatListItem(listItemInfo, levelNumbersAnnotation.LevelNumbersArray, paragraphLevel,
                 lvlText, stylesXDoc, languageIdentifier, settings);
             return listItem;
         }
@@ -1312,9 +1279,6 @@ namespace Docxodus
                 var startOverrideAlreadyUsed = new List<int>();
                 List<int>? previous = null;
                 ListItemInfo?[] listItemInfoInEffectForStartOverride = new ListItemInfo?[LevelCount];
-                // Track continuation pattern per level - when a deeper-level item continues
-                // a flat list sequence rather than being truly nested
-                bool[] continuationByLevel = new bool[LevelCount];
 
                 foreach (var paragraph in listItems)
                 {
@@ -1336,7 +1300,6 @@ namespace Docxodus
                     var savedPrevious = paraMarkDeleted ? previous : null;
                     var savedStartOverrideAlreadyUsed = paraMarkDeleted ? startOverrideAlreadyUsed.ToList() : null;
                     var savedListItemInfoInEffect = paraMarkDeleted ? listItemInfoInEffectForStartOverride[ilvl] : null;
-                    var savedContinuationByLevel = paraMarkDeleted ? (bool[])continuationByLevel.Clone() : null;
 
                     listItemInfoInEffectForStartOverride[ilvl] = listItemInfo;
                     ListItemInfo? listItemInfoInEffect = null;
@@ -1455,70 +1418,16 @@ namespace Docxodus
                     };
                     paragraph.AddAnnotation(levelNumbersAnno);
 
-                    // Detect continuation pattern: a deeper-level item that effectively continues
-                    // a flat list rather than being truly nested (e.g., 1., 2., 3. at level 0,
-                    // then 4. at level 1 with start=4 should display as "4." not "3.4")
-                    bool isContinuation = false;
-                    if ((bool?)paragraph.Attribute(PtOpenXml.ListContinuation) is { } declaredContinuation)
-                    {
-                        // Declared alongside pt:LevelNumbers: continuation is inherited from the
-                        // previous item at this level, which the shell may not hold.
-                        isContinuation = declaredContinuation;
-                    }
-                    else if (ilvl > 0)
-                    {
-                        // Continuation only makes sense for ORDINAL (numbered) levels — a deeper
-                        // numbered item whose counter continues the parent's sequence renders flat
-                        // (4. not 3.4). Bullet levels have no counter to continue, so a nested
-                        // bullet must keep its OWN level's glyph/indent; treating it as a
-                        // continuation collapses it to the parent bullet (the bug exposed once
-                        // SetListLevel made source-list nesting actually take effect).
-                        var lvlDef = listItemInfo.Lvl(ilvl)!;
-                        var numFmt = (string?)lvlDef.Elements(W.numFmt).Attributes(W.val).FirstOrDefault();
-                        bool isBulletLevel = numFmt is "bullet" or "none";
-                        if (isBulletLevel)
-                        {
-                            isContinuation = false;
-                        }
-                        else if (continuationByLevel[ilvl])
-                        {
-                            // Inherit continuation status from previous paragraph at this level
-                            isContinuation = true;
-                        }
-                        else
-                        {
-                            // Check if this starts a continuation pattern:
-                            // - Current counter equals the level's start value (first item at this level)
-                            // - Start value equals parent level's counter + 1 (continues the sequence)
-                            // - Level 0 is defined (a continuation renders with its format)
-                            int? startValue = IntValue(lvlDef.Elements(W.start).Attributes(W.val).FirstOrDefault());
-                            if (startValue != null && listItemInfo.Lvl(0) != null &&
-                                levelNumbers[ilvl] == startValue &&
-                                startValue == levelNumbers[ilvl - 1] + 1)
-                            {
-                                isContinuation = true;
-                            }
-                        }
-                    }
-
-                    // Reset continuation tracking for deeper levels when going to a shallower level
-                    for (int l = ilvl + 1; l < LevelCount; l++)
-                        continuationByLevel[l] = false;
-
-                    continuationByLevel[ilvl] = isContinuation;
-                    paragraph.AddAnnotation(new ContinuationInfo { IsContinuation = isContinuation });
-
                     if (paraMarkDeleted)
                     {
-                        // savedStartOverrideAlreadyUsed/savedContinuationByLevel were captured
-                        // under this same paraMarkDeleted condition above, so both are non-null here.
+                        // savedStartOverrideAlreadyUsed was captured under this same
+                        // paraMarkDeleted condition above, so it is non-null here.
                         // The deleted paragraph keeps its annotations (it still renders a
                         // number) but contributes nothing to what follows.
                         previous = savedPrevious;
                         startOverrideAlreadyUsed.Clear();
                         startOverrideAlreadyUsed.AddRange(savedStartOverrideAlreadyUsed!);
                         listItemInfoInEffectForStartOverride[ilvl] = savedListItemInfoInEffect;
-                        Array.Copy(savedContinuationByLevel!, continuationByLevel, continuationByLevel.Length);
                     }
                     else
                     {
@@ -1576,8 +1485,61 @@ namespace Docxodus
             }
         }
 
+        /// <summary>One level of a list paragraph's number: its text (null for a level the list does not
+        /// define), whether that shows other levels' counters too ("2.1"), and whether it is only counters and
+        /// punctuation.</summary>
+        internal readonly record struct ListItemLevel(string? Text, bool ShowsOtherLevels, bool IsPlain);
+
+        /// <summary>The number of a list paragraph level by level, from the list's first level to the
+        /// paragraph's own, with the list and the counters it stands at.</summary>
+        internal sealed record ListItemLevels(int? AbstractNumId, int[] Counters, IReadOnlyList<ListItemLevel> Levels);
+
+        private static readonly HashSet<string?> PlainNumberFormats = new()
+        {
+            null, "decimal", "decimalZero", "lowerLetter", "upperLetter", "lowerRoman", "upperRoman",
+        };
+
+        /// <summary>
+        /// <see cref="RetrieveListItem(WordprocessingDocument, XElement)"/> for every level down to the
+        /// paragraph's own, or null for a paragraph that is not a list item. With
+        /// <paramref name="numeralsOnly"/> the words around the counters ("Section ") are left out.
+        /// </summary>
+        internal static ListItemLevels? RetrieveListItemLevels(WordprocessingDocument wordDoc, XElement paragraph,
+            bool numeralsOnly, ListItemRetrieverSettings? settings)
+        {
+            if (RetrieveListItem(wordDoc, paragraph, settings) == null)
+                return null;
+            var listItemInfo = paragraph.Annotation<ListItemInfo>()!;
+            var counters = paragraph.Annotation<LevelNumbers>()!.LevelNumbersArray;
+            var stylesXDoc = wordDoc.MainDocumentPart!.StyleDefinitionsPart!.GetXDocument();
+            string language = GetLanguageIdentifier(paragraph, stylesXDoc);
+            var levels = new List<ListItemLevel>();
+            for (int ilvl = 0; ilvl <= GetParagraphLevel(paragraph); ilvl++)
+            {
+                // A malformed list may define the paragraph's level and none above it.
+                if (listItemInfo.Lvl(ilvl) == null)
+                {
+                    levels.Add(default);
+                    continue;
+                }
+                string lvlText = (string?)listItemInfo.Lvl(ilvl)?.Elements(W.lvlText).Attributes(W.val).FirstOrDefault() ?? "";
+                var tokens = GetFormatTokens(lvlText).ToList();
+                var counted = tokens.Where(t => t.Length == 2 && t[0] == '%' && char.IsDigit(t[1])).ToList();
+                string words = string.Concat(tokens.Except(counted));
+                levels.Add(new ListItemLevel(
+                    FormatListItem(listItemInfo, counters, ilvl, lvlText, stylesXDoc, language, settings, numeralsOnly).Trim(),
+                    ShowsOtherLevels: counted.Distinct().Count() > 1,
+                    IsPlain: counted.Count > 0
+                        && counted.All(t => PlainNumberFormats.Contains(
+                            (string?)listItemInfo.Lvl(t[1] - '1')?.Elements(W.numFmt).Attributes(W.val).FirstOrDefault()))
+                        && !words.Any(c => char.IsDigit(c) || (!numeralsOnly && char.IsLetter(c)))));
+            }
+            return new ListItemLevels(listItemInfo.AbstractNumId, counters, levels);
+        }
+
         private static string FormatListItem(ListItemInfo lii, int[] levelNumbers, int ilvl,
-            string lvlText, XDocument styles, string languageCultureName, ListItemRetrieverSettings? settings)
+            string lvlText, XDocument styles, string languageCultureName, ListItemRetrieverSettings? settings,
+            bool numeralsOnly = false)
         {
             string[] formatTokens = GetFormatTokens(lvlText).ToArray();
             XElement lvl = lii.Lvl(ilvl)!;
@@ -1585,7 +1547,7 @@ namespace Docxodus
             string listItem = formatTokens.Select((t, l) =>
             {
                 if (t.Substring(0, 1) != "%")
-                    return t;
+                    return numeralsOnly ? string.Concat(t.Where(c => !char.IsLetter(c) && !char.IsWhiteSpace(c))) : t;
                 int indentationLevel;
                 if (!Int32.TryParse(t.Substring(1), out indentationLevel))
                     return t;

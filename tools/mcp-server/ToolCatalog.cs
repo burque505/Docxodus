@@ -74,7 +74,7 @@ internal static class ToolCatalog
               "type": "object",
               "properties": {
                 "sessionId": { "type": "string" },
-                "format": { "type": "string", "enum": ["markdown", "html", "text", "blocks", "info", "version", "anchor_locations", "semantic_changes", "verification", "check_preconditions", "styles", "formatting", "spans", "manifest"], "description": "markdown/text: anchor-addressed projection; html: rendered HTML; blocks: structural metadata; info: version plus edit and per-anchor section facts; version: monotonic document version; anchor_locations: read-only versioned anchor-to-part and element-child XPath lookup without saving; omit anchorIds for all keys, [] for none; semantic_changes: stable versioned changes from the session's opening package to its current state; verification: bounded default deliverable gate over the session's clean-save checkpoint, using opening bytes as baseline; check_preconditions: read-only guard evaluation; styles: explicit style catalog and resolved properties; formatting: direct/effective paragraph and run formatting for anchorId; spans: mutation-compatible inline spans for anchorId; manifest: deterministic package entries, hashes, relationships, facts, and validation findings for the full logical package." },
+                "format": { "type": "string", "enum": ["markdown", "html", "text", "blocks", "info", "version", "anchor_locations", "semantic_changes", "verification", "check_preconditions", "styles", "outline", "formatting", "spans", "manifest"], "description": "markdown/text: anchor-addressed projection; html: rendered HTML; blocks: structural metadata; info: version plus edit and per-anchor section facts; version: monotonic document version; anchor_locations: read-only versioned anchor-to-part and element-child XPath lookup without saving; omit anchorIds for all keys, [] for none; semantic_changes: stable versioned changes from the session's opening package to its current state; verification: bounded default deliverable gate over the session's clean-save checkpoint, using opening bytes as baseline; check_preconditions: read-only guard evaluation; styles: explicit style catalog and resolved properties; outline: the body's headings as Word's Navigation Pane lists them (anchorId, level 1-9, text, styleId, lastAnchorId); formatting: direct/effective paragraph and run formatting for anchorId; spans: mutation-compatible inline spans for anchorId; manifest: deterministic package entries, hashes, relationships, facts, and validation findings for the full logical package." },
                 "anchorIds": { "type": ["array", "null"], "items": { "type": "string" }, "description": "anchor_locations only: requested projected keys. Omitted/null selects all; [] selects none. Unknown keys map to null. Paths are namespace-independent one-based element-child XPaths." },
                 "anchorId": { "type": "string", "description": "Optional for markdown/html/text/info and guard evaluation; required for formatting/spans; not accepted for manifest, semantic_changes, verification, or anchor_locations. Those formats always describe the complete package/document. Returned formatting/list/section anchors and span ranges can be passed unchanged to mutation tools." },
                 "citation": {
@@ -280,16 +280,16 @@ internal static class ToolCatalog
             """),
         new ToolDefinition(
             "docxodus_edit",
-            "Insert, replace, move, delete, or undo/redo text and blocks, addressed by anchor id.",
+            "Insert, replace, move, delete, or undo/redo text and blocks, addressed by anchor id. move_block_range moves a run of top-level blocks as one edit, as Word's Navigation Pane drags a heading with its text (lastAnchorId from docxodus_get_content format=outline). update_fields is Word's Update Field (F9): tables of contents rebuilt from the headings, REF fields given their bookmark's current text or number, PAGEREF fields the page from pages, SEQ fields renumbered; a field it cannot work out exactly keeps its result. One undo step, refused while changes are tracked.",
             """
             {
               "type": "object",
               "properties": {
                 "sessionId": { "type": "string" },
                 "preconditions": { "type": "object", "description": "Optional optimistic guards evaluated immediately before the mutation: expectedVersion, anchorId, expectedContentHash, expectedText/expectedTextRange, expectedKind, expectedScope, expectedMatchCount." },
-                "action": { "type": "string", "enum": ["insert_paragraph", "replace_text", "replace_text_range", "replace_text_at_span_with_format", "delete_block", "move_block", "delete_range", "delete_section", "split_paragraph", "merge_paragraphs", "undo", "redo"] },
+                "action": { "type": "string", "enum": ["insert_paragraph", "replace_text", "replace_text_range", "replace_text_at_span_with_format", "delete_block", "move_block", "move_block_range", "delete_range", "delete_section", "split_paragraph", "merge_paragraphs", "update_fields", "undo", "redo"] },
                 "anchorId": { "type": "string", "description": "Target block. Required for every action except delete_range, delete_section, undo, redo." },
-                "position": { "type": "string", "enum": ["before", "after"], "description": "insert_paragraph/move_block only." },
+                "position": { "type": "string", "enum": ["before", "after"], "description": "insert_paragraph/move_block/move_block_range only." },
                 "markdown": { "type": "string", "description": "insert_paragraph/replace_text payload, in the supported markdown subset (headings, bullet/ordered lists, bold/italic/code/strike, links, hard breaks)." },
                 "find": { "type": "string", "description": "replace_text_range: literal text to find within the block. A find that matches nothing fails with text_not_found (both directly and as a batch step); pass preconditions.expectedMatchCount 0 to assert absence as a successful no-op instead." },
                 "replace": { "type": "string", "description": "replace_text_range / replace_text_at_span_with_format: replacement text." },
@@ -313,22 +313,35 @@ internal static class ToolCatalog
                 "characterOffset": { "type": "integer", "description": "split_paragraph: character offset to split at." },
                 "secondAnchorId": { "type": "string", "description": "merge_paragraphs: the paragraph absorbed into anchorId." },
                 "sourceAnchorId": { "type": "string", "description": "move_block: block to relocate." },
-                "targetAnchorId": { "type": "string", "description": "move_block: reference block used with position." }
+                "targetAnchorId": { "type": "string", "description": "move_block/move_block_range: reference block used with position." },
+                "firstAnchorId": { "type": "string", "description": "move_block_range: first top-level block of the run (inclusive)." },
+                "lastAnchorId": { "type": "string", "description": "move_block_range: last top-level block of the run (inclusive, after firstAnchorId). Refused across a section break, when it would cut a bookmark or comment range, onto a target inside the run, and under tracked changes." },
+                "range": {
+                  "type": "object",
+                  "description": "update_fields: only the fields that start in these paragraphs. Omitted: every field in the body. The document stops asking Word to update its fields on open only when none is left that needs it.",
+                  "properties": {
+                    "startAnchorId": { "type": "string" }, "startOffset": { "type": "integer" },
+                    "endAnchorId": { "type": "string" }, "endOffset": { "type": "integer" }
+                  },
+                  "required": ["startAnchorId", "startOffset", "endAnchorId", "endOffset"]
+                },
+                "pages": { "type": "object", "additionalProperties": { "type": ["string", "integer"] }, "description": "update_fields: the page each paragraph is on, keyed by anchor id or unid, for contents entries and PAGEREF results (a paragraph missing here keeps the page its fields show; a contents entry that had none shows 1 and is marked dirty)." },
+                "tablesOfContentsOnly": { "type": "boolean", "description": "update_fields: only tables of contents (Word's Update Table)." }
               },
               "required": ["sessionId", "action"]
             }
             """),
         new ToolDefinition(
             "docxodus_format",
-            "Apply character or paragraph formatting, addressed by anchor id.",
+            "Apply character or paragraph formatting, addressed by anchor id. get_tab_stops reads a paragraph's tab stops in effect, the ones its styles give it and the default tab interval; set_tab_stops makes a list of stops the ones in effect, as Word's Tabs dialog does (the paragraph's own w:tabs holds the stops its styles lack and clears unwanted style stops); set_default_tab_stop sets the document's default tab interval (refused while changes are tracked).",
             """
             {
               "type": "object",
               "properties": {
                 "sessionId": { "type": "string" },
                 "preconditions": { "type": "object", "description": "Optional optimistic mutation guards; omitted preserves legacy behavior." },
-                "action": { "type": "string", "enum": ["apply_format", "apply_format_by_substring", "set_paragraph_style", "set_paragraph_format", "set_list_level", "remove_list_membership", "apply_list_format"] },
-                "anchorId": { "type": "string" },
+                "action": { "type": "string", "enum": ["apply_format", "apply_format_by_substring", "set_paragraph_style", "set_paragraph_format", "set_list_level", "remove_list_membership", "apply_list_format", "get_tab_stops", "set_tab_stops", "set_default_tab_stop"] },
+                "anchorId": { "type": "string", "description": "Required by every action except set_default_tab_stop." },
                 "span": { "type": "object", "properties": { "start": { "type": "integer" }, "length": { "type": "integer" } }, "description": "apply_format only. Omit to format the whole block." },
                 "substring": { "type": "string", "description": "apply_format_by_substring: literal text within the block to format." },
                 "format": {
@@ -389,9 +402,23 @@ internal static class ToolCatalog
                   }
                 },
                 "levelDelta": { "type": "integer", "description": "set_list_level: +1 indents one level, -1 outdents one level." },
-                "listFormat": { "type": "string", "enum": ["bullet", "decimal", "lowerLetter", "upperLetter", "lowerRoman", "upperRoman", "decimalParenthesis", "lowerLetterParenthesis", "upperLetterParenthesis", "lowerRomanParenthesis", "upperRomanParenthesis", "none"], "description": "apply_list_format: converts the paragraph into (or out of) a real, auto-numbered Word list. *Parenthesis variants render '(1)'/'(a)'/'(i)'." }
+                "listFormat": { "type": "string", "enum": ["bullet", "decimal", "lowerLetter", "upperLetter", "lowerRoman", "upperRoman", "decimalParenthesis", "lowerLetterParenthesis", "upperLetterParenthesis", "lowerRomanParenthesis", "upperRomanParenthesis", "none"], "description": "apply_list_format: converts the paragraph into (or out of) a real, auto-numbered Word list. *Parenthesis variants render '(1)'/'(a)'/'(i)'." },
+                "stops": {
+                  "type": "array",
+                  "description": "set_tab_stops: the tab stops to have in effect; an empty array clears them all (default tabs remain).",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "positionTwips": { "type": "integer", "description": "From the paragraph's leading text edge (not its indent); 1440 = 1 inch. -31680 to 31680." },
+                      "alignment": { "type": "string", "enum": ["left", "center", "right", "decimal", "bar"], "description": "Default left. A bar tab draws a vertical line." },
+                      "leader": { "type": "string", "enum": ["none", "dot", "hyphen", "underscore", "heavy", "middleDot"], "description": "Default none." }
+                    },
+                    "required": ["positionTwips"]
+                  }
+                },
+                "twips": { "type": "integer", "minimum": 1, "description": "set_default_tab_stop: the default tab interval (w:defaultTabStop), twips; 720 = 0.5 inch." }
               },
-              "required": ["sessionId", "action", "anchorId"]
+              "required": ["sessionId", "action"]
             }
             """),
         new ToolDefinition(
@@ -558,9 +585,9 @@ internal static class ToolCatalog
               "type": "object",
               "properties": {
                 "sessionId": { "type": "string" },
-                "action": { "type": "string", "enum": ["list_hyperlinks", "add_hyperlink", "update_hyperlink", "remove_hyperlink", "list_bookmarks", "add_bookmark", "rename_bookmark", "move_bookmark", "remove_bookmark", "insert_cross_reference"] },
+                "action": { "type": "string", "enum": ["list_hyperlinks", "add_hyperlink", "update_hyperlink", "remove_hyperlink", "list_bookmarks", "add_bookmark", "rename_bookmark", "move_bookmark", "remove_bookmark", "add_reference_bookmark", "insert_cross_reference"] },
                 "scope": { "type": "string", "enum": ["body", "headers", "footers", "footnotes", "endnotes", "comments", "all"], "description": "Listing only; default all." },
-                "anchorId": { "type": "string", "description": "add_hyperlink: containing paragraph anchor." },
+                "anchorId": { "type": "string", "description": "add_hyperlink: containing paragraph anchor. insert_cross_reference: the paragraph the field goes into. add_reference_bookmark: the paragraph (a heading or numbered item) a cross-reference will target." },
                 "startOffset": { "type": "integer", "description": "add_hyperlink/add_bookmark/move_bookmark: zero-based character boundary." },
                 "length": { "type": "integer", "minimum": 1, "description": "add_hyperlink: selected text length." },
                 "kind": { "type": "string", "enum": ["external", "internal"], "description": "add/update_hyperlink target representation." },
@@ -579,7 +606,11 @@ internal static class ToolCatalog
                   "properties": {
                     "referenceNumber": { "type": "boolean", "description": "Emit the \\r switch — show the target's auto-number instead of its text (cached 0 when the target is unnumbered)." },
                     "hyperlink": { "type": "boolean", "description": "Emit the \\h switch — the field jumps to the bookmark like a link." },
-                    "includePosition": { "type": "boolean", "description": "Emit the \\p switch — show above/below relative position (appended to the number under referenceNumber)." }
+                    "includePosition": { "type": "boolean", "description": "Emit the \\p switch — show above/below relative position (appended to the number under referenceNumber)." },
+                    "pageNumber": { "type": "boolean", "description": "Insert a PAGEREF (the target's page number) instead of a REF; the number switches do not apply." },
+                    "numberNoContext": { "type": "boolean", "description": "Emit the \\n switch — the target's number without the context of higher levels." },
+                    "numberFullContext": { "type": "boolean", "description": "Emit the \\w switch — the target's number in full context." },
+                    "cachedPage": { "type": "string", "description": "With pageNumber: the page to cache as the result; omitted caches 1 and marks the field dirty so Word updates it." }
                   }
                 },
                 "referenceNumber": { "type": "boolean", "description": "insert_cross_reference. Deprecated: use options.referenceNumber." },
@@ -627,8 +658,8 @@ internal static class ToolCatalog
                 "text": { "type": "string", "description": "fill_text payload." },
                 "markdown": { "type": "string", "description": "fill_rich_text payload." },
                 "checked": { "type": "boolean", "description": "set_checked value." },
-                "value": { "type": "string", "description": "set_date ISO-8601 value or select_item value/display text." },
-                "displayText": { "type": "string", "description": "Optional set_date displayed text." },
+                "value": { "type": "string", "description": "set_date ISO-8601 date or timestamp (its calendar day is stored at midnight UTC; the time of day is not kept) or select_item value/display text." },
+                "displayText": { "type": "string", "description": "Optional set_date displayed text. When omitted the control shows the day in its own date format and language, for example 15 December 2026." },
                 "imageBase64": { "type": "string", "description": "fill_picture raw image bytes as base64." },
                 "sectionAnchorId": { "type": "string", "description": "add_repeating_item section control." },
                 "afterItemAnchorId": { "type": "string", "description": "Optional direct item after which the clone is inserted." },
@@ -684,6 +715,7 @@ internal static class ToolCatalog
               "type": "object",
               "properties": {
                 "baselinePath": { "type": "string", "description": "The earlier version both forms diff against." },
+                "minimumAnchorWordCount": { "type": "integer", "minimum": 0, "description": "How many words a paragraph needs before the comparison uses it to line the documents up (default 0). Use 2 when each entry starts with a one-word number label on its own line, such as P1, so entries are matched by their text." },
                 "revisedPath": { "type": "string", "description": "Two-way: the later version. Exactly one of revisedPath / revisedPaths." },
                 "revisedPaths": { "type": "array", "items": { "type": "string" }, "minItems": 2, "description": "Two or more revised versions. Merged into ONE redline by default (consolidate); with mode=fan_out, compared separately into one redline each." },
                 "mode": { "type": "string", "enum": ["consolidate", "fan_out"], "default": "consolidate", "description": "How revisedPaths is interpreted. fan_out compares the baseline against each entry separately and needs outputPaths; the baseline is read once for the whole set rather than once per entry." },

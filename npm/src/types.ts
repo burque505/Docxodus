@@ -467,6 +467,13 @@ export interface DocxDiffSettings {
   moveSimilarityThreshold?: number;
   /** Minimum word tokens for a fuzzy move (default 3). */
   moveMinimumWordCount?: number;
+  /**
+   * How many words a paragraph needs before the comparison uses it to line the two documents up
+   * (default 0). Set 2 when each entry starts with a one-word number label on its own line, such as
+   * "P1": the entries are then matched by their text and each label shows only its number changing.
+   * @example docxDiffCompare(original, revised, { minimumAnchorWordCount: 2 })
+   */
+  minimumAnchorWordCount?: number;
   /** Revision projection grain (default Fine). */
   revisionGranularity?: DocxDiffRevisionGranularity;
   /** Run-format comparison policy (default ModeledOnly). */
@@ -1944,10 +1951,9 @@ export interface DocxodusWasmExports {
       bookmarkName: string,
       optionsJson: string
     ) => string;
-    /** Optional: absent on older WASM bundles. */
-    AddReferenceBookmark?: (handle: number, anchor: string) => string;
-    /** Optional: absent on older WASM bundles. `optionsJson`: "" or a serialized {@link UpdateFieldsOptions}. */
-    UpdateFields?: (handle: number, optionsJson: string) => string;
+    AddReferenceBookmark: (handle: number, anchor: string) => string;
+    /** `optionsJson`: "" or a serialized {@link UpdateFieldsOptions}. */
+    UpdateFields: (handle: number, optionsJson: string) => string;
     InsertEndnote: (handle: number, anchor: string, characterOffset: number, markdown: string) => string;
     // Native Word comment authoring (issue #300). spanJson: "" = whole block, else
     // {"start":n,"length":n}; initials/date: "" = absent (date is ISO-8601).
@@ -3128,6 +3134,9 @@ export interface EditorRenderOptions {
    *  ids match {@link CommentListEntry.id}. Default false, which renders exactly as the
    *  comment-less `RenderHtml` / `RenderBlockHtml` do. */
   comments?: boolean;
+  /** Wrap REF / PAGEREF / NOTEREF results in `data-field` spans that name their bookmark
+   *  (`data-field-target`), so an editor can keep each reference whole and follow it. Default false. */
+  referenceFields?: boolean;
 }
 
 /** Options for `DocxSession.insertTable`. */
@@ -3592,9 +3601,10 @@ export interface CrossBlockMatch {
 /** Options for {@link DocxSession.updateFields}. */
 export interface UpdateFieldsOptions {
   /** Only the fields that start in these paragraphs; absent: every field in the body (and the
-   *  document then no longer asks Word to update its fields on open). */
+   *  document stops asking Word to update its fields on open once none is left that needs it). */
   range?: DocumentRange;
-  /** The page each paragraph is on (keyed by anchor id or unid), for contents entries and PAGEREF. */
+  /** The page each paragraph is on (keyed by anchor id or unid), for contents entries and PAGEREF.
+   *  A paragraph missing here keeps the page its fields show. */
   pages?: Record<string, string>;
   /** Only tables of contents (Word's Update Table). */
   tablesOfContentsOnly?: boolean;

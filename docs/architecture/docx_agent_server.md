@@ -274,7 +274,8 @@ See [history clients](../history-clients.md#mcp) for fields, precise counters, a
 regex-based syntax strip — an approximation, not a real markdown parser; use `markdown` for
 anything that needs to survive a write-back), `blocks` (every addressable block's
 `BlockMetadata` — style id/name, outline level, list facts), `styles` (the document's style catalog
-with resolved high-signal properties), `formatting` (explicit direct/effective paragraph and run
+with resolved high-signal properties), `outline` (the headings as Word's Navigation Pane lists
+them, each with the `lastAnchorId` that `move_block_range` takes), `formatting` (explicit direct/effective paragraph and run
 formatting for `anchorId`), `spans` (enumerable mutation-compatible inline spans for `anchorId`),
 `manifest` (the full deterministic OPC inventory, three package identities, relationships, facts,
 and validation findings described in [`package_manifests.md`](package_manifests.md)),
@@ -338,8 +339,8 @@ All search modes accept the exact citation token and attach a citation envelope 
 
 ### `docxodus_edit` — text/block CRUD + undo/redo
 
-`insert_paragraph`, `replace_text`, `replace_text_range`, `delete_block`, `delete_range`,
-`replace_text_at_span_with_format`, `delete_section`, `split_paragraph`, `merge_paragraphs`,
+`insert_paragraph`, `replace_text`, `replace_text_range`, `delete_block`, `move_block`,
+`move_block_range`, `delete_range`, `replace_text_at_span_with_format`, `update_fields`, `delete_section`, `split_paragraph`, `merge_paragraphs`,
 `undo`, `redo` → the identically-named
 (camelCase) `DocxSession` methods via `DocxSessionOps`. `replace_text_at_span_with_format` takes an
 optional `deletedTextSide` (`before`/`after`) that puts a zero-length insertion on that side of tracked
@@ -359,6 +360,12 @@ one either/or `w:ind` slot (setting one evicts the other, both in one call is re
 single/480 = double; `exact`/`atLeast` = twips); `topBorder`/`bottomBorder` add or replace a
 `w:pBdr` edge, `clearBorders` removes the whole `w:pBdr` before either is applied in the same
 call), `set_list_level`, `remove_list_membership`, `apply_list_format`.
+
+`get_tab_stops` is a read: the paragraph's stops in effect, the ones its styles give it, and the
+default tab interval. `set_tab_stops` takes `stops`, an array of
+`{positionTwips, alignment?, leader?}`, and makes them the ones in effect; an empty array clears
+them all. `set_default_tab_stop` takes `twips` and no `anchorId`, and is refused while changes are
+tracked.
 
 ### `docxodus_create` — new structural content
 
@@ -458,8 +465,11 @@ the first-class session API, and `insert_cross_reference` (issue #545) inserts a
 on refresh, not an internal hyperlink. Its `options.referenceNumber`/`hyperlink`/`includePosition`
 booleans are the field's `\r`/`\h`/`\p` switches, and the written `w:fldSimple` carries a
 cached result run (the bookmarked text, or the target's auto-number under `referenceNumber`) so
-non-recomputing renderers show a faithful snapshot. A missing or incoherent bookmark fails with
-`missing_bookmark_target`. Hyperlink targets use `kind: "external"|"internal"`; bookmark
+non-recomputing renderers show a faithful snapshot. `options.numberNoContext`
+(`\n`) and `numberFullContext` (`\w`) are the other number switches; `pageNumber` writes a `PAGEREF`
+whose cached result is `cachedPage` (or a dirty `1`). `add_reference_bookmark` takes the `anchorId`
+of a heading or numbered item and returns, as `bookmarkName`, the hidden `_Ref` bookmark over it. A
+missing or incoherent bookmark fails with `missing_bookmark_target`. Hyperlink targets use `kind: "external"|"internal"`; bookmark
 ranges use `startAnchorId`/`startOffset` and `endAnchorId`/`endOffset`. List actions accept the
 same numeric `ProjectionScopes` flag mask as the core API, comments included — a comment
 paragraph is anchor-addressable and owns its own hyperlink relationships like any other story.
@@ -642,6 +652,18 @@ mode rather than a loop of two-way calls is that the baseline is read **once** f
 the read is the largest stage of a comparison, so a loop pays for the baseline once per
 counterparty. A revised version that fails carries its `error` and the rest of the fan-out still
 completes.
+
+Some documents put a one-word number label on its own line before each entry: "P1", then the
+entry's text, then "P2", and so on. Adding or removing an entry changes every later label, and the
+comparison can then report the entries' unchanged text as moved. A minimum anchor word count of 2
+tells it that a paragraph needs at least two words before it is used to line the documents up. The
+entries are then matched by their text, and each label shows only its number changing. It works in
+all three forms, and the default is 0:
+
+```json
+{ "baselinePath": "schedule-v1.docx", "revisedPath": "schedule-v2.docx",
+  "outputPath": "changes.docx", "minimumAnchorWordCount": 2 }
+```
 
 It is sessionless because it operates on stored documents, not the open session's state, and it
 is not a `docxodus_mutations` step for the same reason a proof is not: a batch is a sequence of

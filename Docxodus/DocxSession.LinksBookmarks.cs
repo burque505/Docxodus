@@ -41,17 +41,19 @@ public sealed record CrossReferenceOptions
     /// <see cref="NumberFullContext"/> do not apply to it. The session has no page layout, so the
     /// cached result is <see cref="CachedPage"/> when the caller knows it (an editor showing pages
     /// does), else <c>1</c> with the field marked dirty so Word recomputes it on open. With
-    /// <see cref="IncludePosition"/> the cached result is <c>on page N</c>.</summary>
+    /// <see cref="IncludePosition"/> the cached result is <c>on page N</c> and the field always
+    /// dirty, since Word shows <c>above</c> or <c>below</c> for a target on the same page.</summary>
     public bool PageNumber { get; init; }
 
     /// <summary>Emit the <c>\n</c> switch: the bookmarked paragraph's number without the context
-    /// of higher levels. Cached as the target's resolved number without trailing periods, or
-    /// <c>0</c>. Wins over <see cref="ReferenceNumber"/>.</summary>
+    /// of higher levels ("(i)"), or <c>0</c> when it has none. Wins over
+    /// <see cref="ReferenceNumber"/>.</summary>
     public bool NumberNoContext { get; init; }
 
-    /// <summary>Emit the <c>\w</c> switch: the bookmarked paragraph's number in full context.
-    /// Cached as the target's resolved number without trailing periods, or <c>0</c>. Wins over
-    /// <see cref="ReferenceNumber"/> and <see cref="NumberNoContext"/>.</summary>
+    /// <summary>Emit the <c>\w</c> switch: the bookmarked paragraph's number in full context
+    /// ("2.3.1(a)(i)"), or <c>0</c> when it has none. Wins over <see cref="ReferenceNumber"/> and
+    /// <see cref="NumberNoContext"/>. A number whose text in Word is not known (one spelled out in
+    /// words above another, say) is cached without context and the field marked dirty.</summary>
     public bool NumberFullContext { get; init; }
 
     /// <summary>With <see cref="PageNumber"/>: the page number to cache as the field's result.
@@ -370,27 +372,28 @@ public sealed partial class DocxSession
             return pairError;
 
         var opts = options ?? new CrossReferenceOptions();
+        if (opts.CachedPage is { } cachedPage && XmlText.ValidatePayload(cachedPage, anchorId) is { } textError)
+            return EditResult.Fail(textError);
         // One number switch at most: full context wins over no context over relative.
         string? numberSwitch = opts.PageNumber ? null
-            : opts.NumberFullContext ? "\\w"
-            : opts.NumberNoContext ? "\\n"
-            : opts.ReferenceNumber ? "\\r"
+            : opts.NumberFullContext ? Internal.ReferenceNumber.FullContext
+            : opts.NumberNoContext ? Internal.ReferenceNumber.NoContext
+            : opts.ReferenceNumber ? Internal.ReferenceNumber.RelativeContext
             : null;
         bool dirty = false;
         string cached;
         if (opts.PageNumber)
         {
-            dirty = string.IsNullOrEmpty(opts.CachedPage);
-            cached = dirty ? "1" : opts.CachedPage!;
+            // (with \p a target on the field's own page reads "above" or "below", which only Word can tell)
+            dirty = string.IsNullOrEmpty(opts.CachedPage) || opts.IncludePosition;
+            cached = string.IsNullOrEmpty(opts.CachedPage) ? "1" : opts.CachedPage;
         }
         else if (numberSwitch is not null)
         {
-            var prefix = ResolveBookmarkAnchors(bookmarkName)
-                .Select(covered => covered.AutoNumberPrefix)
-                .FirstOrDefault(value => !string.IsNullOrEmpty(value));
-            cached = prefix ?? "0";
-            // \n and \w show the number without its trailing period, as Word does.
-            if (numberSwitch != "\\r" && cached.Length > 1) cached = cached.TrimEnd('.');
+            // A number whose text in Word is not known is cached without context and marked dirty.
+            var number = ReferenceNumberOf(bookmarkName, element, numberSwitch, numeralsOnly: false);
+            dirty = number is null;
+            cached = number ?? ReferenceNumberOf(bookmarkName, element, Internal.ReferenceNumber.NoContext, numeralsOnly: false) ?? "0";
         }
         else
         {
@@ -466,7 +469,53 @@ public sealed partial class DocxSession
             string.Equals(bookmark.Name, bookmarkName, StringComparison.Ordinal))?.Text
         ?? string.Empty;
 
-    private static readonly Regex ReferenceBookmarkNamePattern = new(@"^_Ref\d+$", RegexOptions.CultureInvariant);
+    /// <summary>The number a REF field in <paramref name="fieldParagraph"/> shows for a bookmark: that
+    /// of the first numbered block it covers, <c>0</c> when there is none, or null when Word's text for
+    /// it is not known (see <see cref="Internal.ReferenceNumber"/>).</summary>
+    private string? ReferenceNumberOf(string bookmarkName, XElement fieldParagraph, string numberSwitch, bool numeralsOnly)
+    {
+        var numbered = ResolveBookmarkAnchors(bookmarkName)
+            .FirstOrDefault(covered => !string.IsNullOrEmpty(covered.AutoNumberPrefix));
+        return numbered is not null && FindAnchor(numbered.Anchor.Id)?.Resolve(_doc!) is { } target
+            ? Internal.ReferenceNumber.Resolve(_doc!, target, fieldParagraph, numberSwitch, numeralsOnly)
+            : "0";
+    }
+
+    /// <summary>The bookmark named <paramref name="prefix"/> plus digits that spans exactly
+    /// <paramref name="paragraph"/>'s text, as Word allocates for references to it, or null.</summary>
+    private static string? ParagraphBookmark(
+        IEnumerable<BookmarkInfo> bookmarks, string anchorId, XElement paragraph, string prefix)
+    {
+        int length = RunTextMap.Build(paragraph).FlatText.Length;
+        return bookmarks.FirstOrDefault(b =>
+            b.Name.StartsWith(prefix, StringComparison.Ordinal) && b.Name.Length > prefix.Length
+            && b.Name.Skip(prefix.Length).All(char.IsAsciiDigit) && b.IsPaired && b.IsValid
+            && b.Range is { } r && r.StartAnchorId == anchorId && r.EndAnchorId == anchorId
+            && r.StartOffset == 0 && r.EndOffset == length)?.Name;
+    }
+
+    /// <summary>A name Word would allocate (<paramref name="prefix"/> plus nine digits) that no
+    /// bookmark has.</summary>
+    private string NewHiddenBookmarkName(string prefix)
+    {
+        while (true)
+        {
+            var name = prefix + Random.Shared.Next(100_000_000, 1_000_000_000)
+                .ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (BookmarkStarts(name).Count == 0) return name;
+        }
+    }
+
+    /// <summary>Put a bookmark around everything in <paramref name="paragraph"/>. Its ends are the
+    /// paragraph's own, so what the paragraph holds (a field, a link) is never cut.</summary>
+    private void BookmarkWholeParagraph(XElement paragraph, string name)
+    {
+        var id = NextGlobalBookmarkId();
+        var start = new XElement(W.bookmarkStart, new XAttribute(W.id, id), new XAttribute(W.name, name));
+        if (paragraph.Element(W.pPr) is { } pPr) pPr.AddAfterSelf(start);
+        else paragraph.AddFirst(start);
+        paragraph.Add(new XElement(W.bookmarkEnd, new XAttribute(W.id, id)));
+    }
 
     /// <summary>
     /// The hidden bookmark a cross-reference to a whole paragraph targets — what Word allocates
@@ -486,30 +535,18 @@ public sealed partial class DocxSession
         if (paragraph is null || paragraph.Name != W.p)
             return EditResult.Fail(EditErrorCode.AnchorWrongKind,
                 "AddReferenceBookmark requires a paragraph/heading/list-item anchor", anchorId);
-        int length = RunTextMap.Build(paragraph).FlatText.Length;
-        var id = target.Anchor.Id;
-        var existing = ListBookmarks().FirstOrDefault(bookmark =>
-            ReferenceBookmarkNamePattern.IsMatch(bookmark.Name) && bookmark.IsPaired && bookmark.IsValid
-            && bookmark.Range is { } r && r.StartAnchorId == id && r.EndAnchorId == id
-            && r.StartOffset == 0 && r.EndOffset == length);
-        if (existing is not null)
-            return new EditResult { Success = true, BookmarkName = existing.Name, Modified = new[] { target.Anchor } };
+        if (ParagraphBookmark(ListBookmarks(), target.Anchor.Id, paragraph, "_Ref") is { } existing)
+            return new EditResult { Success = true, BookmarkName = existing, Modified = new[] { target.Anchor } };
 
-        string name;
-        do name = "_Ref" + Random.Shared.Next(100_000_000, 1_000_000_000)
-            .ToString(System.Globalization.CultureInfo.InvariantCulture);
-        while (BookmarkStarts(name).Count != 0);
+        var name = NewHiddenBookmarkName("_Ref");
         var common = ValidateBookmarkMutation(name, requireValidName: false);
         if (common is not null) return common;
-        var endpoints = ValidateDocumentRange(new DocumentRange(id, 0, id, length));
-        if (endpoints.Error is not null) return endpoints.Error;
-        var bookmarkId = NextGlobalBookmarkId();
         _history.RecordPreOp(TakeSnapshot());
         try
         {
-            InsertRangeMarkers(endpoints, bookmarkId, name);
+            BookmarkWholeParagraph(paragraph, name);
             InvalidateProjectionCache();
-            return new EditResult { Success = true, BookmarkName = name, Modified = EndpointAnchors(endpoints) };
+            return new EditResult { Success = true, BookmarkName = name, Modified = new[] { target.Anchor } };
         }
         catch (Exception ex)
         {
