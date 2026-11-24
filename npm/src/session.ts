@@ -1835,6 +1835,21 @@ export class DocxSession {
     return JSON.parse(this.wasm.SetStyle(this.handle, JSON.stringify(op))) as EditResult;
   }
 
+  /** The styles of another document or template (`.docx`, `.dotx`, `.docm`, `.dotm`), as
+   *  `listStyles` lists this one's; throws when the bytes are not a Word package. */
+  listStylesIn(bytes: Uint8Array): StyleInfo[] {
+    const parsed = JSON.parse(this.wasm.ListStylesIn(imageBytesToBase64(bytes))) as StyleInfo[] | { error: { code: string; message: string } };
+    if (!Array.isArray(parsed)) throw new Error(parsed.error.message);
+    return parsed;
+  }
+
+  /** Copy styles (`styleIds`, ids in the other file) from another document or template into this
+   *  one, as Word's Organizer does: a style of the same name is replaced; based-on and linked
+   *  styles this document lacks come along. One undo step; re-render the whole document. */
+  copyStyles(bytes: Uint8Array, styleIds: string[]): EditResult {
+    return JSON.parse(this.wasm.CopyStyles(this.handle, imageBytesToBase64(bytes), JSON.stringify(styleIds))) as EditResult;
+  }
+
   /** Set paragraph alignment / indent / page-break-before (omitted fields are left unchanged). */
   setParagraphFormat(anchorId: string, op: ParagraphFormatOp): EditResult {
     return JSON.parse(this.wasm.SetParagraphFormat(this.handle, anchorId, JSON.stringify(op))) as EditResult;

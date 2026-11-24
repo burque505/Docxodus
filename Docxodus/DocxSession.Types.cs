@@ -2250,6 +2250,9 @@ public enum EditErrorCode
     /// make a loop, a following style that is not a paragraph style, paragraph formatting on a
     /// character style, or a highlight (Word's styles have none).</summary>
     InvalidStyleDefinition,
+    /// <summary>The file <see cref="DocxSession.CopyStyles"/> is to copy styles from is not a Word
+    /// document or template.</summary>
+    InvalidStyleSource,
 
     /// <summary>A table-styling value the op cannot express: a column-width list whose length
     /// doesn't match the table's column count (or a non-positive width), a shading fill that is
