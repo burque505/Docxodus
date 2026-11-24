@@ -5161,6 +5161,63 @@ export class DocxEditor {
     return true;
   }
 
+  /**
+   * PgUp and PgDn as Word has them: the view scrolls a screenful (less a line or two, so some text
+   * stays in sight) and the caret lands where it was on the screen, in the paragraph now under that
+   * spot; with Shift the selection's moving end goes there and the other end stays. Where the view
+   * can scroll no further, the caret goes to the story's start or end. Returns true when it handled
+   * the key.
+   */
+  private moveByScreen(ev: KeyboardEvent): boolean {
+    const down = ev.key === "PageDown";
+    const ends = this.selectionEnds();
+    if (!ends) return false;
+    const block = this.editableBlockOf(ends.focus.node);
+    const scroller = this.scroller();
+    if (!block || !scroller) return false;
+    const story = this.storyBlocks(block).filter((b) => b.getBoundingClientRect().height > 0);
+    if (story.length === 0) return false;
+    ev.preventDefault();
+    const caret = caretRect(ends.focus) ?? block.getBoundingClientRect();
+    const x = caret.left, y = caret.top + Math.min(caret.height, 20) / 2;
+    const isPage = scroller === document.scrollingElement;
+    const height = isPage ? window.innerHeight : scroller.clientHeight;
+    const before = scroller.scrollTop;
+    scroller.scrollTop += (down ? 1 : -1) * Math.max(40, height - 48);
+    let point: DomSelectionPoint;
+    if (scroller.scrollTop === before) {
+      // (the view is at its end already: Word goes on to the story's start or end)
+      point = DocxEditor.blockEdge(down ? story[story.length - 1] : story[0], down);
+    } else {
+      point = this.pointNearScreenY(story, x, y) ?? DocxEditor.blockEdge(down ? story[story.length - 1] : story[0], down);
+    }
+    if (ev.shiftKey) {
+      this.selectBetween(ends.anchor, point);
+      this.revealPoint(point);
+    } else {
+      this.moveCaretTo(point);
+    }
+    return true;
+  }
+
+  /** The text position in `story` at screen point (x, y): in the block under y, else the nearest
+   *  block below it (or the last above it); null when the story has no block there. */
+  private pointNearScreenY(story: HTMLElement[], x: number, y: number): DomSelectionPoint | null {
+    // (blocks run down the screen in story order: a binary search for the first ending below y)
+    let lo = 0, hi = story.length - 1, found = story.length;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (story[mid].getBoundingClientRect().bottom >= y) { found = mid; hi = mid - 1; } else lo = mid + 1;
+    }
+    const target = story[Math.min(found, story.length - 1)];
+    const box = target.getBoundingClientRect();
+    const inside = y >= box.top && y <= box.bottom;
+    const py = inside ? y : found >= story.length ? box.bottom - 2 : box.top + 2;
+    const point = caretPointFromClient(document, Math.min(Math.max(x, box.left + 1), box.right - 1), py);
+    if (point && this.editableBlockOf(point.node) === target) return point;
+    return DocxEditor.blockEdge(target, found >= story.length);
+  }
+
   /** Ctrl+A: the whole story the caret is in (the body, or the header or footer being edited). */
   private selectStory(el: HTMLElement): void {
     const story = this.storyBlocks(el);
@@ -5410,6 +5467,10 @@ export class DocxEditor {
     // Up / Down (Ctrl+Up / Ctrl+Down: by paragraph): on into the next or previous paragraph.
     if (!ev.shiftKey && !ev.altKey && !ev.metaKey && (ev.key === "ArrowUp" || ev.key === "ArrowDown")) {
       if (this.moveCaretByLineKey(ev)) return true;
+    }
+    // PgUp / PgDn (with Shift: selecting): a screenful up or down, as in Word.
+    if (!ctrl && !ev.altKey && (ev.key === "PageUp" || ev.key === "PageDown")) {
+      if (this.moveByScreen(ev)) return true;
     }
     const blocks = this.crossBlockSelection();
     if (!blocks || !this.crossBlockEditable(blocks)) return false;

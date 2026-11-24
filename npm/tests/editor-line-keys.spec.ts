@@ -176,3 +176,83 @@ for (const paginated of [false, true]) {
     expect(await focusInView()).toBe(true);
   });
 }
+
+for (const paginated of [false, true]) {
+  test(`PgDn / PgUp move a screenful; with Shift they select a screenful at a time (${paginated ? 'page' : 'continuous'} view)`, async ({ page }) => {
+    await page.goto('/test-harness.html');
+    await page.waitForFunction(() => (window as any).DocxodusReady === true, { timeout: 30000 });
+    await page.evaluate(() => {
+      const host = document.createElement('div');
+      host.id = 'lk-host';
+      host.style.height = '420px';
+      document.body.appendChild(host);
+      const r = (window as any).DocxodusEditor.mountRibbon(host, {});
+      r.setExports((window as any).Docxodus);
+      r.openBlank('lk.docx');
+      r.loader.done();
+      (window as any).__ribbon = r;
+    });
+    await page.locator(blocks).first().click();
+    const lines = Array.from({ length: 80 }, (_, i) => `Paragraph ${i + 1} of a long document`);
+    await page.evaluate((t) => (window as any).__ribbon.exec('pasteText', { text: t }), lines.join('\n'));
+    if (paginated) {
+      await page.evaluate(() => (window as any).__ribbon.editor.setPaginated(true));
+      await expect(page.locator(`${HOST} .page-box [data-anchor][contenteditable="true"]`).first()).toBeVisible();
+    }
+    await page.locator(blocks).first().click();
+    await page.keyboard.press('Control+Home');
+    const inView = () => page.evaluate(() => {
+      const sel = getSelection()!;
+      const node = sel.focusNode!;
+      const rect = (node.nodeType === 1 ? node as Element : node.parentElement!).getBoundingClientRect();
+      let el: HTMLElement | null = document.querySelector('#lk-host [data-anchor]');
+      while (el && !(el.scrollHeight > el.clientHeight && /auto|scroll/.test(getComputedStyle(el).overflowY))) el = el.parentElement;
+      const box = el ? el.getBoundingClientRect() : { top: 0, bottom: innerHeight };
+      return rect.bottom >= box.top && rect.top <= box.bottom;
+    });
+    const collapsed = () => page.evaluate(() => getSelection()!.isCollapsed);
+
+    // PgDn: the caret goes a screenful down, in view, the selection still a caret
+    await page.keyboard.press('PageDown');
+    const one = await caret(page);
+    expect(one.block).toBeGreaterThan(3);
+    expect(await inView()).toBe(true);
+    expect(await collapsed()).toBe(true);
+    // a second PgDn goes further
+    await page.keyboard.press('PageDown');
+    const two = await caret(page);
+    expect(two.block).toBeGreaterThan(one.block);
+    // PgUp comes back near the first place
+    await page.keyboard.press('PageUp');
+    const back = await caret(page);
+    expect(back.block).toBeLessThan(two.block);
+    expect(Math.abs(back.block - one.block)).toBeLessThanOrEqual(2);
+
+    // Shift+PgDn from the start selects a screenful at a time; the moving end stays in view
+    await page.keyboard.press('Control+Home');
+    await page.keyboard.press('Shift+PageDown');
+    const s1 = await caret(page);
+    await page.keyboard.press('Shift+PageDown');
+    const s2 = await caret(page);
+    expect(s1.block).toBeGreaterThan(3);
+    expect(s2.block).toBeGreaterThan(s1.block);
+    expect(await inView()).toBe(true);
+    expect(await collapsed()).toBe(false);
+    // the selection runs from the story's start
+    const startsAtTop = await page.evaluate(() => {
+      const sel = getSelection()!;
+      const n = sel.anchorNode!;
+      const el = (n.nodeType === 1 ? n as Element : n.parentElement!).closest('[data-anchor][contenteditable="true"]');
+      return el === document.querySelectorAll('#lk-host [data-anchor][contenteditable="true"]')[0] && sel.anchorOffset === 0;
+    });
+    expect(startsAtTop).toBe(true);
+    // Shift+PgUp takes back a screenful
+    await page.keyboard.press('Shift+PageUp');
+    expect((await caret(page)).block).toBeLessThan(s2.block);
+
+    // PgDn all the way: the story's end
+    await page.keyboard.press('Control+Home');
+    for (let i = 0; i < 40; i++) await page.keyboard.press('PageDown');
+    expect((await caret(page)).block).toBe(79);
+  });
+}
