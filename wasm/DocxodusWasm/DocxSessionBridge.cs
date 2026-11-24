@@ -974,6 +974,13 @@ public static partial class DocxSessionBridge
         DocxSessionOps.ListBookmarks(h, (ProjectionScopes)scopes);
 
     [JSExport]
+    public static string ExpandRangeToFields(int h, string startAnchor, int startOffset, string endAnchor, int endOffset) =>
+        DocxSessionOps.ExpandRangeToFields(h, startAnchor, startOffset, endAnchor, endOffset);
+
+    [JSExport]
+    public static string RepairFields(int h, string anchorId) => DocxSessionOps.RepairFields(h, anchorId);
+
+    [JSExport]
     public static string AddBookmark(int h, string name, string startAnchor, int startOffset,
         string endAnchor, int endOffset) =>
         DocxSessionOps.AddBookmark(h, name, startAnchor, startOffset, endAnchor, endOffset);

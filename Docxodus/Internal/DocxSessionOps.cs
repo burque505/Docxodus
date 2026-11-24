@@ -1070,6 +1070,25 @@ internal static class DocxSessionOps
     public static string AddReferenceBookmark(int handle, string anchorId) =>
         DocxSessionJson.Serialize(SessionRegistry.Get(handle).AddReferenceBookmark(anchorId));
 
+    /// <summary>The range grown to cover every complex field it covers only part of (see
+    /// <see cref="DocxSession.ExpandRangeToFields"/>): <c>{ startAnchorId, startOffset, endAnchorId,
+    /// endOffset }</c>, or <c>null</c> when the range is not one.</summary>
+    public static string ExpandRangeToFields(int handle, string startAnchorId, int startOffset,
+        string endAnchorId, int endOffset)
+    {
+        var r = SessionRegistry.Get(handle).ExpandRangeToFields(
+            new DocumentRange(startAnchorId, startOffset, endAnchorId, endOffset));
+        if (r is null) return "null";
+        // (by hand: the WASM build has no reflection-based serializer)
+        static string Str(string s) => "\"" + System.Text.Json.JsonEncodedText.Encode(s).ToString() + "\"";
+        return "{\"startAnchorId\":" + Str(r.StartAnchorId) + ",\"startOffset\":" + r.StartOffset.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + ",\"endAnchorId\":" + Str(r.EndAnchorId) + ",\"endOffset\":" + r.EndOffset.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}";
+    }
+
+    /// <summary>Take out unpaired field markers in the anchor's part (see <see cref="DocxSession.RepairFields"/>).</summary>
+    public static string RepairFields(int handle, string anchorId) =>
+        DocxSessionJson.Serialize(SessionRegistry.Get(handle).RepairFields(anchorId));
+
     public static string AddBookmark(int handle, string name, string startAnchorId, int startOffset,
         string endAnchorId, int endOffset) =>
         DocxSessionJson.Serialize(SessionRegistry.Get(handle).AddBookmark(name,

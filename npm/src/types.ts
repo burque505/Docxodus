@@ -2011,6 +2011,11 @@ export interface DocxodusWasmExports {
     RemoveRepeatingSectionItem: (handle: number, itemAnchorId: string) => string;
     ListBookmarks: (handle: number, scopes: number) => string;
     AddBookmark: (handle: number, name: string, startAnchor: string, startOffset: number, endAnchor: string, endOffset: number) => string;
+    /** Optional: absent on older WASM bundles. The range grown over every complex field it covers
+     *  only part of, as a serialized {@link DocumentRange}, or "null". */
+    ExpandRangeToFields?: (handle: number, startAnchor: string, startOffset: number, endAnchor: string, endOffset: number) => string;
+    /** Optional: absent on older WASM bundles. Takes out unpaired field markers in the anchor's part. */
+    RepairFields?: (handle: number, anchorId: string) => string;
     RenameBookmark: (handle: number, name: string, newName: string) => string;
     MoveBookmark: (handle: number, name: string, startAnchor: string, startOffset: number, endAnchor: string, endOffset: number) => string;
     RemoveBookmark: (handle: number, name: string) => string;

@@ -163,8 +163,12 @@ namespace Docxodus
                                     FiStack = fis,
                                 };
                             };
-                            // An orphan separate/end with no preceding begin throws here (NullReferenceException
-                            // via FiStack!), exactly as it did before this file was nullable-annotated.
+                            // An orphan separate/end with no begin before it (an edit that cut through a field
+                            // leaves one; Word opens such a document) is not a field marker: passed over, so
+                            // the rest of the part still renders instead of the whole conversion throwing.
+                            if ((e.Attribute(w + "fldCharType")!.Value == "separate" || e.Attribute(w + "fldCharType")!.Value == "end")
+                                && (s.FiStack == null || s.FiStack.Count == 0))
+                                return s;
                             if (e.Attribute(w + "fldCharType")!.Value == "separate")
                             {
                                 Stack<FieldElementTypeInfo> fis = new Stack<FieldElementTypeInfo>(s.FiStack!.Reverse());

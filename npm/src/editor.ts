@@ -265,6 +265,8 @@ export interface DocxEditorExports {
     RemoveBookmark?: (handle: number, name: string) => string;
     AddReferenceBookmark?: (handle: number, anchor: string) => string;
     UpdateFields?: (handle: number, optionsJson: string) => string;
+    ExpandRangeToFields?: (handle: number, startAnchor: string, startOffset: number, endAnchor: string, endOffset: number) => string;
+    RepairFields?: (handle: number, anchorId: string) => string;
     InsertCrossReference?: (handle: number, anchor: string, characterOffset: number, bookmarkName: string, optionsJson: string) => string;
     InsertImage?: (
       handle: number,
@@ -2830,6 +2832,7 @@ export class DocxEditor {
     this.closed = true;
     if (this.typingPause !== null) clearTimeout(this.typingPause);
     this.unwatchLineNumbers();
+    this.unwatchPageFit();
     this.container.removeEventListener("copy", this.onCopy);
     this.container.removeEventListener("cut", this.onCut);
     this.container.removeEventListener("paste", this.onPaste);
@@ -3755,6 +3758,7 @@ export class DocxEditor {
    */
   private mountHtml(fullHtml: string): void {
     this.unwatchLineNumbers();
+    this.unwatchPageFit();
     this.region?.detachPages();
     const parsed = new DOMParser().parseFromString(fullHtml, "text/html");
     const styles = Array.from(parsed.querySelectorAll("style"))
@@ -3806,6 +3810,7 @@ export class DocxEditor {
     this.editRoot = pageRoot;
     if (this.options.editable) this.wireBlocks(pageRoot);
     this.watchLineNumbers(pageRoot);
+    this.watchPageFit(pageRoot);
     this.stampPlanState();
     // The page boxes render their own header/footer margins as inert clones; the region turns
     // the clicked one into the live story in place (Word's edit-in-the-margin), so there is
@@ -3884,6 +3889,98 @@ export class DocxEditor {
     this.lineNumberWatch.observer.disconnect();
     window.clearTimeout(this.lineNumberWatch.timer);
     this.lineNumberWatch = null;
+  }
+
+  // ─── Page view: lay the pages out again when an edit overfills one ─────────
+
+  private pageFitWatch: { observer: MutationObserver; timer: number; pointerDown: boolean;
+    onDown: () => void; onUp: () => void } | null = null;
+  /** The overflow the last re-layout left (a block no page can hold): not laid out again for it. */
+  private pageFitLeft: string | null = null;
+
+  /**
+   * Page view swaps an edited paragraph where it is and does not lay the pages out again, so
+   * typing or Enter near a page's foot can push text past the page's text area, where it is cut
+   * off. Watch the pages: once the edits pause, when a block that could start the next page
+   * reaches past its page's text area, lay the whole document out again, keeping the caret and the
+   * scroll position. (An interim for laying out only the pages from the edit on.)
+   */
+  private watchPageFit(pageRoot: HTMLElement): void {
+    this.unwatchPageFit();
+    if (typeof MutationObserver === "undefined" || typeof window === "undefined") return;
+    const watch = {
+      timer: 0,
+      pointerDown: false,
+      onDown: () => { watch.pointerDown = true; },
+      onUp: () => { watch.pointerDown = false; },
+      observer: new MutationObserver((records) => {
+        // (the line-number layer and the gray field shading are drawn over the pages, not in them)
+        if (records.every((r) => (r.target.nodeType === 1 ? r.target as Element : r.target.parentElement)
+          ?.closest(".docx-line-numbers"))) return;
+        schedule();
+      }),
+    };
+    const schedule = (): void => {
+      window.clearTimeout(watch.timer);
+      watch.timer = window.setTimeout(() => {
+        if (this.closed || !pageRoot.isConnected || this.editRoot !== pageRoot) return;
+        // (not while the mouse is selecting: once it is let go)
+        if (watch.pointerDown) { schedule(); return; }
+        this.refitPages(pageRoot);
+      }, 500);
+    };
+    this.container.addEventListener("pointerdown", watch.onDown);
+    window.addEventListener("pointerup", watch.onUp);
+    watch.observer.observe(pageRoot, { childList: true, subtree: true, characterData: true });
+    this.pageFitWatch = watch;
+  }
+
+  private unwatchPageFit(): void {
+    const watch = this.pageFitWatch;
+    if (!watch) return;
+    watch.observer.disconnect();
+    window.clearTimeout(watch.timer);
+    this.container.removeEventListener("pointerdown", watch.onDown);
+    window.removeEventListener("pointerup", watch.onUp);
+    this.pageFitWatch = null;
+  }
+
+  /** Each block reaching past its page's text area that is not the first on that page (so the next
+   *  page could take it), as one key; null when every page holds its text. */
+  private static pageOverflow(pageRoot: HTMLElement): string | null {
+    const over: string[] = [];
+    const contents = Array.from(pageRoot.querySelectorAll<HTMLElement>(".page-box .page-content"));
+    contents.forEach((content, page) => {
+      const area = content.getBoundingClientRect();
+      if (area.height === 0) return;
+      for (const block of Array.from(content.querySelectorAll<HTMLElement>("[data-anchor]"))) {
+        if (block.parentElement?.closest("[data-anchor]")) continue;    // (a cell's paragraph: its table counts)
+        const r = block.getBoundingClientRect();
+        if (r.height > 0 && r.bottom > area.bottom + 2 && r.top > area.top + 2)
+          over.push(`${page}:${block.getAttribute("data-anchor") ?? ""}`);
+      }
+    });
+    return over.length > 0 ? over.join(" ") : null;
+  }
+
+  /** Lay the pages out again when an edit has overfilled one (see {@link watchPageFit}). */
+  private refitPages(pageRoot: HTMLElement): void {
+    const overflow = DocxEditor.pageOverflow(pageRoot);
+    if (!overflow || overflow === this.pageFitLeft) return;
+    const keep = this.selectionDocumentRange();    // (commits typing in progress)
+    let scroller: HTMLElement | null = this.container;
+    while (scroller && !(scroller.scrollHeight > scroller.clientHeight && /auto|scroll/.test(getComputedStyle(scroller).overflowY)))
+      scroller = scroller.parentElement;
+    const top = scroller?.scrollTop ?? 0;
+    const hadFocus = !!document.activeElement && this.container.contains(document.activeElement);
+    this.remount();
+    if (scroller) scroller.scrollTop = top;
+    if (keep && hadFocus) {
+      this.blockOfAnchor(keep.startAnchorId)?.focus({ preventScroll: true });
+      this.placeCaretAt(keep);
+      this.activeBlock?.scrollIntoView({ block: "nearest" });
+    }
+    this.pageFitLeft = DocxEditor.pageOverflow(this.editRoot);
   }
 
   private wireBlocks(root: HTMLElement): void {
@@ -4975,6 +5072,62 @@ export class DocxEditor {
     return point && this.editableBlockOf(point.node) === target ? point : null;
   }
 
+  /**
+   * Up and Down as Word has them. Each paragraph is an editable island of its own, so the
+   * browser's caret stops on a paragraph's first or last line; there the editor carries it on to
+   * the next or previous paragraph of the story, at the same distance across the line. Ctrl+Down
+   * goes to the start of the next paragraph, Ctrl+Up to the start of this one (the one before
+   * when already there). Inside a paragraph the browser's own step stands. Returns true when it
+   * handled the key.
+   */
+  private moveCaretByLineKey(ev: KeyboardEvent): boolean {
+    const down = ev.key === "ArrowDown";
+    const sel = window.getSelection();
+    const ends = this.selectionEnds();
+    if (!sel || !ends) return false;
+    const block = this.editableBlockOf(ends.focus.node);
+    // (in a table the next block in the story is the cell beside, not the one below: the browser's own)
+    if (!block || block.closest("table")) return false;
+    const story = this.storyBlocks(block);
+    const i = story.indexOf(block);
+    if (i < 0) return false;
+    const next = story[i + (down ? 1 : -1)];
+
+    if (ev.ctrlKey) {
+      ev.preventDefault();
+      if (down) this.moveCaretTo(next ? DocxEditor.blockEdge(next, false) : DocxEditor.blockEdge(block, true));
+      else {
+        const atStart = sel.isCollapsed && caretOffsetIn(block) === 0;
+        this.moveCaretTo(DocxEditor.blockEdge(atStart && next ? next : block, false));
+      }
+      return true;
+    }
+
+    const step = sel as Selection & { modify?: (alter: string, direction: string, granularity: string) => void };
+    if (typeof step.modify !== "function") return false;
+    let moved: DomSelectionPoint | null = null;
+    try {
+      sel.collapse(ends.focus.node, ends.focus.offset);
+      step.modify("move", down ? "forward" : "backward", "line");
+      if (sel.focusNode) moved = { node: sel.focusNode, offset: sel.focusOffset };
+    } catch {
+      moved = null;
+    }
+    const stayed = !moved || (moved.node === ends.focus.node && moved.offset === ends.focus.offset)
+      || this.editableBlockOf(moved.node) !== block || sameLine(ends.focus, moved);
+    ev.preventDefault();
+    // (within the paragraph: the browser's own step, already taken)
+    if (!stayed) return true;
+    if (!next) {
+      // (the story's first or last line: Word goes to that line's start or end)
+      this.moveCaretTo(moved && this.editableBlockOf(moved.node) === block ? moved : DocxEditor.blockEdge(block, down));
+      return true;
+    }
+    next.scrollIntoView({ block: "nearest" });
+    this.moveCaretTo(this.pointOnLineOf(next, ends.focus, down) ?? DocxEditor.blockEdge(next, !down));
+    return true;
+  }
+
   /** Ctrl+A: the whole story the caret is in (the body, or the header or footer being edited). */
   private selectStory(el: HTMLElement): void {
     const story = this.storyBlocks(el);
@@ -5010,13 +5163,26 @@ export class DocxEditor {
    * leaves to the browser; true when it took the edit, whether or not the engine could make it.
    */
   private replaceCrossBlockSelection(text: string): boolean {
-    const blocks = this.crossBlockSelection();
+    let blocks = this.crossBlockSelection();
     if (!blocks || !this.crossBlockEditable(blocks)) return false;
+    // (Word's selection over a field: reaching into one from outside takes the whole field)
+    const grew = this.growSelectionToFields();
+    if (grew) {
+      blocks = this.crossBlockSelection();
+      if (!blocks || !this.crossBlockEditable(blocks)) return true;
+    }
     const bridge = this.exports.DocxSessionBridge;
     const targets = this.multiBlockTargets(blocks);
     const first = targets[0], last = targets[targets.length - 1];
     const firstSpan = first.span ?? { start: 0, length: blockContentText(first.block).length };
     const lastSpan = last.span ?? { start: 0, length: blockContentText(last.block).length };
+    // A grown selection that takes the whole of its last paragraph takes that paragraph too: its
+    // field markers go with it rather than being joined onto the first.
+    const lastWhole = grew && lastSpan.start === 0 && lastSpan.length >= blockContentText(last.block).length
+      && typeof bridge.DeleteBlock === "function";
+    // Likewise its first paragraph, taken from its start, when nothing is typed over it: what is
+    // left of the last paragraph keeps that paragraph's own style (not a contents entry's).
+    const firstWhole = grew && !lastWhole && text === "" && firstSpan.start === 0 && typeof bridge.DeleteRange === "function";
     const firstIndex = this.editableList().indexOf(first.block);
     const lines = text.split(/\r\n|\r|\n/);
     const tx = typeof bridge.BeginTransaction === "function" ? bridge.BeginTransaction(this.handle) : 0;
@@ -5032,16 +5198,26 @@ export class DocxEditor {
         return res;
       };
       let firstId = ids[0]!, lastId = ids[ids.length - 1]!;
-      firstId = step(bridge.ReplaceTextAtSpan(this.handle, firstId, firstSpan.start, firstSpan.length, lines[0], ""))
-        .modified?.[0]?.id ?? firstId;
-      if (lastSpan.length > 0) {
+      if (!firstWhole) {
+        firstId = step(bridge.ReplaceTextAtSpan(this.handle, firstId, firstSpan.start, firstSpan.length, lines[0], ""))
+          .modified?.[0]?.id ?? firstId;
+      }
+      if (lastSpan.length > 0 && !lastWhole) {
         lastId = step(bridge.ReplaceTextAtSpan(this.handle, lastId, 0, lastSpan.length, "", "")).modified?.[0]?.id ?? lastId;
       }
-      if (ids.length > 2) {
-        if (typeof bridge.DeleteRange === "function") step(bridge.DeleteRange(this.handle, ids[1]!, lastId));
-        else for (const id of ids.slice(1, -1)) step(bridge.DeleteBlock(this.handle, id!));
-      }
-      let current = step(bridge.MergeParagraphs(this.handle, firstId, lastId)).modified?.[0]?.id ?? firstId;
+      // Whole blocks before the last: one DeleteRange when they share a parent, else one by one
+      // (a contents table in its content control, and the text after it)
+      const deleteWhole = (list: string[]) => {
+        if (list.length === 0) return;
+        if (typeof bridge.DeleteRange === "function"
+          && this.parseEdit(bridge.DeleteRange(this.handle, list[0], lastId), { expectRejection: true }).success) return;
+        for (const id of list) step(bridge.DeleteBlock(this.handle, id));
+      };
+      if (firstWhole) deleteWhole([firstId, ...(ids.slice(1, -1) as string[])]);
+      else deleteWhole(ids.slice(1, -1) as string[]);
+      let current = firstWhole ? lastId
+        : lastWhole ? (step(bridge.DeleteBlock(this.handle, lastId)), firstId)
+        : step(bridge.MergeParagraphs(this.handle, firstId, lastId)).modified?.[0]?.id ?? firstId;
       // MergeParagraphs puts a space between the two when neither side has one (right for
       // Backspace joining two paragraphs, which Word does the same way); deleting a selection
       // joins its two ends as they are. (Tracked, the merge is only recorded: nothing to take out.)
@@ -5062,6 +5238,8 @@ export class DocxEditor {
         caretIndex++;
         caretOffset = line.length;
       }
+      // (whatever field markers the edit still parted from their partners: the field is gone)
+      if (typeof bridge.RepairFields === "function") step(bridge.RepairFields(this.handle, current));
     } catch {
       ok = false;
     } finally {
@@ -5077,6 +5255,32 @@ export class DocxEditor {
     const target = this.editableList()[ok ? caretIndex : firstIndex];
     if (target) placeCaretAtOffset(target, ok ? caretOffset : firstSpan.start);
     if (ok && target) this.options.onEdit?.({ anchorId: this.anchorIdOf(target) ?? "", unid: target.getAttribute("data-anchor") ?? "" });
+    return true;
+  }
+
+  /**
+   * Word's selection over complex fields: a selection reaching into a field from outside (into a
+   * table of contents from the text before it, say) grows to cover the whole field, so an edit
+   * never takes part of a field's markers. True when the selection grew.
+   */
+  private growSelectionToFields(): boolean {
+    const bridge = this.exports.DocxSessionBridge;
+    if (typeof bridge.ExpandRangeToFields !== "function") return false;
+    const range = this.selectionDocumentRange();
+    if (!range) return false;
+    let grown: DocumentRange | null;
+    try {
+      grown = JSON.parse(bridge.ExpandRangeToFields(this.handle, range.startAnchorId, range.startOffset,
+        range.endAnchorId, range.endOffset)) as DocumentRange | null;
+    } catch {
+      return false;
+    }
+    if (!grown || (grown.startAnchorId === range.startAnchorId && grown.startOffset === range.startOffset
+      && grown.endAnchorId === range.endAnchorId && grown.endOffset === range.endOffset)) return false;
+    const startBlock = this.blockOfAnchor(grown.startAnchorId);
+    const endBlock = this.blockOfAnchor(grown.endAnchorId);
+    if (!startBlock || !endBlock) return false;
+    this.selectBetween(contentPositionIn(startBlock, grown.startOffset), contentPositionIn(endBlock, grown.endOffset));
     return true;
   }
 
@@ -5169,6 +5373,10 @@ export class DocxEditor {
     // Ctrl+PgUp / Ctrl+PgDn: the top of the previous or next page, as in Word.
     if (ctrl && !ev.altKey && !ev.shiftKey && (ev.key === "PageUp" || ev.key === "PageDown")) {
       return this.browsePage(el, ev.key === "PageDown", ev);
+    }
+    // Up / Down (Ctrl+Up / Ctrl+Down: by paragraph): on into the next or previous paragraph.
+    if (!ev.shiftKey && !ev.altKey && !ev.metaKey && (ev.key === "ArrowUp" || ev.key === "ArrowDown")) {
+      if (this.moveCaretByLineKey(ev)) return true;
     }
     const blocks = this.crossBlockSelection();
     if (!blocks || !this.crossBlockEditable(blocks)) return false;

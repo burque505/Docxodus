@@ -248,7 +248,9 @@ du -sh "$WASM_DIST"
 # tab stops, outline, cross-references and UpdateFields the fork carried) keeps the fork's own budget:
 # the fork-only ops (style definitions, page-break marker, M5/M6 editor ops) stay on top. Main's review fixes
 # to those four features measured 6,210,675 bytes, 9,331 over 6056 KiB; 16 KiB more covers them.
-WIRE_BUDGET_BYTES=$((6072 * 1024))
+# 2026-11-24 (dAHKxodus fork): ExpandRangeToFields and RepairFields (a delete reaching into a field takes
+# the whole field) measured 6,217,007 bytes, 721 under 6072 KiB; 16 KiB more covers them and the next small ops.
+WIRE_BUDGET_BYTES=$((6088 * 1024))
 WIRE_BYTES=$(cat "$WASM_DIST/_framework/.wire-size")
 rm -f "$WASM_DIST/_framework/.wire-size"
 echo ""
