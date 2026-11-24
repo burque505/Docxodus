@@ -94,6 +94,7 @@ import { FORMAT_PAINTER_CSS, pickRunFormat, runOpFromDirect, wordSpanAt } from "
 import { compileFind, expandReplacement, type FindOptions } from "./find-query.js";
 import { changeCase, DEFAULT_HEADLINE_CASE_LISTS, nextCycleCase, type CaseMode, type HeadlineCaseLists } from "./change-case.js";
 import type { RenderPlan, RenderUnit, UnitDiff } from "./editor-reconcile.js";
+import { OutlineLayer, isOutlineHidden, type OutlineBlock } from "./editor-outline.js";
 
 /** The subset of WASM bridge exports the editor needs (as exposed on `window.Docxodus`). */
 export interface DocxEditorExports {
@@ -2712,6 +2713,8 @@ export class DocxEditor {
       this.readoptGutter();
       this.container.appendChild(flow);
       this.editRoot = flow;
+      this.container.classList.toggle("docx-outline", !!this.outlineLayer);
+      this.outlineLayer?.attach(flow);
     }
 
     const planJson = this.renderPlanJson();
@@ -2867,6 +2870,12 @@ export class DocxEditor {
    */
   setPaginated(value: boolean): void {
     this.assertOpen();
+    if (this.outlineLayer) {
+      // (a view of its own: Page or Continuous view closes it)
+      this.outlineWasPaginated = value;
+      this.setOutlineView(false);
+      return;
+    }
     if (this.options.paginated === value) return;
     // The view renders again from the session: the typing still in the focused block goes in
     // first, or it is lost (the View tab's buttons keep the focus in the document).
@@ -3778,6 +3787,8 @@ export class DocxEditor {
     this.stampPlanState();
     if (this.region) this.dockBands(flow);
     this.viewport.attach(flow, true);
+    this.container.classList.toggle("docx-outline", !!this.outlineLayer);
+    this.outlineLayer?.attach(flow);
   }
 
   /** Paginated mount: flow blocks into page boxes via pagination.ts, wire the page clones. */
@@ -4242,6 +4253,15 @@ export class DocxEditor {
     if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) return;
     if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
       ev.preventDefault();
+      // Outline View: Enter at a collapsed heading's end starts a heading after its hidden part, as
+      // in Word; inside its text the heading opens first.
+      if (this.outlineLayer && el.hasAttribute("data-outline-collapsed")) {
+        const id = this.anchorIdOf(el);
+        const sel = window.getSelection();
+        const atEnd = !!sel?.isCollapsed && (caretOffsetIn(el) ?? 0) >= trimSpaces(blockContentText(el)).length;
+        if (id && atEnd && this.insertHeading(id, "after")) return;
+        this.outlineExpand();
+      }
       // Splits at the caret — in a cell this stacks a second paragraph within the same
       // w:tc (grid unchanged); in the body it splits the paragraph as before.
       this.splitAtCaret(el);
@@ -4340,6 +4360,8 @@ export class DocxEditor {
     const i = all.indexOf(el);
     const other = i < 0 ? null : all[i + step] ?? null;
     if (!other) return null;
+    // (Outline View: nothing joins text the view hides)
+    if (this.outlineLayer && isOutlineHidden(other)) return null;
     const cell = el.closest("td, th");
     return cell ? (other.closest("td, th") === cell ? other : null) : (other.closest("td, th") ? null : other);
   }
@@ -4876,7 +4898,7 @@ export class DocxEditor {
   private storyBlocks(el: HTMLElement): HTMLElement[] {
     const root = this.ownerRoot(el);
     return Array.from(root.querySelectorAll<HTMLElement>('[data-anchor][contenteditable="true"]'))
-      .filter((b) => this.ownerRoot(b) === root);
+      .filter((b) => this.ownerRoot(b) === root && !(this.outlineLayer && isOutlineHidden(b)));
   }
 
   /** The fixed and the moving end of the live selection. */
@@ -5115,6 +5137,43 @@ export class DocxEditor {
    * when already there). Inside a paragraph the browser's own step stands. Returns true when it
    * handled the key.
    */
+  private moveCaretAcrossEdge(ev: KeyboardEvent): boolean {
+    const sel = window.getSelection();
+    const ends = this.selectionEnds();
+    if (!sel || !ends || !sel.isCollapsed) return false;
+    const block = this.editableBlockOf(ends.focus.node);
+    // (table cells: the browser's own and the Tab keys)
+    if (!block || block.closest("table")) return false;
+    const rtl = getComputedStyle(block).direction === "rtl";
+    const forward = (ev.key === "ArrowRight") !== rtl;
+    // (only at the paragraph's edge: inside it the browser and moveAcrossTab step)
+    const at = caretOffsetIn(block);
+    const text = blockContentText(block);
+    if (at === null || (forward ? trimSpaces(text.slice(at)).length > 0 : at > 0)) return false;
+    const step = sel as Selection & { modify?: (alter: string, direction: string, granularity: string) => void };
+    if (typeof step.modify !== "function") return false;
+    let moved: DomSelectionPoint | null = null;
+    try {
+      step.modify("move", forward ? "forward" : "backward", ev.ctrlKey ? "word" : "character");
+      if (sel.focusNode) moved = { node: sel.focusNode, offset: sel.focusOffset };
+    } catch {
+      moved = null;
+    }
+    const stayed = !moved || (moved.node === ends.focus.node && moved.offset === ends.focus.offset)
+      || this.editableBlockOf(moved.node) !== block;
+    // (within the paragraph: the browser's own step, already taken)
+    if (!stayed) {
+      ev.preventDefault();
+      return true;
+    }
+    sel.collapse(ends.focus.node, ends.focus.offset);
+    const story = this.storyBlocks(block);
+    const next = story[story.indexOf(block) + (forward ? 1 : -1)];
+    ev.preventDefault();
+    if (next) this.moveCaretTo(DocxEditor.blockEdge(next, !forward));
+    return true;
+  }
+
   private moveCaretByLineKey(ev: KeyboardEvent): boolean {
     const down = ev.key === "ArrowDown";
     const sel = window.getSelection();
@@ -5478,6 +5537,10 @@ export class DocxEditor {
     // Up / Down (Ctrl+Up / Ctrl+Down: by paragraph): on into the next or previous paragraph.
     if (!ev.shiftKey && !ev.altKey && !ev.metaKey && (ev.key === "ArrowUp" || ev.key === "ArrowDown")) {
       if (this.moveCaretByLineKey(ev)) return true;
+    }
+    // Left / Right (Ctrl: by word) at a paragraph's edge: on into the paragraph before or after.
+    if (!ev.shiftKey && !ev.altKey && !ev.metaKey && (ev.key === "ArrowLeft" || ev.key === "ArrowRight")) {
+      if (this.moveCaretAcrossEdge(ev)) return true;
     }
     // PgUp / PgDn (with Shift: selecting): a screenful up or down, as in Word.
     if (!ctrl && !ev.altKey && (ev.key === "PageUp" || ev.key === "PageDown")) {
@@ -8279,6 +8342,323 @@ export class DocxEditor {
     }
     this.remount(Math.max(0, index - 1), true);
     return ok;
+  }
+
+  // ─── Outline View (Word's) ────────────────────────────────────────────
+
+  private outlineLayer: OutlineLayer | null = null;
+  private outlineWasPaginated = false;
+  private outlineListeners: { selection: () => void; down: (ev: MouseEvent) => void } | null = null;
+
+  /** Whether Outline View is on. */
+  get outlineView(): boolean {
+    return !!this.outlineLayer;
+  }
+
+  /**
+   * Word's Outline View: the continuous view with each paragraph indented by its outline level and
+   * Word's symbol beside it; headings collapse and expand, and a level can be chosen to show down
+   * to. Off, the view the document had before comes back. The document itself does not change.
+   */
+  setOutlineView(on: boolean): void {
+    this.assertOpen();
+    if (on === !!this.outlineLayer) return;
+    this.commitTyping();
+    if (on) {
+      this.outlineWasPaginated = !!this.options.paginated;
+      this.options.paginated = false;
+      this.outlineLayer = new OutlineLayer({ outline: () => this.outline() });
+      // Whatever puts the caret in hidden text (Find, Go To, a link) opens the headings over it.
+      const selection = () => {
+        const sel = window.getSelection();
+        const node = sel?.focusNode;
+        const el = node ? (node.nodeType === 1 ? node as Element : node.parentElement) : null;
+        if (el && this.editRoot.contains(el) && isOutlineHidden(el)) this.outlineLayer?.reveal(el);
+      };
+      // A click on a heading's symbol collapses or expands it (Word's double-click on the symbol).
+      // (found by where the click is: the drag handle may sit over the symbol)
+      const down = (ev: MouseEvent) => {
+        if (ev.button !== 0) return;
+        const block = Array.from(this.editRoot.querySelectorAll<HTMLElement>('[data-outline-sym]:not([data-outline-hidden])')).find((b) => {
+          const r = b.getBoundingClientRect();
+          return ev.clientY >= r.top && ev.clientY < r.bottom && ev.clientX < r.left && ev.clientX >= r.left - 22;
+        });
+        if (!block) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        const unid = block.getAttribute("data-anchor");
+        if (!unid || block.getAttribute("data-outline-sym") !== "plus") return;
+        this.toggleOutlineHeading(unid);
+      };
+      document.addEventListener("selectionchange", selection);
+      this.container.addEventListener("mousedown", down, true);
+      this.outlineListeners = { selection, down };
+    } else {
+      this.outlineLayer?.detach();
+      this.outlineLayer = null;
+      if (this.outlineListeners) {
+        document.removeEventListener("selectionchange", this.outlineListeners.selection);
+        this.container.removeEventListener("mousedown", this.outlineListeners.down, true);
+        this.outlineListeners = null;
+      }
+      this.container.classList.remove("docx-outline", "docx-outline-firstline", "docx-outline-plain");
+      this.options.paginated = this.outlineWasPaginated;
+    }
+    const unid = this.activeBlock?.getAttribute("data-anchor") ?? null;
+    if (unid) this.remountAt(unid);
+    else this.remount();
+  }
+
+  /** Outline View: show body text's first line only (Word's Show First Line Only). */
+  setOutlineFirstLineOnly(on: boolean): void {
+    this.container.classList.toggle("docx-outline-firstline", on);
+  }
+
+  /** Outline View: show the text plain (Word's Show Text Formatting off). */
+  setOutlineTextFormatting(on: boolean): void {
+    this.container.classList.toggle("docx-outline-plain", !on);
+  }
+
+  get outlineFirstLineOnly(): boolean {
+    return this.container.classList.contains("docx-outline-firstline");
+  }
+
+  get outlineTextFormatting(): boolean {
+    return !this.container.classList.contains("docx-outline-plain");
+  }
+
+  /** Outline View: the level shown down to (1-9), or null for all levels. */
+  get outlineShownLevel(): number | null {
+    return this.outlineLayer?.showLevel ?? null;
+  }
+
+  /** Outline View: show headings down to `level` (1-9) only, or everything (null). Collapsed
+   *  headings open, as Word's Show Level does. */
+  outlineShowLevel(level: number | null): boolean {
+    const layer = this.outlineLayer;
+    if (!layer) return false;
+    layer.collapsed.clear();
+    layer.showLevel = level !== null && level >= 1 && level <= 9 ? Math.floor(level) : null;
+    layer.apply();
+    this.keepCaretVisible();
+    return true;
+  }
+
+  /** The outline level of the paragraph at the caret: 1-9, 0 for body text, null outside the body. */
+  outlineLevelAtCaret(): number | null {
+    const block = this.activeBlock;
+    if (!block?.isConnected || this.isBandBlock(block) || block.closest("td, th")) return null;
+    const unid = block.getAttribute("data-anchor");
+    const entry = this.outline().find((e) => unidOfAnchor(e.anchorId) === unid);
+    return entry ? entry.level : 0;
+  }
+
+  /** The outline blocks the selection covers (top level: a cell's paragraph counts as its table);
+   *  `withParts` adds a collapsed heading's hidden part. */
+  private outlineSelection(withParts: boolean): OutlineBlock[] {
+    const layer = this.outlineLayer;
+    if (!layer) return [];
+    const picked: OutlineBlock[] = [];
+    for (const el of this.selectedBlocks()) {
+      const b = layer.blockOf(el);
+      if (b && !picked.some((p) => p.el === b.el)) picked.push(b);
+    }
+    if (!withParts) return picked;
+    // (the layer makes its block records afresh on each read: they are matched by element)
+    const out = new Set<HTMLElement>(picked.map((b) => b.el));
+    for (const b of picked) {
+      if (b.level > 0 && b.el.hasAttribute("data-outline-collapsed")) for (const x of layer.partOf(b.unid)) out.add(x.el);
+    }
+    return layer.list().filter((b) => out.has(b.el));
+  }
+
+  /** The headings Expand and Collapse act on: those selected, else the one the caret is under. */
+  private outlineTargetHeadings(): OutlineBlock[] {
+    const layer = this.outlineLayer;
+    if (!layer) return [];
+    const picked = this.outlineSelection(false);
+    const heads = picked.filter((b) => b.level > 0);
+    if (heads.length) return heads;
+    const parent = picked[0]?.parent;
+    const head = parent ? layer.list().find((b) => b.unid === parent) : undefined;
+    return head ? [head] : [];
+  }
+
+  /** A shown level becomes the collapsed headings it showed (so one of them can open). */
+  private outlineLevelToCollapsed(): void {
+    const layer = this.outlineLayer;
+    if (!layer || layer.showLevel === null) return;
+    const list = layer.list();
+    list.forEach((b, i) => {
+      if (b.level > 0 && !b.hidden && b.el.hasAttribute("data-outline-collapsed") && list[i + 1]?.hidden) layer.collapsed.add(b.unid);
+    });
+    layer.showLevel = null;
+  }
+
+  /** Outline View: collapse the selected headings (Word's Collapse, Alt+Shift+Minus). */
+  outlineCollapse(): boolean {
+    const layer = this.outlineLayer;
+    const heads = this.outlineTargetHeadings();
+    if (!layer || !heads.length) return false;
+    for (const h of heads) layer.collapsed.add(h.unid);
+    layer.apply();
+    this.keepCaretVisible();
+    return true;
+  }
+
+  /** Outline View: expand the selected headings (Word's Expand, Alt+Shift+Plus). */
+  outlineExpand(): boolean {
+    const layer = this.outlineLayer;
+    const heads = this.outlineTargetHeadings();
+    if (!layer || !heads.length) return false;
+    this.outlineLevelToCollapsed();
+    for (const h of heads) layer.collapsed.delete(h.unid);
+    layer.apply();
+    return true;
+  }
+
+  private toggleOutlineHeading(unid: string): void {
+    const layer = this.outlineLayer;
+    if (!layer) return;
+    const block = layer.list().find((b) => b.unid === unid);
+    if (!block) return;
+    if (block.el.hasAttribute("data-outline-collapsed")) {
+      this.outlineLevelToCollapsed();
+      layer.collapsed.delete(unid);
+    } else {
+      layer.collapsed.add(unid);
+    }
+    layer.apply();
+    this.keepCaretVisible();
+  }
+
+  /** After a collapse the caret may sit in hidden text: it goes to the end of the heading over it. */
+  private keepCaretVisible(): void {
+    const layer = this.outlineLayer;
+    const block = this.activeBlock;
+    if (!layer || !block?.isConnected || !isOutlineHidden(block)) return;
+    const list = layer.list();
+    let b = layer.blockOf(block);
+    while (b && b.hidden) {
+      const parent: string | null = b.parent;
+      b = parent ? list.find((x) => x.unid === parent) ?? null : null;
+    }
+    const target = b?.el.matches('[contenteditable="true"]') ? b.el : null;
+    if (!target) return;
+    this.activeBlock = target;
+    placeCaretAtOffset(target, blockContentText(target).length);
+  }
+
+  /** Give paragraphs outline levels (0 = body text) as one undo step. */
+  private applyOutlineLevels(changes: Array<{ el: HTMLElement; level: number }>): boolean {
+    const bridge = this.exports.DocxSessionBridge;
+    const todo = changes.filter((c) => c.el.matches('[contenteditable="true"]'));
+    if (this.closed || !todo.length) return false;
+    this.commitActiveTyping();
+    const caretUnid = this.activeBlock?.getAttribute("data-anchor") ?? null;
+    const caretAt = this.activeBlock ? caretOffsetIn(this.activeBlock) : null;
+    const styles = new Map<number, string>();
+    const styleOf = (level: number): string => {
+      if (level === 0) return "Normal";
+      if (!styles.has(level)) styles.set(level, this.headingStyleId(level));
+      return styles.get(level)!;
+    };
+    const tx = typeof bridge.BeginTransaction === "function" ? bridge.BeginTransaction(this.handle) : 0;
+    let ok = true;
+    try {
+      for (const c of todo) {
+        const id = this.anchorIdOf(c.el);
+        if (!id) continue;
+        const r = this.parseEdit(bridge.SetParagraphStyle(this.handle, id, styleOf(c.level)), { expectRejection: true });
+        if (!r.success) { ok = false; break; }
+      }
+    } finally {
+      if (tx) {
+        if (ok) bridge.CommitTransaction!(tx);
+        else bridge.RollbackTransaction?.(tx);
+      }
+    }
+    this.remountAt(caretUnid);
+    if (caretAt !== null && this.activeBlock) placeCaretAtOffset(this.activeBlock, Math.min(caretAt, blockContentText(this.activeBlock).length));
+    return ok;
+  }
+
+  /** Outline View: give the selected paragraphs outline level `level` (1-9, 0 = body text). */
+  setOutlineLevel(level: number): boolean {
+    if (!this.outlineLayer || level < 0 || level > 9) return false;
+    return this.applyOutlineLevels(this.outlineSelection(false).map((b) => ({ el: b.el, level: Math.floor(level) })));
+  }
+
+  /**
+   * Outline View: Promote (`step` -1) or Demote (+1) the selected paragraphs one level, a
+   * collapsed heading with the headings of its part. Body text promotes to its heading's level
+   * and demotes one below it.
+   */
+  outlinePromote(step: -1 | 1): boolean {
+    const layer = this.outlineLayer;
+    if (!layer) return false;
+    const list = layer.list();
+    const levelOf = (unid: string | null) => (unid ? list.find((b) => b.unid === unid)?.level ?? 0 : 0);
+    const changes = this.outlineSelection(true)
+      .filter((b) => b.level > 0 || !b.hidden)
+      .map((b) => {
+        if (b.level > 0) return { el: b.el, level: Math.min(9, Math.max(1, b.level + step)) };
+        const parent = levelOf(b.parent);
+        return { el: b.el, level: step < 0 ? Math.max(1, parent) : Math.min(9, parent + 1) };
+      });
+    return this.applyOutlineLevels(changes);
+  }
+
+  /**
+   * Outline View: Move Up / Move Down (Alt+Shift+Up/Down): the selected paragraphs, with a collapsed
+   * heading's hidden part, go past the paragraph shown before or after them (past a collapsed
+   * heading's whole part). One undo step.
+   */
+  outlineMove(direction: "up" | "down"): boolean {
+    const layer = this.outlineLayer;
+    const bridge = this.exports.DocxSessionBridge;
+    if (!layer || this.closed || typeof bridge.MoveBlockRange !== "function") return false;
+    const moving = this.outlineSelection(true);
+    if (!moving.length) return false;
+    const list = layer.list();
+    const first = list.findIndex((b) => b.el === moving[0].el);
+    const last = list.findIndex((b) => b.el === moving[moving.length - 1].el);
+    if (first < 0 || last < 0) return false;
+    let target: OutlineBlock | undefined;
+    let position: "before" | "after";
+    if (direction === "up") {
+      target = list.slice(0, first).reverse().find((b) => !b.hidden);
+      position = "before";
+    } else {
+      const nextShown = list.findIndex((b, i) => i > last && !b.hidden);
+      if (nextShown < 0) return false;
+      const after = list.findIndex((b, i) => i > nextShown && !b.hidden);
+      target = list[(after < 0 ? list.length : after) - 1];
+      position = "after";
+    }
+    const firstId = this.anchorIdOf(moving[0].el);
+    const lastId = this.anchorIdOf(moving[moving.length - 1].el);
+    const targetId = target ? this.anchorIdOf(target.el) : undefined;
+    if (!target || !firstId || !lastId || !targetId) return false;
+    this.commitActiveTyping();
+    const caretUnid = this.activeBlock?.getAttribute("data-anchor") ?? moving[0].unid;
+    const caretAt = this.activeBlock ? caretOffsetIn(this.activeBlock) : null;
+    const res = this.parseEdit(bridge.MoveBlockRange(this.handle, firstId, lastId, targetId, position), { expectRejection: true });
+    if (!res.success) return false;
+    this.remountAt(caretUnid);
+    if (caretAt !== null && this.activeBlock) placeCaretAtOffset(this.activeBlock, Math.min(caretAt, blockContentText(this.activeBlock).length));
+    return true;
+  }
+
+  /** Outline View: whether Tab / Shift+Tab at the caret demote / promote (at a heading's start, or
+   *  over a selection of paragraphs), as Word's Tab does there. */
+  outlineTabApplies(): boolean {
+    if (!this.outlineLayer) return false;
+    const block = this.activeBlock;
+    if (!block?.isConnected || block.closest("td, th") || this.isBandBlock(block)) return false;
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed) return true;
+    return this.outlineLevelAtCaret() !== 0 && (caretOffsetIn(block) ?? 0) === 0;
   }
 
   /** Word's Select Heading and Content: from the heading's start to the end of its part. */

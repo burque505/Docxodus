@@ -116,6 +116,18 @@ test('Ctrl+Down goes to the next paragraph\'s start; Ctrl+Up to this one\'s, the
   expect(await caret(page)).toEqual({ block: 1, offset: 0 });
 });
 
+test('Right at a paragraph\'s end goes to the next one\'s start; Left at its start to the end of the one before', async ({ page }) => {
+  await mount(page, false);
+  await clickLine(page, 0, 5);
+  await page.keyboard.press('End');
+  await page.keyboard.press('ArrowRight');
+  expect(await caret(page)).toEqual({ block: 1, offset: 0 });
+  await page.keyboard.press('ArrowLeft');
+  expect(await caret(page)).toEqual({ block: 0, offset: 'First short one'.length });
+  await page.keyboard.press('ArrowLeft');
+  expect(await caret(page)).toEqual({ block: 0, offset: 'First short one'.length - 1 });
+});
+
 test('typing after Down goes into the paragraph the caret moved to', async ({ page }) => {
   await mount(page, false);
   await clickLine(page, 0, 4);

@@ -493,7 +493,7 @@ const CONTROL_NAMES = [
   "toc", "footnote", "endnote", "pagenum", "totalpages",
   "comment", "commentdelete", "commentprev", "commentnext", "commentresolve", "showcomments",
   "commentcount", "trackchanges", "markup", "author", "revcount",
-  "viewpage", "viewweb", "zoom", "zoomfit", "zoomonepage", "showrail", "showhint", "showruler", "ruler", "tabsdialog",
+  "viewpage", "viewweb", "viewoutline", "ollevel", "olshow", "olformat", "olfirst", "zoom", "zoomfit", "zoomonepage", "showrail", "showhint", "showruler", "ruler", "tabsdialog",
   "shadebtn", "shadebar", "shade", "repeatheader", "tblheight", "tblwidth", "tblprops", "tabledialog", "linenumbers", "linenumbersdialog",
   "hfFirst", "hfEven", "hfstory",
   "findbar", "findtext", "findprev", "findnext", "findcount", "findcase", "findoptions", "findspecial",
@@ -656,6 +656,7 @@ class RibbonSurface implements RibbonEditor {
   private readonly onSelectionChange: () => void;
   private readonly onDocumentMouseDown: (event: MouseEvent) => void;
   private readonly onKeydown: (event: KeyboardEvent) => void;
+  private readonly onOutlineKey: (event: KeyboardEvent) => void;
   private readonly onInput: (event: Event) => void;
 
   constructor(container: HTMLElement, options: RibbonOptions) {
@@ -724,6 +725,8 @@ class RibbonSurface implements RibbonEditor {
     doc.addEventListener("mousedown", this.onDocumentMouseDown);
     this.onKeydown = (event) => this.handleShortcut(event);
     root.addEventListener("keydown", this.onKeydown);
+    this.onOutlineKey = (event) => this.handleOutlineKey(event);
+    root.addEventListener("keydown", this.onOutlineKey, true);
     // Typing in the document marks it changed at once, before the editor commits it (isDirty).
     // Text boxes of the chrome and the comment gutter are not contenteditable, so they don't count.
     this.onInput = (event) => {
@@ -1566,6 +1569,7 @@ class RibbonSurface implements RibbonEditor {
     doc.removeEventListener("selectionchange", this.onSelectionChange);
     doc.removeEventListener("mousedown", this.onDocumentMouseDown);
     this.element.removeEventListener("keydown", this.onKeydown);
+    this.element.removeEventListener("keydown", this.onOutlineKey, true);
     this.element.removeEventListener("input", this.onInput);
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
@@ -2619,6 +2623,22 @@ class RibbonSurface implements RibbonEditor {
     };
     delegate<HTMLElement>("button[data-hf]", (b) => `header/footer ${b.dataset.hf}`, (b) =>
       this.runHeaderFooterCommand(b.dataset.hf ?? ""), (b) => headerFooterCommands[b.dataset.hf ?? ""]);
+    // The Outlining tab runs its commands through exec: recorded, and the tab shows what they did.
+    for (const el of Array.from(ribbon.querySelectorAll<HTMLElement>("button[data-ol]"))) {
+      this.keepSelection(el);
+      el.addEventListener("click", () => {
+        const c = RibbonSurface.OUTLINE_BUTTONS[el.dataset.ol ?? ""];
+        if (c) this.outlineExec(c[0], c[1]);
+      });
+    }
+    const olLevel = this.control<HTMLSelectElement>("ollevel");
+    olLevel?.addEventListener("change", () => this.outlineExec("outlineLevel", { level: Number(olLevel.value) }));
+    const olShow = this.control<HTMLSelectElement>("olshow");
+    olShow?.addEventListener("change", () => this.outlineExec("outlineShowLevel", { level: Number(olShow.value) }));
+    const olFormat = this.control<HTMLInputElement>("olformat");
+    olFormat?.addEventListener("change", () => this.outlineExec("outlineFormatting", { on: olFormat.checked }));
+    const olFirst = this.control<HTMLInputElement>("olfirst");
+    olFirst?.addEventListener("change", () => this.outlineExec("outlineFirstLine", { on: olFirst.checked }));
 
     const rulepos = () => (this.require<HTMLSelectElement>("rulepos").value === "above" ? "above" : "below");
     const rule = (weight: number, style: string) => () => cmd("horizontalRule", { weight, style, position: rulepos() });
@@ -2652,6 +2672,7 @@ class RibbonSurface implements RibbonEditor {
     const own: Array<[string, () => void]> = [
       ["viewpage", () => this.setPaginated(true)],
       ["viewweb", () => this.setPaginated(false)],
+      ["viewoutline", () => this.outlineExec("outlineView", { on: true })],
       ["zoomfit", () => this.fitPageWidth()],
       ["zoomonepage", () => this.fitOnePage()],
       ["zoomin", () => this.stepZoom(1)],
@@ -2988,7 +3009,110 @@ class RibbonSurface implements RibbonEditor {
     specialVal.addEventListener("change", applySpecial);
   }
 
+  // ── Outline View ────────────────────────────────────────────────────────────
+
+  private static readonly OUTLINE_BUTTONS: Record<string, [string, EditorCommandArgs]> = {
+    promote1: ["outlineLevel", { level: 1 }],
+    promote: ["outlinePromote", {}],
+    demote: ["outlineDemote", {}],
+    body: ["outlineLevel", { level: 0 }],
+    up: ["outlineMove", { direction: "up" }],
+    down: ["outlineMove", { direction: "down" }],
+    expand: ["outlineExpand", {}],
+    collapse: ["outlineCollapse", {}],
+    close: ["outlineView", { on: false }],
+  };
+
+  /** Whether the ruler was showing when Outline View hid it (null: Outline View is off). */
+  private outlineRulerWasOn: boolean | null = null;
+
+  /** Run an Outline View command as exec does; one the editor refuses changes nothing. */
+  private outlineExec(name: string, args: EditorCommandArgs): void {
+    if (!this.live) return;
+    try {
+      this.exec(name, args);
+    } catch {
+      this.syncOutlineState();
+    }
+  }
+
+  /** The Outlining tab, the View tab's buttons and the ruler, as Outline View is on or off. */
+  private syncOutlineState(): void {
+    const on = !!this.live?.outlineView;
+    const tab = this.element.querySelector<HTMLElement>('.dxr-tab[data-tab="outlining"]');
+    if (tab) {
+      const wasShown = !tab.hidden;
+      tab.hidden = !on;
+      if (on && !wasShown) this.selectTab("outlining");
+      else if (!on && tab.getAttribute("aria-selected") === "true") this.selectTab("view");
+    }
+    this.control("viewoutline")?.classList.toggle("dxr-on", on);
+    if (on) {
+      this.control("viewpage")?.classList.remove("dxr-on");
+      this.control("viewweb")?.classList.remove("dxr-on");
+      this.surface.dataset.view = "continuous";
+      if (this.outlineRulerWasOn === null) {
+        this.outlineRulerWasOn = !!this.control<HTMLInputElement>("showruler")?.checked;
+        this.setRulerVisible(false);
+      }
+      const live = this.live!;
+      const show = this.control<HTMLSelectElement>("olshow");
+      if (show) show.value = String(live.outlineShownLevel ?? 0);
+      const format = this.control<HTMLInputElement>("olformat");
+      if (format) format.checked = live.outlineTextFormatting;
+      const first = this.control<HTMLInputElement>("olfirst");
+      if (first) first.checked = live.outlineFirstLineOnly;
+      this.syncOutlineLevelBox();
+    } else {
+      this.surface.dataset.view = this.require<HTMLInputElement>("paginated").checked ? "paginated" : "continuous";
+      this.syncViewButtons();
+      if (this.outlineRulerWasOn !== null) {
+        this.setRulerVisible(this.outlineRulerWasOn);
+        this.outlineRulerWasOn = null;
+      }
+    }
+  }
+
+  /** The Outlining tab's level box shows the caret paragraph's outline level. */
+  private syncOutlineLevelBox(): void {
+    const live = this.live;
+    const box = this.control<HTMLSelectElement>("ollevel");
+    if (!live?.outlineView || !box) return;
+    const level = live.outlineLevelAtCaret();
+    box.value = String(level ?? 0);
+    box.disabled = level === null;
+  }
+
+  /** Outline View's keys, as in Word (taken before the document's own): Alt+Shift+Left/Right
+   *  promote/demote, Alt+Shift+Up/Down move, Alt+Shift+Plus/Minus expand/collapse, Alt+Shift+1-9
+   *  show level, Alt+Shift+A all levels, Tab/Shift+Tab at a heading's start demote/promote. */
+  private handleOutlineKey(event: KeyboardEvent): void {
+    const live = this.live;
+    if (!live?.outlineView || event.ctrlKey || event.metaKey || event.isComposing) return;
+    if (!(event.target instanceof Node) || !this.surface.contains(event.target)) return;
+    let c: [string, EditorCommandArgs] | null = null;
+    if (event.altKey && event.shiftKey) {
+      const code = event.code ?? "";
+      if (event.key === "ArrowLeft") c = ["outlinePromote", {}];
+      else if (event.key === "ArrowRight") c = ["outlineDemote", {}];
+      else if (event.key === "ArrowUp") c = ["outlineMove", { direction: "up" }];
+      else if (event.key === "ArrowDown") c = ["outlineMove", { direction: "down" }];
+      else if (code === "Equal" || code === "NumpadAdd" || event.key === "+") c = ["outlineExpand", {}];
+      else if (code === "Minus" || code === "NumpadSubtract" || event.key === "_" || event.key === "-") c = ["outlineCollapse", {}];
+      else if (/^Digit[1-9]$/.test(code)) c = ["outlineShowLevel", { level: Number(code.slice(5)) }];
+      else if (code === "KeyA") c = ["outlineShowLevel", { level: 0 }];
+    } else if (!event.altKey && event.key === "Tab" && live.outlineTabApplies()) {
+      c = event.shiftKey ? ["outlinePromote", {}] : ["outlineDemote", {}];
+    }
+    if (!c) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.outlineExec(c[0], c[1]);
+  }
+
   private setPaginated(on: boolean): void {
+    // (Page and Continuous view close Outline View, which then gives back the view before it)
+    if (this.live?.outlineView) this.outlineExec("outlineView", { on: false });
     const paginated = this.require<HTMLInputElement>("paginated");
     paginated.checked = on;
     this.surface.dataset.view = on ? "paginated" : "continuous";
@@ -3833,6 +3957,7 @@ class RibbonSurface implements RibbonEditor {
     } else if (name === "headerFooterOption" || name === "goToHeaderFooter" || name === "closeHeaderFooter") {
       this.syncHeaderFooterState();
     }
+    if (name.startsWith("outline") || name === "pageView") this.syncOutlineState();
     return result;
   }
 
@@ -3922,6 +4047,7 @@ class RibbonSurface implements RibbonEditor {
         this.tableChanged();
       }
     }
+    this.syncOutlineLevelBox();
     this.refreshRailAnchor();
     this.scheduleStats();
   }

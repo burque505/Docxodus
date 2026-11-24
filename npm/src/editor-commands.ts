@@ -822,6 +822,25 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   pageWidth: { group: "view", description: "Zoom so the page is as wide as the window (kept as it resizes).", args: {}, run: (e) => e.fitPageWidth() },
   onePage: { group: "view", description: "Zoom so a whole page shows (kept as the window resizes).", args: {}, run: (e) => e.fitOnePage() },
   pageView: { group: "view", description: "Show the pages (or one continuous sheet).", args: { on: "boolean" }, run: (e, a) => e.setPaginated(a.bool("on")) },
+  outlineView: { group: "view", description: "Word's Outline View on or off (off: back to the view before).", args: { on: "boolean" }, run: (e, a) => e.setOutlineView(a.bool("on")) },
+  outlineLevel: {
+    group: "view", description: "Outline View: give the selected paragraphs an outline level (1-9; 0 = body text).",
+    args: { level: "number" }, run: (e, a) => must(e.setOutlineLevel(a.number("level")), "outlineLevel", "turn Outline View on first"),
+  },
+  outlinePromote: { group: "view", description: "Outline View: promote the selected paragraphs one level.", args: {}, run: (e) => must(e.outlinePromote(-1), "outlinePromote", "turn Outline View on first") },
+  outlineDemote: { group: "view", description: "Outline View: demote the selected paragraphs one level.", args: {}, run: (e) => must(e.outlinePromote(1), "outlineDemote", "turn Outline View on first") },
+  outlineMove: {
+    group: "view", description: "Outline View: move the selected paragraphs (a collapsed heading with its part) up or down.",
+    args: { direction: "up|down" }, run: (e, a) => must(e.outlineMove(a.oneOf("direction", ["up", "down"] as const)), "outlineMove", "nothing to move past"),
+  },
+  outlineExpand: { group: "view", description: "Outline View: expand the selected headings.", args: {}, run: (e) => e.outlineExpand() },
+  outlineCollapse: { group: "view", description: "Outline View: collapse the selected headings.", args: {}, run: (e) => e.outlineCollapse() },
+  outlineShowLevel: {
+    group: "view", description: "Outline View: show headings down to this level only (0 = all levels).",
+    args: { level: "number" }, run: (e, a) => e.outlineShowLevel(a.number("level") || null),
+  },
+  outlineFirstLine: { group: "view", description: "Outline View: show only the first line of body text.", args: { on: "boolean" }, run: (e, a) => e.setOutlineFirstLineOnly(a.bool("on")) },
+  outlineFormatting: { group: "view", description: "Outline View: show the text's formatting (off: plain).", args: { on: "boolean" }, run: (e, a) => e.setOutlineTextFormatting(a.bool("on")) },
 
   // ── query ──
   text: { group: "query", description: "The document's text, a line for each paragraph (and table cell).", args: {}, returns: "string", run: (e) => e.documentText() },

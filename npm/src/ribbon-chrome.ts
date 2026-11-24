@@ -1008,6 +1008,7 @@ export const RIBBON_HTML = `
     <button type="button" class="dxr-tab" role="tab" data-tab="table" data-contextual aria-selected="false" hidden>Table</button>
     <button type="button" class="dxr-tab" role="tab" data-tab="headerfooter" data-contextual aria-selected="false" hidden>Header &amp; Footer</button>
     <button type="button" class="dxr-tab" role="tab" data-tab="picture" data-contextual aria-selected="false" hidden>Picture Format</button>
+    <button type="button" class="dxr-tab" role="tab" data-tab="outlining" data-contextual aria-selected="false" hidden>Outlining</button>
   </div>
 
   <div class="dxr-ribbon" data-dxr="ribbon" aria-disabled="true">
@@ -1420,6 +1421,7 @@ export const RIBBON_HTML = `
         <div class="dxr-row">
           <button type="button" data-dxr="viewpage" title="Page view — real page boxes, headers and footers in the margins">&#128441; Page view</button>
           <button type="button" data-dxr="viewweb" title="Continuous view — one sheet, no page breaks">&#9776; Continuous</button>
+          <button type="button" data-dxr="viewoutline" title="Outline view — headings by level, to collapse, promote, demote and move">&#8801; Outline</button>
         </div>
       </div>
       <div class="dxr-group">
@@ -1597,6 +1599,62 @@ export const RIBBON_HTML = `
         <span class="dxr-glabel">Close</span>
         <div class="dxr-row">
           <button type="button" data-hf="close" title="Return to the document body (Esc)">&#10005; Close Header and Footer</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- OUTLINING (contextual) ───────────────────────────────────────────────
+         Word's Outlining tab, shown while Outline View is on. -->
+    <div class="dxr-panel" data-panel="outlining">
+      <div class="dxr-group">
+        <span class="dxr-glabel">Outline Tools</span>
+        <div class="dxr-row">
+          <button type="button" data-ol="promote1" title="Promote to Heading 1">&#171;</button>
+          <button type="button" data-ol="promote" title="Promote (Alt+Shift+Left)">&#8249;</button>
+          <select data-dxr="ollevel" title="Outline level">
+            <option value="1">Level 1</option>
+            <option value="2">Level 2</option>
+            <option value="3">Level 3</option>
+            <option value="4">Level 4</option>
+            <option value="5">Level 5</option>
+            <option value="6">Level 6</option>
+            <option value="7">Level 7</option>
+            <option value="8">Level 8</option>
+            <option value="9">Level 9</option>
+            <option value="0">Body Text</option>
+          </select>
+          <button type="button" data-ol="demote" title="Demote (Alt+Shift+Right)">&#8250;</button>
+          <button type="button" data-ol="body" title="Demote to Body Text">&#187;</button>
+        </div>
+        <div class="dxr-row">
+          <button type="button" data-ol="up" title="Move Up (Alt+Shift+Up)">&#9650;</button>
+          <button type="button" data-ol="down" title="Move Down (Alt+Shift+Down)">&#9660;</button>
+          <button type="button" data-ol="expand" title="Expand (Alt+Shift+Plus)">&#10133;</button>
+          <button type="button" data-ol="collapse" title="Collapse (Alt+Shift+Minus)">&#10134;</button>
+          <label>Show Level:
+            <select data-dxr="olshow" title="Show Level (Alt+Shift+1-9, Alt+Shift+A)">
+              <option value="0">All Levels</option>
+              <option value="1">Level 1</option>
+              <option value="2">Level 2</option>
+              <option value="3">Level 3</option>
+              <option value="4">Level 4</option>
+              <option value="5">Level 5</option>
+              <option value="6">Level 6</option>
+              <option value="7">Level 7</option>
+              <option value="8">Level 8</option>
+              <option value="9">Level 9</option>
+            </select>
+          </label>
+        </div>
+        <div class="dxr-row">
+          <label class="dxr-toggle"><input data-dxr="olformat" type="checkbox" checked /> Show Text Formatting</label>
+          <label class="dxr-toggle"><input data-dxr="olfirst" type="checkbox" /> Show First Line Only</label>
+        </div>
+      </div>
+      <div class="dxr-group">
+        <span class="dxr-glabel">Close</span>
+        <div class="dxr-row">
+          <button type="button" data-ol="close" title="Close Outline View">&#10005; Close Outline View</button>
         </div>
       </div>
     </div>
