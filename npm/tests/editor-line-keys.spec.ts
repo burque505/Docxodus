@@ -256,3 +256,48 @@ for (const paginated of [false, true]) {
     expect((await caret(page)).block).toBe(79);
   });
 }
+
+for (const paginated of [false, true]) {
+  test(`PgDn scrolls exactly a screenful, also when the caret lands in a paragraph running off the screen (${paginated ? 'page' : 'continuous'} view)`, async ({ page }) => {
+    await page.goto('/test-harness.html');
+    await page.waitForFunction(() => (window as any).DocxodusReady === true, { timeout: 30000 });
+    await page.evaluate(() => {
+      const host = document.createElement('div');
+      host.id = 'lk-host';
+      host.style.height = '420px';
+      document.body.appendChild(host);
+      const r = (window as any).DocxodusEditor.mountRibbon(host, {});
+      r.setExports((window as any).Docxodus);
+      r.openBlank('lk.docx');
+      r.loader.done();
+      (window as any).__ribbon = r;
+    });
+    await page.locator(blocks).first().click();
+    // paragraphs of many lines: the screen's edges fall inside them
+    const lines = Array.from({ length: 30 }, (_, i) => `Paragraph ${i + 1}. ` + LONG + ' ' + LONG);
+    await page.evaluate((t) => (window as any).__ribbon.exec('pasteText', { text: t }), lines.join('\n'));
+    if (paginated) {
+      await page.evaluate(() => (window as any).__ribbon.editor.setPaginated(true));
+      await expect(page.locator(`${HOST} .page-box [data-anchor][contenteditable="true"]`).first()).toBeVisible();
+    }
+    await page.locator(blocks).first().click();
+    await page.keyboard.press('Control+Home');
+    const scroll = () => page.evaluate(() => {
+      let el: HTMLElement | null = document.querySelector('#lk-host [data-anchor]');
+      while (el && !(el.scrollHeight > el.clientHeight && /auto|scroll/.test(getComputedStyle(el).overflowY))) el = el.parentElement;
+      return el ? { top: el.scrollTop, height: el.clientHeight } : { top: scrollY, height: innerHeight };
+    });
+    for (let i = 0; i < 4; i++) {
+      const before = await scroll();
+      await page.keyboard.press('PageDown');
+      const after = await scroll();
+      expect(after.top - before.top).toBe(Math.max(40, before.height - 48));
+    }
+    for (let i = 0; i < 2; i++) {
+      const before = await scroll();
+      await page.keyboard.press('PageUp');
+      const after = await scroll();
+      expect(before.top - after.top).toBe(Math.max(40, before.height - 48));
+    }
+  });
+}

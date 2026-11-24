@@ -3976,7 +3976,7 @@ export class DocxEditor {
    * only for the caret of the focused block; a selection the editor extends across blocks moves an
    * end that may be in another, so the view has to follow it here.
    */
-  private revealPoint(point: DomSelectionPoint): void {
+  private revealPoint(point: DomSelectionPoint, room = 32): void {
     const rect = caretRect(point) ?? (point.node.nodeType === 1 ? (point.node as Element).getBoundingClientRect()
       : point.node.parentElement?.getBoundingClientRect() ?? null);
     const scroller = this.scroller();
@@ -3984,7 +3984,6 @@ export class DocxEditor {
     const isPage = scroller === document.scrollingElement;
     const top = isPage ? 0 : scroller.getBoundingClientRect().top;
     const bottom = isPage ? window.innerHeight : scroller.getBoundingClientRect().bottom;
-    const room = 32;
     if (rect.bottom > bottom - room) scroller.scrollTop += rect.bottom - bottom + room;
     else if (rect.top < top + room) scroller.scrollTop -= top + room - rect.top;
   }
@@ -5193,9 +5192,18 @@ export class DocxEditor {
     }
     if (ev.shiftKey) {
       this.selectBetween(ends.anchor, point);
-      this.revealPoint(point);
+      this.revealPoint(point, 0);
     } else {
-      this.moveCaretTo(point);
+      // (not moveCaretTo: it scrolls the caret's whole paragraph into view, which moves the view on
+      // past the screenful when that paragraph runs off the screen's edge)
+      const target = this.editableBlockOf(point.node);
+      if (!target) return true;
+      const offset = contentOffsetOf(target, point.node, point.offset);
+      if (document.activeElement !== target) target.focus({ preventScroll: true });
+      const live = target.isConnected ? target : this.editableBlockOf(point.node) ?? target;
+      this.activeBlock = live;
+      placeCaretAtOffset(live, offset);
+      this.revealPoint(contentPositionIn(live, offset), 0);    // (only if it is off the screen)
     }
     return true;
   }
