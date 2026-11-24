@@ -115,6 +115,31 @@ test.describe('DocxEditor — block drag handle', () => {
     expect(result).toEqual({ sameNode: 'same-node', moves: 1 });
   });
 
+  test('the move menu closes on a click elsewhere and on Escape in the document', async ({ page }) => {
+    await openParagraphDocument(page, ['Alpha', 'Beta', 'Gamma']);
+    const beta = page.locator('#block-drag-host p[data-anchor]').filter({ hasText: 'Beta' });
+    const gamma = page.locator('#block-drag-host p[data-anchor]').filter({ hasText: 'Gamma' });
+    const menu = page.locator('.docx-block-move-menu');
+    await beta.hover();
+    await page.locator('.docx-block-handle').click();
+    await expect(menu).toBeVisible();
+    await gamma.click();
+    await expect(menu).toBeHidden();
+    await beta.hover();
+    await page.locator('.docx-block-handle').click();
+    await expect(menu).toBeVisible();
+    await gamma.click();
+    await expect(menu).toBeHidden();
+    await beta.hover();
+    await page.locator('.docx-block-handle').click();
+    await expect(menu).toBeVisible();
+    await gamma.focus();
+    await page.keyboard.press('Escape');
+    await expect(menu).toBeHidden();
+    // nothing moved
+    expect((await unitState(page)).map((x) => x.text)).toEqual(['Alpha', 'Beta', 'Gamma']);
+  });
+
   test('dragging uses before/after drop zones and reorders the live session', async ({ page }) => {
     await openParagraphDocument(page, ['One', 'Two', 'Three']);
     const one = page.locator('#block-drag-host p[data-anchor]').filter({ hasText: 'One' });

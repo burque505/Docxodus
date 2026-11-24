@@ -3510,6 +3510,22 @@ export class DocxEditor {
     const onMenuKeydown = (event: KeyboardEvent): void => {
       if (event.key === "Escape") { event.preventDefault(); this.closeBlockMoveMenu(true); }
     };
+    // A click anywhere else, or Escape wherever the focus is, closes the menu, as menus do.
+    const onOutsidePointerDown = (event: PointerEvent): void => {
+      if (menu.style.display !== "block") return;
+      const target = event.target as Node | null;
+      if (target && (menu.contains(target) || handle.contains(target))) return;
+      this.closeBlockMoveMenu();
+    };
+    const onDocumentKeydown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape" && menu.style.display === "block") this.closeBlockMoveMenu();
+    };
+    doc.addEventListener("pointerdown", onOutsidePointerDown, true);
+    doc.addEventListener("keydown", onDocumentKeydown, true);
+    this.blockDragCleanup.push(
+      () => doc.removeEventListener("pointerdown", onOutsidePointerDown, true),
+      () => doc.removeEventListener("keydown", onDocumentKeydown, true),
+    );
     handle.addEventListener("click", onHandleClick);
     handle.addEventListener("pointerdown", onHandlePointerDown);
     handle.addEventListener("keydown", onHandleKeydown);
