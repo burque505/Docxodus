@@ -68,6 +68,8 @@ test.describe('Outline View', () => {
     expect(await outline(page)).toEqual(['#1 Alpha', 'a1 body', 'a2 body', '#1 Beta', 'b1 body']);
     const syms = await page.locator(blocks).evaluateAll((els) => els.map((e) => e.getAttribute('data-outline-sym')));
     expect(syms).toEqual(['plus', 'body', 'body', 'plus', 'body']);
+    // (the block drag handle would cover the symbols: Outline View has none)
+    await expect(page.locator(`${HOST} .docx-block-handle`)).toHaveCount(0);
     await page.locator(`${HOST} button[data-ol="close"]`).click();
     await expect(page.locator(`${HOST} .page-box`).first()).toBeVisible();
     await expect(page.locator(`${HOST} .dxr-tab[data-tab="outlining"]`)).toBeHidden();

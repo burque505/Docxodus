@@ -3425,7 +3425,8 @@ export class DocxEditor {
 
   /** Mount one floating handle; PDD owns pointer dragging while the menu owns keyboard moves. */
   private setupBlockDrag(): void {
-    if (!this.options.blockDrag || this.options.paginated || this.closed || this.blockDragHandle)
+    // (Outline View moves paragraphs with its own symbols and keys: the handle would cover them)
+    if (!this.options.blockDrag || this.options.paginated || this.outlineLayer || this.closed || this.blockDragHandle)
       return;
     const doc = this.container.ownerDocument;
     ensureBlockDragStyles(doc);
