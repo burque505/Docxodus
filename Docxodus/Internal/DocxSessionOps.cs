@@ -1254,6 +1254,48 @@ internal static class DocxSessionOps
     public static string SetStyle(int handle, StyleDefinitionOp op, MutationPreconditions? preconditions = null) =>
         Mutate(handle, preconditions, null, s => s.SetStyle(op));
 
+    /// <summary>The styles of another document or template (base64 package bytes), as
+    /// <see cref="ListStyles"/> lists this document's; <c>{"error":{code,message}}</c> when the
+    /// bytes are not a Word package.</summary>
+    public static string ListStylesIn(string documentBase64)
+    {
+        if (!TryDecodeStyleSource(documentBase64, out var bytes, out var error)) return error!;
+        try { return DocxSessionJson.SerializeStyles(DocxSession.ListStylesIn(bytes!)); }
+        catch (System.ArgumentException ex)
+        {
+            return "{\"error\":{\"code\":\"InvalidStyleSource\",\"message\":" + DocxSessionJson.JsonString(ex.Message) + "}}";
+        }
+    }
+
+    /// <summary>Copy styles (ids in the other document, a JSON array) from another document or
+    /// template (base64 package bytes) into this one.</summary>
+    public static string CopyStyles(int handle, string documentBase64, string[] styleIds,
+        MutationPreconditions? preconditions = null)
+    {
+        if (!TryDecodeStyleSource(documentBase64, out var bytes, out _))
+        {
+            return DocxSessionJson.Serialize(EditResult.Fail(EditErrorCode.InvalidStyleSource,
+                "the file is not valid base64", null));
+        }
+        return Mutate(handle, preconditions, null, s => s.CopyStyles(bytes!, styleIds));
+    }
+
+    private static bool TryDecodeStyleSource(string? base64, out byte[]? bytes, out string? error)
+    {
+        bytes = null;
+        error = null;
+        try
+        {
+            bytes = string.IsNullOrEmpty(base64) ? System.Array.Empty<byte>() : System.Convert.FromBase64String(base64);
+            return true;
+        }
+        catch (System.FormatException)
+        {
+            error = "{\"error\":{\"code\":\"InvalidStyleSource\",\"message\":\"the file is not valid base64\"}}";
+            return false;
+        }
+    }
+
     public static string SetParagraphFormat(int handle, string anchorId, ParagraphFormatOp? op,
         MutationPreconditions? preconditions = null) =>
         Mutate(handle, preconditions, anchorId, s => s.SetParagraphFormat(anchorId, op ?? new ParagraphFormatOp()));

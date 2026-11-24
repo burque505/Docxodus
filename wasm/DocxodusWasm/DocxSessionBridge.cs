@@ -1066,6 +1066,35 @@ public static partial class DocxSessionBridge
     public static string SetStyle(int h, string opJson) =>
         DocxSessionOps.SetStyle(h, DocxSessionJson.ParseStyleDefinitionOp(opJson));
 
+    /// <summary>
+    /// Bridge for <see cref="DocxSession.ListStylesIn"/>: the styles of another document or
+    /// template, from its base64 package bytes.
+    /// </summary>
+    [JSExport]
+    public static string ListStylesIn(string documentBase64) =>
+        DocxSessionOps.ListStylesIn(documentBase64);
+
+    /// <summary>
+    /// Bridge for <see cref="DocxSession.CopyStyles"/>. <paramref name="styleIdsJson"/> is a JSON
+    /// array of the other document's style ids.
+    /// </summary>
+    [JSExport]
+    public static string CopyStyles(int h, string documentBase64, string styleIdsJson)
+    {
+        string[] ids;
+        try
+        {
+            using var json = System.Text.Json.JsonDocument.Parse(styleIdsJson);
+            ids = DocxSessionJson.ParseAnchorLocationIds(json.RootElement) ?? System.Array.Empty<string>();
+        }
+        catch (System.Exception ex) when (ex is System.Text.Json.JsonException or System.FormatException)
+        {
+            return DocxSessionJson.Serialize(EditResult.Fail(EditErrorCode.UnknownStyle,
+                "styleIds must be a JSON array of strings", null));
+        }
+        return DocxSessionOps.CopyStyles(h, documentBase64, ids);
+    }
+
     [JSExport]
     public static string SetListLevel(int h, string anchor, int delta) =>
         DocxSessionOps.SetListLevel(h, anchor, delta);

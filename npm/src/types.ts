@@ -2013,6 +2013,8 @@ export interface DocxodusWasmExports {
     SetParagraphStyle: (handle: number, anchor: string, styleId: string) => string;
     SetParagraphFormat: (handle: number, anchor: string, opJson: string) => string;
     SetStyle: (handle: number, opJson: string) => string;
+    ListStylesIn: (documentBase64: string) => string;
+    CopyStyles: (handle: number, documentBase64: string, styleIdsJson: string) => string;
     SetListLevel: (handle: number, anchor: string, delta: number) => string;
     RemoveListMembership: (handle: number, anchor: string) => string;
     ApplyListFormat: (handle: number, anchor: string, kind: string) => string;
