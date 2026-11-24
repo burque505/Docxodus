@@ -246,8 +246,9 @@ du -sh "$WASM_DIST"
 # SetStyle (style definitions) adds about 9 KB: 6,193,424 measured, 272 over 6048 KiB. Fork-only.
 # 2026-11-24 (dAHKxodus fork): merging upstream main 9af576ec (budget 5992 KiB, which now holds the
 # tab stops, outline, cross-references and UpdateFields the fork carried) keeps the fork's own budget:
-# the fork-only ops (style definitions, page-break marker, M5/M6 editor ops) stay on top.
-WIRE_BUDGET_BYTES=$((6056 * 1024))
+# the fork-only ops (style definitions, page-break marker, M5/M6 editor ops) stay on top. Main's review fixes
+# to those four features measured 6,210,675 bytes, 9,331 over 6056 KiB; 16 KiB more covers them.
+WIRE_BUDGET_BYTES=$((6072 * 1024))
 WIRE_BYTES=$(cat "$WASM_DIST/_framework/.wire-size")
 rm -f "$WASM_DIST/_framework/.wire-size"
 echo ""
