@@ -3963,14 +3963,38 @@ export class DocxEditor {
     return over.length > 0 ? over.join(" ") : null;
   }
 
+  /** The element the document scrolls in: the nearest scrolling ancestor of the container, else the page's. */
+  private scroller(): HTMLElement | null {
+    let el: HTMLElement | null = this.container;
+    while (el && !(el.scrollHeight > el.clientHeight && /auto|scroll/.test(getComputedStyle(el).overflowY)))
+      el = el.parentElement;
+    return el ?? (typeof document !== "undefined" ? document.scrollingElement as HTMLElement | null : null);
+  }
+
+  /**
+   * Scroll `point` (a selection's moving end) into view, with a little room. The browser scrolls
+   * only for the caret of the focused block; a selection the editor extends across blocks moves an
+   * end that may be in another, so the view has to follow it here.
+   */
+  private revealPoint(point: DomSelectionPoint): void {
+    const rect = caretRect(point) ?? (point.node.nodeType === 1 ? (point.node as Element).getBoundingClientRect()
+      : point.node.parentElement?.getBoundingClientRect() ?? null);
+    const scroller = this.scroller();
+    if (!rect || !scroller) return;
+    const isPage = scroller === document.scrollingElement;
+    const top = isPage ? 0 : scroller.getBoundingClientRect().top;
+    const bottom = isPage ? window.innerHeight : scroller.getBoundingClientRect().bottom;
+    const room = 32;
+    if (rect.bottom > bottom - room) scroller.scrollTop += rect.bottom - bottom + room;
+    else if (rect.top < top + room) scroller.scrollTop -= top + room - rect.top;
+  }
+
   /** Lay the pages out again when an edit has overfilled one (see {@link watchPageFit}). */
   private refitPages(pageRoot: HTMLElement): void {
     const overflow = DocxEditor.pageOverflow(pageRoot);
     if (!overflow || overflow === this.pageFitLeft) return;
     const keep = this.selectionDocumentRange();    // (commits typing in progress)
-    let scroller: HTMLElement | null = this.container;
-    while (scroller && !(scroller.scrollHeight > scroller.clientHeight && /auto|scroll/.test(getComputedStyle(scroller).overflowY)))
-      scroller = scroller.parentElement;
+    const scroller = this.scroller();
     const top = scroller?.scrollTop ?? 0;
     const hadFocus = !!document.activeElement && this.container.contains(document.activeElement);
     this.remount();
@@ -5021,7 +5045,9 @@ export class DocxEditor {
       const target = forward ? story[story.length - 1] : story[0];
       if (!target) return false;
       ev.preventDefault();
-      this.selectBetween(ends.anchor, DocxEditor.blockEdge(target, forward));
+      const edge = DocxEditor.blockEdge(target, forward);
+      this.selectBetween(ends.anchor, edge);
+      this.revealPoint(edge);
       return true;
     }
 
@@ -5054,11 +5080,18 @@ export class DocxEditor {
       const i = story.indexOf(focusBlock);
       const target = story[i + (forward ? 1 : -1)];
       if (!target) { ev.preventDefault(); return true; }    // at the story's edge: nothing more to take
-      if (granularity === "line") next = this.pointOnLineOf(target, ends.focus, forward);
+      // (the line position is read off the screen: the next paragraph must be in view for it)
+      if (granularity === "line") {
+        this.revealPoint(DocxEditor.blockEdge(target, !forward));
+        next = this.pointOnLineOf(target, ends.focus, forward);
+      }
       next ??= DocxEditor.blockEdge(target, granularity === "paragraph" ? forward : !forward);
     }
     ev.preventDefault();
-    if (next) this.selectBetween(ends.anchor, next);
+    if (next) {
+      this.selectBetween(ends.anchor, next);
+      this.revealPoint(next);
+    }
     return true;
   }
 

@@ -126,3 +126,53 @@ test('typing after Down goes into the paragraph the caret moved to', async ({ pa
   await expect.poll(() => page.evaluate(() =>
     (document.querySelectorAll<HTMLElement>('#lk-host [data-anchor][contenteditable="true"]')[1].textContent ?? '').slice(0, 5))).toBe('XThis');
 });
+
+for (const paginated of [false, true]) {
+  test(`Shift+Down over many paragraphs keeps the selection's moving end in view (${paginated ? 'page' : 'continuous'} view)`, async ({ page }) => {
+    await page.goto('/test-harness.html');
+    await page.waitForFunction(() => (window as any).DocxodusReady === true, { timeout: 30000 });
+    await page.evaluate(() => {
+      const host = document.createElement('div');
+      host.id = 'lk-host';
+      host.style.height = '420px';
+      document.body.appendChild(host);
+      const r = (window as any).DocxodusEditor.mountRibbon(host, {});
+      r.setExports((window as any).Docxodus);
+      r.openBlank('lk.docx');
+      r.loader.done();
+      (window as any).__ribbon = r;
+    });
+    await page.locator(blocks).first().click();
+    const lines = Array.from({ length: 80 }, (_, i) => `Paragraph ${i + 1} of a long document`);
+    await page.evaluate((t) => (window as any).__ribbon.exec('pasteText', { text: t }), lines.join('\n'));
+    if (paginated) {
+      await page.evaluate(() => (window as any).__ribbon.editor.setPaginated(true));
+      await expect(page.locator(`${HOST} .page-box [data-anchor][contenteditable="true"]`).first()).toBeVisible();
+    }
+    // (switching the view takes the focus: back into the first paragraph)
+    await page.locator(blocks).first().click();
+    await page.keyboard.press('Control+Home');
+    /** Whether the selection's moving end is inside the visible part of the scrolling area. */
+    const focusInView = () => page.evaluate(() => {
+      const sel = getSelection()!;
+      const r = document.createRange();
+      r.setStart(sel.focusNode!, sel.focusOffset);
+      const rect = r.getClientRects()[0] ?? (sel.focusNode!.nodeType === 1 ? (sel.focusNode as Element) : sel.focusNode!.parentElement!).getBoundingClientRect();
+      let el: HTMLElement | null = document.querySelector('#lk-host [data-anchor]');
+      while (el && !(el.scrollHeight > el.clientHeight && /auto|scroll/.test(getComputedStyle(el).overflowY))) el = el.parentElement;
+      const box = el ? el.getBoundingClientRect() : { top: 0, bottom: innerHeight };
+      return rect.top >= box.top - 1 && rect.bottom <= box.bottom + 1;
+    });
+    for (let i = 0; i < 50; i++) await page.keyboard.press('Shift+ArrowDown');
+    const reached = await caret(page);
+    expect(reached.block).toBeGreaterThan(40);
+    expect(await focusInView()).toBe(true);
+    for (let i = 0; i < 30; i++) await page.keyboard.press('Shift+ArrowUp');
+    expect((await caret(page)).block).toBeLessThan(reached.block - 20);
+    expect(await focusInView()).toBe(true);
+    // Ctrl+Shift+End: the story's end, in view
+    await page.keyboard.press('Control+Shift+End');
+    expect((await caret(page)).block).toBe(79);
+    expect(await focusInView()).toBe(true);
+  });
+}
