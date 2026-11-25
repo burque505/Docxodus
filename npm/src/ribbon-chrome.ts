@@ -28,9 +28,10 @@
  * `[data-chrome="full"]` adds back the desktop affordances.
  */
 import { NAV_PANE_HTML } from "./ribbon-navpane.js";
+import { STYLES_PANE_HTML } from "./ribbon-stylespane.js";
 
 /** Bumped whenever RIBBON_CSS changes, so a stale injected stylesheet is replaced. */
-export const RIBBON_STYLE_VERSION = "27";
+export const RIBBON_STYLE_VERSION = "28";
 export const RIBBON_STYLE_ATTR = "data-docxodus-ribbon-styles";
 
 /** Width of the comment gutter the surface reserves beside the sheet, in px. */
@@ -1127,7 +1128,7 @@ export const RIBBON_HTML = `
       </div>
 
       <div class="dxr-group">
-        <span class="dxr-glabel">Styles</span>
+        <span class="dxr-glabel">Styles<button type="button" class="dxr-launch" data-dxr="stylespanebtn" title="Styles pane: apply, modify, create and delete styles" aria-label="Styles pane">${ICON_LAUNCH}</button></span>
         <div class="dxr-row">
           <select data-dxr="style" title="Paragraph style">
             <option value="">Style&#8230;</option>
@@ -1456,6 +1457,7 @@ export const RIBBON_HTML = `
         <div class="dxr-row">
           <label class="dxr-toggle"><input data-dxr="showruler" type="checkbox" /> Ruler</label>
           <label class="dxr-toggle" title="Show the document's headings beside it: go to one, drag one to move it with its text"><input data-dxr="shownav" type="checkbox" /> Navigation Pane</label>
+          <label class="dxr-toggle" title="Show the document's styles beside it: apply, modify, create and delete them"><input data-dxr="showstyles" type="checkbox" /> Styles Pane</label>
           <label class="dxr-toggle" title="Show where bookmarks start and end, as gray brackets"><input data-dxr="showbookmarks" type="checkbox" /> Bookmarks</label>
           <label class="dxr-toggle"><input data-dxr="showrail" type="checkbox" checked /> Status bar</label>
           <label class="dxr-toggle"><input data-dxr="showhint" type="checkbox" checked /> Editing hint</label>
@@ -1703,6 +1705,7 @@ ${NAV_PANE_HTML}
   <div class="dxr-surface" data-dxr="editor" data-dxr-surface data-view="continuous" data-comments="on"></div>
 </div>
 </div>
+${STYLES_PANE_HTML}
 </div>
 
 <!-- Status bar — live engine state (the anchor rail), Word's page/word cells, and zoom. -->
@@ -1757,6 +1760,7 @@ ${NAV_PANE_HTML}
   <button type="button" role="menuitem" data-stylecmd="new"><span>New Style&#8230;</span><kbd aria-hidden="true"></kbd></button>
   <button type="button" role="menuitem" data-stylecmd="update"><span data-stylecmd-label>Update Style to Match Selection</span><kbd aria-hidden="true"></kbd></button>
   <button type="button" role="menuitem" data-stylecmd="copy"><span>Copy Styles from Document&#8230;</span><kbd aria-hidden="true"></kbd></button>
+  <button type="button" role="menuitem" data-stylecmd="pane"><span>Styles Pane</span><kbd aria-hidden="true"></kbd></button>
 </div>
 
 <div class="dxr-pop dxr-filemenu" data-dxr="casemenu" role="menu" aria-label="Change Case">
@@ -1855,6 +1859,8 @@ export const RIBBON_STATUS_TEXTS = {
   updateStyle: "Update {0} to Match Selection",
   styleMatches: "{0} already matches the selection.",
   styleNotUpdated: "{0} could not be updated.",
+  deleteStyleConfirm: "Delete the style {0}? Text in it takes the style it was based on.",
+  styleNotDeleted: "{0} could not be deleted.",
   characterStyles: "Character styles",
   modifyStyleTitle: "Modify Style",
   newStyleTitle: "Create New Style from Formatting",

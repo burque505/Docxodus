@@ -322,6 +322,14 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
       return id;
     },
   },
+  deleteStyle: {
+    group: "paragraph",
+    description: "Word's Styles pane Delete: delete a custom paragraph or character style. What used it takes the style it was based on; a paragraph style's linked character style goes too. Built-in and default styles are refused.",
+    args: { styleId: "string" },
+    run: (e, a) => {
+      must(e.deleteStyle(a.string("styleId")), "deleteStyle", e.lastStyleError?.message ?? "the engine refused it");
+    },
+  },
   indent: {
     group: "paragraph", description: "Change the left indent by this many twips (1440 an inch; negative to decrease).",
     args: { "twips?": "number" }, run: (e, a) => e.indent(a.optNumber("twips") ?? 720),

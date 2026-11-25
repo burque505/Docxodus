@@ -70,7 +70,8 @@ import { CROSSREF_DIALOG_CSS, CROSSREF_DIALOG_HTML, CrossReferenceDialog } from 
 import { CAPTION_DIALOG_CSS, CAPTION_DIALOG_HTML, CaptionDialog, TableOfFiguresDialog } from "./ribbon-caption-dialog.js";
 import { crossReferenceOptionsFor, crossReferencePart } from "./cross-reference.js";
 import { NAV_PANE_CSS, NavPane, type NavPaneCommand } from "./ribbon-navpane.js";
-import type { FormatOp, OutlineEntry, StyleDefinitionOp } from "./types.js";
+import { STYLES_PANE_CSS, StylesPane, styleDisplayName, type StylesPaneCommand, type StylesPaneFilter } from "./ribbon-stylespane.js";
+import type { FormatOp, OutlineEntry, StyleDefinitionOp, StyleInfo } from "./types.js";
 import { Ruler, RULER_CSS } from "./ruler.js";
 import { TABLE_DIALOG_CSS, TABLE_DIALOG_HTML, TableDialog, type TableDialogResult, type TableDialogTab } from "./ribbon-table-dialog.js";
 import { PICTURE_DIALOG_CSS, PICTURE_DIALOG_HTML, PICTURE_MENU_HTML, PictureDialog, type PictureDialogResult, type PictureDialogTab } from "./ribbon-picture-dialog.js";
@@ -231,6 +232,15 @@ export interface RibbonOptions extends DocxEditorOptions {
   navigationPane?: boolean;
   /** The Navigation Pane was opened or closed, for a host to keep. */
   onNavigationPaneChange?: (on: boolean) => void;
+  /** Open with the Styles pane showing (Home > Styles launcher, View > Styles Pane). */
+  stylesPane?: boolean;
+  /** The Styles pane's filter and Show Preview at the start. */
+  stylesPaneFilter?: StylesPaneFilter;
+  stylesPanePreview?: boolean;
+  /** The Styles pane was opened or closed, for a host to keep. */
+  onStylesPaneChange?: (on: boolean) => void;
+  /** The Styles pane's filter or Show Preview changed, for a host to keep. */
+  onStylesPaneSettingsChange?: (filter: StylesPaneFilter, preview: boolean) => void;
   /** The fonts used last, newest first (Word's "Recently Used Fonts"), kept by a host from one session to the next. */
   recentFonts?: string[];
   /** The recently used fonts changed (a font was applied), for a host to keep. */
@@ -385,9 +395,9 @@ export interface RibbonEditor {
   /** Word's Organizer from a file: the Copy Styles from Document dialog. False when no document
    *  is open. */
   openCopyStylesDialog(): boolean;
-  /** Word's Update [style] to Match Selection: the caret paragraph's style takes its formatting.
-   *  False when there is nothing to update. */
-  updateStyleToMatch(): boolean;
+  /** Word's Update [style] to Match Selection: the style (default: the caret paragraph's) takes the
+   *  selection's formatting. False when there is nothing to update. */
+  updateStyleToMatch(styleId?: string): boolean;
   /** Show the Paragraph dialog's indents in inches or centimetres (the `measurementUnit` option). */
   setMeasurementUnit(unit: MeasurementUnit): void;
   /** Open the List Levels dialog on the caret's list; false when no document is open. */
@@ -421,6 +431,10 @@ export interface RibbonEditor {
   updateFields(scope?: "selection" | "all" | "tables"): boolean;
   /** Show or hide the Navigation Pane (the View tab's Navigation Pane box). */
   setNavigationPaneVisible(on: boolean): void;
+  /** Show or hide the Styles pane (the Styles launcher, the View tab's Styles Pane box). */
+  setStylesPaneVisible(on: boolean): void;
+  /** The Styles pane's filter and Show Preview (a host's kept settings). */
+  setStylesPaneSettings(filter?: StylesPaneFilter, preview?: boolean): void;
   /** Open the picture dialog (Size, Text Wrapping and Position, Alt Text) on the selected picture;
    *  false when no picture is selected. */
   openPictureDialog(tab?: "size" | "layout" | "alt"): boolean;
@@ -516,7 +530,7 @@ const CONTROL_NAMES = [
   "gridpicker", "gridcells", "gridlabel", "gridalign", "gridborderless",
   "filebutton", "filemenu", "filerecent", "filerecentitems", "filehostitems",
   "linkpop", "linkform", "linkurl", "linkbookmark", "linkcancel",
-  "bookmark", "bookmarkdialog", "showbookmarks", "crossref", "crossrefdialog", "updatetoc", "caption", "tof", "updatetof", "crossrefcap", "captiondialog", "tofdialog", "fieldmenu", "navpane", "navmenu", "shownav",
+  "bookmark", "bookmarkdialog", "showbookmarks", "crossref", "crossrefdialog", "updatetoc", "caption", "tof", "updatetof", "crossrefcap", "captiondialog", "tofdialog", "fieldmenu", "navpane", "navmenu", "shownav", "stylespane", "stylespanemenu", "showstyles", "stylespanebtn",
   "editor",
   "loader", "loaderEyebrow", "loaderTitle", "loaderCopy", "loaderAd", "loaderNumber",
   "loaderAdTitle", "loaderAdCopy", "loaderBar", "loaderLabel", "loaderMeta", "loaderRetry",
@@ -535,7 +549,7 @@ function ensureStyles(doc: Document): void {
   existing?.remove();
   const style = doc.createElement("style");
   style.setAttribute(RIBBON_STYLE_ATTR, RIBBON_STYLE_VERSION);
-  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + FONT_DIALOG_CSS + STYLE_DIALOG_CSS + COPY_STYLES_DIALOG_CSS + BOOKMARK_DIALOG_CSS + CROSSREF_DIALOG_CSS + CAPTION_DIALOG_CSS + NAV_PANE_CSS + RULER_CSS;
+  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + FONT_DIALOG_CSS + STYLE_DIALOG_CSS + COPY_STYLES_DIALOG_CSS + BOOKMARK_DIALOG_CSS + CROSSREF_DIALOG_CSS + CAPTION_DIALOG_CSS + NAV_PANE_CSS + STYLES_PANE_CSS + RULER_CSS;
   (doc.head ?? doc.documentElement).appendChild(style);
 }
 
@@ -657,6 +671,7 @@ class RibbonSurface implements RibbonEditor {
   private bookmarkLayer: HTMLElement | null = null;
   private showBookmarks = false;
   private navPane!: NavPane;
+  private stylesPane!: StylesPane;
   private pictureUnit: MeasurementUnit = "in";
   private listDialog!: ListDialog;
   private listDefaults: ListLevelSpec[] | undefined;
@@ -924,21 +939,8 @@ class RibbonSurface implements RibbonEditor {
   private populateStyles(): void {
     const select = this.require<HTMLSelectElement>("style");
     const styles = this.live?.styles() ?? [];
-    const paragraphStyles = styles.filter((s) => s.type === "paragraph" && !s.semiHidden);
-    if (paragraphStyles.length === 0) return; // older bundle: keep the static five
-    const have = new Set(paragraphStyles.map((s) => s.id.toLowerCase()));
-    const builtIns: Array<[string, string, number]> = [
-      ["Normal", "Normal", 0], ["Heading1", "Heading 1", 9], ["Heading2", "Heading 2", 9],
-      ["Heading3", "Heading 3", 9], ["Title", "Title", 10], ["Subtitle", "Subtitle", 11],
-      ["Quote", "Quote", 29], ["ListParagraph", "List Paragraph", 34],
-    ];
-    for (const [id, name, priority] of builtIns) {
-      if (have.has(id.toLowerCase())) continue;
-      paragraphStyles.push({
-        id, name, type: "paragraph", isDefault: false, isCustom: false, hasLatentException: false,
-        uiPriority: priority, quickFormat: true,
-      });
-    }
+    if (!styles.some((s) => s.type === "paragraph" && !s.semiHidden)) return; // older bundle: keep the static five
+    const paragraphStyles = this.withBuiltIns(styles).filter((s) => s.type === "paragraph" && !s.semiHidden);
     paragraphStyles.sort((a, b) => {
       const qa = a.quickFormat ? 0 : 1;
       const qb = b.quickFormat ? 0 : 1;
@@ -977,6 +979,26 @@ class RibbonSurface implements RibbonEditor {
     this.styleNames = new Map(styles.filter((s) => s.type === "paragraph").map((s) => [s.id, s.name]));
     this.defaultStyleId = styles.find((s) => s.type === "paragraph" && s.isDefault)?.id ?? "Normal";
     this.syncStyleBox();
+  }
+
+  /** The document's styles plus the built-ins Word always offers (the engine creates a missing
+   *  built-in on first use). */
+  private withBuiltIns(styles: StyleInfo[]): StyleInfo[] {
+    const out = [...styles];
+    const have = new Set(styles.map((s) => s.id.toLowerCase()));
+    const builtIns: Array<[string, string, number]> = [
+      ["Normal", "Normal", 0], ["Heading1", "Heading 1", 9], ["Heading2", "Heading 2", 9],
+      ["Heading3", "Heading 3", 9], ["Title", "Title", 10], ["Subtitle", "Subtitle", 11],
+      ["Quote", "Quote", 29], ["ListParagraph", "List Paragraph", 34],
+    ];
+    for (const [id, name, priority] of builtIns) {
+      if (have.has(id.toLowerCase())) continue;
+      out.push({
+        id, name, type: "paragraph", isDefault: false, isCustom: false, hasLatentException: false,
+        uiPriority: priority, quickFormat: true,
+      });
+    }
+    return out;
   }
 
   /** Paragraph style names by id (for a style the gallery leaves out) and the default one. */
@@ -2268,6 +2290,84 @@ class RibbonSurface implements RibbonEditor {
     if (report && was !== on) this.options.onNavigationPaneChange?.(on);
   }
 
+  private wireStylesPane(): void {
+    this.stylesPane = new StylesPane(this.require("stylespane"), this.require("stylespanemenu"), {
+      styles: () => this.withBuiltIns(this.live?.styles() ?? []),
+      version: () => this.live?.stylesVersion ?? -1,
+      current: () => {
+        const live = this.live;
+        if (!live) return { paragraph: null, character: null };
+        let paragraph: string | null = null;
+        let character: string | null = null;
+        try { paragraph = live.styleAtCaret() ?? this.defaultStyleId; } catch { paragraph = null; }
+        try {
+          const id = live.runFormatAtSelection()?.styleId;
+          if (id && live.styles().some((s) => s.id === id && s.type === "character" && !s.isDefault)) character = id;
+        } catch { character = null; }
+        return { paragraph, character };
+      },
+      apply: (style) => this.applyStyleFromPane(style),
+      command: (style, command) => this.stylesPaneCommand(style, command),
+      newStyle: () => { this.openStyleDialog("new"); },
+      close: () => this.setStylesPaneVisible(false, true),
+      onSettingsChange: (filter, preview) => this.options.onStylesPaneSettingsChange?.(filter, preview),
+    });
+    this.stylesPane.setSettings(this.options.stylesPaneFilter, this.options.stylesPanePreview);
+    const box = this.require<HTMLInputElement>("showstyles");
+    box.addEventListener("change", () => this.setStylesPaneVisible(box.checked, true));
+    this.require("stylespanebtn").addEventListener("click", () => this.setStylesPaneVisible(!this.stylesPane.visible, true));
+    if (this.options.stylesPane) this.setStylesPaneVisible(true);
+  }
+
+  setStylesPaneSettings(filter?: StylesPaneFilter, preview?: boolean): void {
+    this.stylesPane.setSettings(filter, preview);
+  }
+
+  setStylesPaneVisible(on: boolean, report = false): void {
+    const box = this.control<HTMLInputElement>("showstyles");
+    if (box) box.checked = on;
+    const was = this.stylesPane.visible;
+    this.stylesPane.setVisible(on);
+    this.control("stylespanebtn")?.setAttribute("aria-pressed", String(on));
+    this.scheduleRuler();
+    if (report && was !== on) this.options.onStylesPaneChange?.(on);
+  }
+
+  /** A style clicked in the Styles pane: a paragraph style styles the selected paragraphs, a
+   *  character style formats the selected text (as the Styles box does). */
+  private applyStyleFromPane(style: StyleInfo): void {
+    const live = this.live;
+    if (!live) return;
+    if (style.type === "character") this.run("character style", () => live.applyRunFormat({ runStyle: style.id }), cmd("characterStyle", { styleId: style.id }));
+    else this.run("style", () => live.setParagraphStyle(style.id), cmd("style", { styleId: style.id }));
+    this.syncStyleBox();
+    this.stylesPane.refresh(true);
+  }
+
+  /** The Styles pane's row menu. */
+  private stylesPaneCommand(style: StyleInfo, command: StylesPaneCommand): void {
+    const live = this.live;
+    if (!live) return;
+    const name = styleDisplayName(style);
+    if (command === "modify") { this.openStyleDialog(style.id); return; }
+    if (command === "update") { this.updateStyleToMatch(style.id); return; }
+    if (command === "addgallery" || command === "removegallery") {
+      const op: StyleDefinitionOp = { styleId: style.id, quickFormat: command === "addgallery" };
+      let done = false;
+      this.run("style gallery", () => { done = live.setStyle(op) !== null; }, () => (done ? cmd("setStyle", { ...op } as EditorCommandArgs) : undefined));
+      if (!done) this.setStatus(live.lastStyleError?.message ?? this.translateText(RIBBON_STATUS_TEXTS.styleNotUpdated).replace("{0}", name));
+      this.populateStyles();
+      return;
+    }
+    // Delete: asked first, as Word asks.
+    const view = this.element.ownerDocument.defaultView;
+    if (!(view?.confirm(this.translateText(RIBBON_STATUS_TEXTS.deleteStyleConfirm).replace("{0}", name)) ?? false)) return;
+    let done = false;
+    this.run("delete style", () => { done = live.deleteStyle(style.id); }, () => (done ? cmd("deleteStyle", { styleId: style.id }) : undefined));
+    if (!done) { this.setStatus(live.lastStyleError?.message ?? this.translateText(RIBBON_STATUS_TEXTS.styleNotDeleted).replace("{0}", name)); return; }
+    this.populateStyles();
+  }
+
   /** A heading dragged in the Navigation Pane: before heading `before`, or to the end of the
    *  document. The command records the headings by their text. */
   private moveHeading(entry: OutlineEntry, before: OutlineEntry | null): void {
@@ -2425,6 +2525,7 @@ class RibbonSurface implements RibbonEditor {
       this.syncFocusRing();
       this.drawBookmarks();
       if (this.navPane?.visible) this.navPane.refresh();
+      if (this.stylesPane?.visible) this.stylesPane.refresh();
       if (!this.ruler.element.hidden) this.ruler.refresh();
     });
   }
@@ -2600,6 +2701,7 @@ class RibbonSurface implements RibbonEditor {
       if (which === "modify") this.openStyleDialog();
       else if (which === "new") this.openStyleDialog("new");
       else if (which === "copy") this.openCopyStylesDialog();
+      else if (which === "pane") this.setStylesPaneVisible(true, true);
       else this.updateStyleToMatch();
     });
     menu.addEventListener("keydown", (event) => {
@@ -2632,10 +2734,10 @@ class RibbonSurface implements RibbonEditor {
     return this.copyStylesDialog.show();
   }
 
-  updateStyleToMatch(): boolean {
+  updateStyleToMatch(styleId?: string): boolean {
     const live = this.live;
     if (!live) return false;
-    const id = live.styleAtCaret() ?? this.defaultStyleId;
+    const id = styleId ?? live.styleAtCaret() ?? this.defaultStyleId;
     const style = live.styles().find((s) => s.id === id);
     const paragraph = live.paragraphFormats()[0];
     const run = live.runFormatAtSelection();
@@ -2643,7 +2745,8 @@ class RibbonSurface implements RibbonEditor {
     const op: StyleDefinitionOp = { styleId: id };
     const runOp = runDifference(run, style.resolvedRun ?? {});
     if (Object.keys(runOp).length) op.run = runOp;
-    const paraOp = paragraphDifference(paragraph, paragraphOf(style.resolvedParagraph));
+    // (a character style takes only the characters' formatting)
+    const paraOp = style.type === "character" ? {} : paragraphDifference(paragraph, paragraphOf(style.resolvedParagraph));
     if (Object.keys(paraOp).length) op.paragraph = paraOp;
     const name = this.styleNames.get(id) ?? id;
     if (!op.run && !op.paragraph) { this.setStatus(this.translateText(RIBBON_STATUS_TEXTS.styleMatches).replace("{0}", name)); return false; }
@@ -2678,6 +2781,7 @@ class RibbonSurface implements RibbonEditor {
     this.wireLineNumbers();
     this.wireBookmarks();
     this.wireNavPane();
+    this.wireStylesPane();
     this.wireRuler();
     const ribbon = this.require("ribbon");
 

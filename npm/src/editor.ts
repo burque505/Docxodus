@@ -326,6 +326,7 @@ export interface DocxEditorExports {
     /** Copy Styles from another file (optional: older engine builds lack it). */
     ListStylesIn?: (documentBase64: string) => string;
     CopyStyles?: (handle: number, documentBase64: string, styleIdsJson: string) => string;
+    DeleteStyle?: (handle: number, styleId: string) => string;
     /** Word's Layout > Breaks (optional: absent on older bundles). */
     InsertSectionBreak?: (handle: number, anchor: string, offset: number, sectionStart: string) => string;
     RemoveSectionBreak?: (handle: number, anchor: string) => string;
@@ -6584,6 +6585,27 @@ export class DocxEditor {
     this.stylesVersion++;
     this.remount(this.activeBlock ? this.blockIndex(this.activeBlock) : -1, false);
     return raw.styleId ?? op.styleId ?? null;
+  }
+
+  /** Delete a custom paragraph or character style (Word's Styles pane). One undo step; the whole
+   *  document is laid out again. False when the engine refused (`lastStyleError` says why). */
+  deleteStyle(styleId: string): boolean {
+    const bridge = this.exports.DocxSessionBridge;
+    this.lastStyleError = null;
+    if (this.closed || typeof bridge.DeleteStyle !== "function") return false;
+    const block = this.activeBlock;
+    const fullId = block ? this.anchorIdOf(block) : null;
+    if (block && fullId) this.syncBlock(block, fullId);
+    const raw = JSON.parse(bridge.DeleteStyle(this.handle, styleId)) as EditResult;
+    if (!raw.success) {
+      this.lastStyleError = raw.error ? { code: raw.error.code, message: raw.error.message } : null;
+      return false;
+    }
+    this.parseEdit(JSON.stringify(raw));
+    this.stylesEdited = true;
+    this.stylesVersion++;
+    this.remount(this.activeBlock ? this.blockIndex(this.activeBlock) : -1, false);
+    return true;
   }
 
   /** The styles of another document or template (its bytes as base64), or null when it is not a
