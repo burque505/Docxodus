@@ -862,6 +862,7 @@ class RibbonSurface implements RibbonEditor {
   private populateFonts(documentFonts: string[]): void {
     const select = this.require<HTMLSelectElement>("fontfamily");
     const seen = new Set<string>();
+    const shown = select.value;
     select.replaceChildren();
     const placeholder = document.createElement("option");
     placeholder.value = "";
@@ -906,6 +907,65 @@ class RibbonSurface implements RibbonEditor {
       for (const name of this.systemFonts) add(name, all);
       select.appendChild(all);
     }
+    this.showFont(shown);
+  }
+
+  /** The Font box shows the font where the caret is, as Word's does (and Styles shows the style):
+   *  the engine's font for the run at the selection's start, else the rendered one; blank when
+   *  the selection holds more than one font. Left alone while the box is in use. */
+  private syncFontBox(el: HTMLElement | null): void {
+    const select = this.control<HTMLSelectElement>("fontfamily");
+    if (!select || !this.live || select.ownerDocument.activeElement === select) return;
+    let name: string | null = null;
+    if (el) {
+      const mixed = this.selectionFonts();
+      if (mixed !== null && mixed.size > 1) name = "";
+      else {
+        try { name = this.live.runFormatAtSelection()?.fontFamily ?? null; } catch { name = null; }
+        if (!name || name.startsWith("+")) name = mixed?.values().next().value ?? firstFamily(getComputedStyle(el).fontFamily);
+      }
+    }
+    this.showFont(name ?? "");
+  }
+
+  /** Put `name` in the Font box, adding it (for as long as it is shown) when the list lacks it. */
+  private showFont(name: string): void {
+    const select = this.control<HTMLSelectElement>("fontfamily");
+    if (!select) return;
+    const match = name ? Array.from(select.options).find((o) => o.value.toLowerCase() === name.toLowerCase()) : undefined;
+    for (const extra of Array.from(select.querySelectorAll("option[data-extra]")))
+      if (extra !== match) extra.remove();
+    if (name && !match) {
+      const opt = select.ownerDocument.createElement("option");
+      opt.value = name;
+      opt.textContent = name;
+      opt.dataset.extra = "";
+      select.appendChild(opt);
+      select.value = name;
+    } else select.value = match?.value ?? "";
+    // (blank, not "Font...", for a selection of several fonts)
+    const placeholder = select.options[0];
+    if (placeholder && placeholder.value === "") placeholder.textContent = this.live ? "" : "Font\u2026";
+  }
+
+  /** The fonts the selected text is rendered in (first family of each), or null for a caret. */
+  private selectionFonts(): Set<string> | null {
+    const selection = this.element.ownerDocument.getSelection();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
+    const range = selection.getRangeAt(0);
+    const root = range.commonAncestorContainer;
+    const fonts = new Set<string>();
+    const walker = this.element.ownerDocument.createTreeWalker(root.nodeType === Node.TEXT_NODE ? root.parentNode! : root, NodeFilter.SHOW_TEXT);
+    let seen = 0;
+    for (let node = walker.nextNode(); node && seen < 400; node = walker.nextNode()) {
+      if (!node.textContent?.trim() || !range.intersectsNode(node)) continue;
+      const parent = node.parentElement;
+      if (!parent || !this.surface.contains(parent) || parent.closest('[contenteditable="false"]')) continue;
+      seen++;
+      fonts.add(firstFamily(getComputedStyle(parent).fontFamily));
+      if (fonts.size > 1) break;
+    }
+    return fonts.size ? fonts : null;
   }
 
   private systemFonts: string[] = [];
@@ -2948,6 +3008,8 @@ class RibbonSurface implements RibbonEditor {
     });
 
     this.wireSelect("fontfamily", "font family", (v) => { this.live!.setFontFamily(v); this.noteFont(v); }, (v) => cmd("fontFamily", { name: v }));
+    const fontBox = this.require<HTMLSelectElement>("fontfamily");
+    fontBox.addEventListener("change", () => { fontBox.blur(); this.syncFontBox(this.selectionElement()); });
     const styleBox = this.require<HTMLSelectElement>("style");
     styleBox.addEventListener("change", () => {
       const value = styleBox.value;
@@ -4254,6 +4316,7 @@ class RibbonSurface implements RibbonEditor {
         if (input && doc.activeElement !== input) input.value = hex;
       }
       this.control("smallcaps")?.setAttribute("aria-pressed", String(cs.fontVariant.includes("small-caps")));
+      this.syncFontBox(el);
       const align = cs.textAlign === "start" ? "left" : cs.textAlign === "end" ? "right" : cs.textAlign;
       for (const button of Array.from(this.element.querySelectorAll<HTMLElement>("button[data-align]"))) {
         button.classList.toggle("dxr-on", button.dataset.align === align);
@@ -4486,4 +4549,9 @@ class RibbonSurface implements RibbonEditor {
     clearInterval(this.featureTimer);
     this.featureTimer = null;
   }
+}
+
+/** The first family of a CSS font-family list, without quotes. */
+function firstFamily(list: string): string {
+  return (list.split(",")[0] ?? "").trim().replace(/^["']|["']$/g, "");
 }
