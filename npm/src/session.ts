@@ -11,6 +11,9 @@ import type {
   BlockMetadata,
   BookmarkInfo,
   OutlineEntry,
+  CaptionOptions,
+  CaptionInfo,
+  ReferenceTargetPart,
   BulkEditResult,
   CharSpan,
   CommentListEntry,
@@ -1630,8 +1633,23 @@ export class DocxSession {
     return JSON.parse(this.wasm.UpdateFields(this.handle, options ? JSON.stringify(options) : "")) as EditResult;
   }
 
-  addReferenceBookmark(anchorId: string): EditResult {
-    return JSON.parse(this.wasm.AddReferenceBookmark(this.handle, anchorId)) as EditResult;
+  addReferenceBookmark(anchorId: string, part: ReferenceTargetPart = "paragraph"): EditResult {
+    if (part === "paragraph") return JSON.parse(this.wasm.AddReferenceBookmark(this.handle, anchorId)) as EditResult;
+    return JSON.parse(this.wasm.AddReferenceBookmarkPart!(this.handle, anchorId, part)) as EditResult;
+  }
+
+  /**
+   * Word's Insert Caption: a new paragraph in the Caption style, "Label" + a SEQ field numbering
+   * it + `options.text`, above or below `anchorId` (a paragraph, say one holding a picture, or a
+   * table). Every SEQ field is numbered again. One undo step; refused while changes are tracked.
+   */
+  insertCaption(anchorId: string, options: CaptionOptions = {}): EditResult {
+    return JSON.parse(this.wasm.InsertCaption!(this.handle, anchorId, JSON.stringify(options))) as EditResult;
+  }
+
+  /** The body's captions in document order: paragraphs holding a SEQ field. */
+  listCaptions(): CaptionInfo[] {
+    return JSON.parse(this.wasm.ListCaptions!(this.handle)) as CaptionInfo[];
   }
 
   addBookmark(name: string, range: DocumentRange): EditResult {

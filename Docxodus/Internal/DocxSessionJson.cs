@@ -627,6 +627,50 @@ internal static class DocxSessionJson
         };
     }
 
+    /// <summary>Parse <c>{ label?, position?: "above"|"below", excludeLabel?, numberFormat?, text? }</c>.</summary>
+    public static CaptionOptions ParseCaptionOptions(JsonElement root)
+    {
+        var defaults = new CaptionOptions();
+        if (root.ValueKind != JsonValueKind.Object) return defaults;
+        var position = TryGetString(root, "position", null);
+        return new CaptionOptions
+        {
+            Label = TryGetString(root, "label", defaults.Label)!,
+            Position = position is null ? null
+                : string.Equals(position, "above", StringComparison.OrdinalIgnoreCase) ? CaptionPosition.Above
+                : string.Equals(position, "below", StringComparison.OrdinalIgnoreCase) ? CaptionPosition.Below
+                : throw new ArgumentException($"position must be \"above\" or \"below\"; got {position}"),
+            ExcludeLabel = TryGetBool(root, "excludeLabel", defaults.ExcludeLabel),
+            NumberFormat = TryGetString(root, "numberFormat", defaults.NumberFormat)!,
+            Text = TryGetString(root, "text", defaults.Text),
+        };
+    }
+
+    /// <summary>The wire name of a reference target part: <c>paragraph</c>, <c>labelAndNumber</c>,
+    /// <c>captionText</c> (null or empty: paragraph).</summary>
+    public static ReferenceTargetPart ParseReferenceTargetPart(string? part) => part switch
+    {
+        null or "" or "paragraph" => ReferenceTargetPart.Paragraph,
+        "labelAndNumber" => ReferenceTargetPart.LabelAndNumber,
+        "captionText" => ReferenceTargetPart.CaptionText,
+        _ => throw new ArgumentException($"part must be paragraph, labelAndNumber or captionText; got {part}"),
+    };
+
+    public static string SerializeCaptions(IReadOnlyList<CaptionInfo> captions)
+    {
+        var sb = new StringBuilder(captions.Count * 100 + 2).Append('[');
+        for (int i = 0; i < captions.Count; i++)
+        {
+            if (i > 0) sb.Append(',');
+            var c = captions[i];
+            sb.Append("{\"anchorId\":").Append(JsonString(c.AnchorId))
+              .Append(",\"label\":").Append(JsonString(c.Label))
+              .Append(",\"number\":").Append(JsonString(c.Number))
+              .Append(",\"text\":").Append(JsonString(c.Text)).Append('}');
+        }
+        return sb.Append(']').ToString();
+    }
+
     /// <summary>Parse <c>{ category?, hyperlinks?, entryPageSeparator?, rightTabPos? }</c>.
     /// <c>category</c> is the wire name (<c>cases</c>, <c>statutes</c>, …), not Word's number —
     /// the number is an OOXML detail the caller should not have to know.</summary>

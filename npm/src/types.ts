@@ -1947,6 +1947,11 @@ export interface DocxodusWasmExports {
       optionsJson: string
     ) => string;
     AddReferenceBookmark: (handle: number, anchor: string) => string;
+    /** `part`: "paragraph", "labelAndNumber" or "captionText". */
+    AddReferenceBookmarkPart?: (handle: number, anchor: string, part: string) => string;
+    /** `optionsJson`: "" or a serialized {@link CaptionOptions}. */
+    InsertCaption?: (handle: number, anchor: string, optionsJson: string) => string;
+    ListCaptions?: (handle: number) => string;
     /** `optionsJson`: "" or a serialized {@link UpdateFieldsOptions}. */
     UpdateFields: (handle: number, optionsJson: string) => string;
     InsertEndnote: (handle: number, anchor: string, characterOffset: number, markdown: string) => string;
@@ -2647,6 +2652,36 @@ export interface BookmarkRangeSegment {
 }
 
 /** One heading of the document's outline — see {@link DocxSession.listOutline}. */
+/** Options for {@link DocxSession.insertCaption}: Word's Insert Caption dialog. */
+export interface CaptionOptions {
+  /** The caption label ("Figure", "Table", "Equation", or the user's own); its SEQ field counts by
+   *  it, spaces written as underscores. Default "Figure". */
+  label?: string;
+  /** Above or below the item; omitted: above a table, below anything else. */
+  position?: "above" | "below";
+  /** Only the number, without the label. */
+  excludeLabel?: boolean;
+  /** The SEQ field's number format: "ARABIC" (default), "alphabetic", "ALPHABETIC", "roman", "ROMAN". */
+  numberFormat?: "ARABIC" | "alphabetic" | "ALPHABETIC" | "roman" | "ROMAN";
+  /** What follows the number, as typed (": The results"). */
+  text?: string;
+}
+
+/** One caption in the body (see {@link DocxSession.listCaptions}). */
+export interface CaptionInfo {
+  /** The caption paragraph's anchor. */
+  anchorId: string;
+  /** The SEQ identifier ("Figure", "My_Label"). */
+  label: string;
+  /** The number the caption shows. */
+  number: string;
+  /** The paragraph's text ("Figure 1: The results"). */
+  text: string;
+}
+
+/** Which part of a paragraph a cross-reference bookmark spans (see {@link DocxSession.addReferenceBookmark}). */
+export type ReferenceTargetPart = "paragraph" | "labelAndNumber" | "captionText";
+
 export interface OutlineEntry {
   anchorId: string;
   /** 1-9: Word's Level 1 is `w:outlineLvl w:val="0"`. */
