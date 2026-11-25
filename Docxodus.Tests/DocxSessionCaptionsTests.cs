@@ -227,6 +227,18 @@ public class DocxSessionCaptionsTests
         Assert.Equal(new[] { "A cat\t1", "Figure 1: A cat", "No table of figures entries found." }, Lines(session));
     }
 
+    [Fact]
+    public void CP013_InsertedWithoutLabelAndNumber_ListsTheTextAlone()
+    {
+        using var session = Open(P(R("Intro")) + Caption("Figure", "1", ": A cat"));
+        Assert.True(session.InsertTableOfFigures(BodyParagraphs(session)[0], Position.Before,
+            new TableOfFiguresOptions { IncludeLabelAndNumber = false, Hyperlinks = false }).Success);
+
+        Assert.True(session.UpdateFields(new UpdateFieldsOptions { TablesOfContentsOnly = true }).Success);
+
+        Assert.Equal("A cat", Lines(session)[0].Split('\t')[0]);
+    }
+
     private static string Contents(string instr) =>
         P(Start(instr) + R("old entry") + Char("end"), "TableofFigures");
 }

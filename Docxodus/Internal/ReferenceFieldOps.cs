@@ -78,10 +78,11 @@ internal static class ReferenceFieldOps
     /// <summary>The <c>TOC</c> instruction for a table of FIGURES: same field, selecting entries by
     /// caption label rather than by outline level. That is Word's own encoding — a table of figures
     /// is a TOC with <c>\c</c>, not a field of its own.</summary>
-    internal static string TofInstruction(string captionLabel, bool hyperlinks)
+    internal static string TofInstruction(string captionLabel, bool hyperlinks, bool includeLabelAndNumber = true)
     {
         var sb = new StringBuilder("TOC");
-        sb.Append(" \\c \"").Append(EscapeQuotes(captionLabel)).Append('"');
+        // (\a lists the captions without their label and number, Word's "Include label and number" off)
+        sb.Append(includeLabelAndNumber ? " \\c \"" : " \\a \"").Append(EscapeQuotes(captionLabel)).Append('"');
         if (hyperlinks) sb.Append(" \\h");
         return sb.ToString();
     }

@@ -94,7 +94,7 @@ public sealed partial class DocxSession
             entryStyleId: Internal.ReferenceFieldOps.TofEntryStyleId,
             entryStyleName: "table of figures",
             withHeadingStyle: false,
-            instruction: Internal.ReferenceFieldOps.TofInstruction(o.CaptionLabel.Trim(), o.Hyperlinks),
+            instruction: Internal.ReferenceFieldOps.TofInstruction(o.CaptionLabel.Trim(), o.Hyperlinks, o.IncludeLabelAndNumber),
             rightTabPos: o.RightTabPos,
             title: null,
             wrapInContentControl: false);

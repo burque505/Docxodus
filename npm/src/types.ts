@@ -3034,6 +3034,8 @@ export interface TableOfFiguresOptions {
   captionLabel?: string;
   /** Make each entry a hyperlink to its caption (`\h`). Default true. */
   hyperlinks?: boolean;
+  /** Start each entry with the caption's label and number (`\c`); false: its text alone (`\a`). Default true. */
+  includeLabelAndNumber?: boolean;
   /** Right-aligned dot-leader tab stop in twips. Default 9350. */
   rightTabPos?: number;
 }

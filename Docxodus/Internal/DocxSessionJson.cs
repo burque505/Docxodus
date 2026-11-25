@@ -626,6 +626,7 @@ internal static class DocxSessionJson
         {
             CaptionLabel = TryGetString(root, "captionLabel", defaults.CaptionLabel)!,
             Hyperlinks = TryGetBool(root, "hyperlinks", defaults.Hyperlinks),
+            IncludeLabelAndNumber = TryGetBool(root, "includeLabelAndNumber", defaults.IncludeLabelAndNumber),
             RightTabPos = TryGetInt(root, "rightTabPos", defaults.RightTabPos),
         };
     }

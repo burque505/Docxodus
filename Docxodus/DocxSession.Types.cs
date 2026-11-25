@@ -542,6 +542,10 @@ public sealed record TableOfFiguresOptions
     /// <summary>Make each entry a hyperlink to its caption (<c>\h</c>).</summary>
     public bool Hyperlinks { get; init; } = true;
 
+    /// <summary>Each entry starts with the caption's label and number (<c>\c</c>); false lists the
+    /// caption's text alone (<c>\a</c>).</summary>
+    public bool IncludeLabelAndNumber { get; init; } = true;
+
     /// <inheritdoc cref="TableOfContentsOptions.RightTabPos"/>
     public int RightTabPos { get; init; } = 9350;
 }
