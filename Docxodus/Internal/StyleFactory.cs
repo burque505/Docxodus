@@ -317,6 +317,26 @@ internal static class StyleFactory
             return ParagraphStyle(styleId, "Title", outlineLvl: null, bold: false, halfPoints: 56, color: "2E74B5");
         if (styleId == "Subtitle")
             return ParagraphStyle(styleId, "Subtitle", outlineLvl: null, bold: false, halfPoints: 28, color: "5A5A5A");
+        if (styleId == "Caption")
+            // Word's: 9 pt italic in the theme's dark text colour, 10 pt after (no theme reference, as
+            // the reference-table styles).
+            return new XElement(W + "style",
+                new XAttribute(W + "type", "paragraph"),
+                new XAttribute(W + "styleId", styleId),
+                new XElement(W + "name", new XAttribute(W + "val", "caption")),
+                new XElement(W + "basedOn", new XAttribute(W + "val", "Normal")),
+                new XElement(W + "next", new XAttribute(W + "val", "Normal")),
+                new XElement(W + "uiPriority", new XAttribute(W + "val", "35")),
+                new XElement(W + "unhideWhenUsed"),
+                new XElement(W + "qFormat"),
+                new XElement(W + "pPr",
+                    new XElement(W + "spacing", new XAttribute(W + "after", "200"),
+                        new XAttribute(W + "line", "240"), new XAttribute(W + "lineRule", "auto"))),
+                new XElement(W + "rPr",
+                    new XElement(W + "i"), new XElement(W + "iCs"),
+                    new XElement(W + "color", new XAttribute(W + "val", "44546A")),
+                    new XElement(W + "sz", new XAttribute(W + "val", "18")),
+                    new XElement(W + "szCs", new XAttribute(W + "val", "18"))));
         if (styleId.StartsWith("Heading") &&
             int.TryParse(styleId.Substring("Heading".Length), out int n) && n is >= 1 and <= 9)
         {

@@ -1089,6 +1089,22 @@ internal static class DocxSessionOps
     public static string RepairFields(int handle, string anchorId) =>
         DocxSessionJson.Serialize(SessionRegistry.Get(handle).RepairFields(anchorId));
 
+    /// <summary>The hidden <c>_Ref</c> bookmark over part of a caption (or a whole paragraph); see
+    /// <see cref="DocxSession.AddReferenceBookmark(string, ReferenceTargetPart)"/>.</summary>
+    public static string AddReferenceBookmarkPart(int handle, string anchorId, string? part) =>
+        DocxSessionJson.Serialize(SessionRegistry.Get(handle).AddReferenceBookmark(anchorId,
+            DocxSessionJson.ParseReferenceTargetPart(part)));
+
+    /// <summary>Word's Insert Caption; see <see cref="DocxSession.InsertCaption"/>.</summary>
+    public static string InsertCaption(int handle, string anchorId, CaptionOptions? options = null,
+        MutationPreconditions? preconditions = null) =>
+        Mutate(handle, preconditions, anchorId, s => s.InsertCaption(anchorId, options));
+
+    /// <summary><see cref="DocxSession.ListCaptions"/> as a JSON array of
+    /// <c>{ anchorId, label, number, text }</c>.</summary>
+    public static string ListCaptions(int handle) =>
+        DocxSessionJson.SerializeCaptions(SessionRegistry.Get(handle).ListCaptions());
+
     public static string AddBookmark(int handle, string name, string startAnchorId, int startOffset,
         string endAnchorId, int endOffset) =>
         DocxSessionJson.Serialize(SessionRegistry.Get(handle).AddBookmark(name,

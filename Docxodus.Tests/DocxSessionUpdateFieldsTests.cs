@@ -14,21 +14,21 @@ namespace Docxodus.Tests;
 /// REF / PAGEREF / SEQ results made current, one undo, a range, the update-on-open request.</summary>
 public class DocxSessionUpdateFieldsTests
 {
-    private static readonly XNamespace W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+    internal static readonly XNamespace W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 
-    private static string[] BodyParagraphs(DocxSession session) =>
+    internal static string[] BodyParagraphs(DocxSession session) =>
         session.Project().AnchorIndex.Values
             .Where(t => t.Anchor.Kind is "p" or "h" && t.Anchor.Scope == "body")
             .Select(t => t.Anchor.Id).ToArray();
 
-    private static XElement Body(DocxSession session)
+    internal static XElement Body(DocxSession session)
     {
         using var stream = new MemoryStream(session.Save());
         using var doc = WordprocessingDocument.Open(stream, false);
         return XDocument.Parse(new StreamReader(doc.MainDocumentPart!.GetStream()).ReadToEnd()).Root!.Element(W + "body")!;
     }
 
-    private static bool AsksForUpdate(DocxSession session)
+    internal static bool AsksForUpdate(DocxSession session)
     {
         using var stream = new MemoryStream(session.Save());
         using var doc = WordprocessingDocument.Open(stream, false);
@@ -37,7 +37,7 @@ public class DocxSessionUpdateFieldsTests
         return XDocument.Parse(new StreamReader(part.GetStream()).ReadToEnd()).Descendants(W + "updateFields").Any();
     }
 
-    private static string Text(XElement paragraph) =>
+    internal static string Text(XElement paragraph) =>
         string.Concat(paragraph.Descendants().Where(e => e.Name == W + "t" || (e.Name == W + "tab" && e.Parent?.Name == W + "r"))
             .Select(e => e.Name == W + "tab" ? "\t" : e.Value));
 
@@ -243,7 +243,7 @@ public class DocxSessionUpdateFieldsTests
         + "xmlns:wps=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\"";
 
     /// <summary>A document with heading styles that asks Word to update its fields.</summary>
-    private static DocxSession Open(string body, string styles = "", string sectPr = "<w:sectPr/>", string numbering = "")
+    internal static DocxSession Open(string body, string styles = "", string sectPr = "<w:sectPr/>", string numbering = "")
     {
         var stream = new MemoryStream();
         using (var document = WordprocessingDocument.Create(stream, DocumentFormat.OpenXml.WordprocessingDocumentType.Document))
@@ -267,13 +267,13 @@ public class DocxSessionUpdateFieldsTests
         return new DocxSession(stream.ToArray());
     }
 
-    private static string P(string content, string? style = null, string pPr = "") =>
+    internal static string P(string content, string? style = null, string pPr = "") =>
         $"<w:p><w:pPr>{(style is null ? "" : $"<w:pStyle w:val=\"{style}\"/>")}{pPr}</w:pPr>{content}</w:p>";
-    private static string R(string text) => $"<w:r><w:t xml:space=\"preserve\">{text}</w:t></w:r>";
-    private static string Char(string type, string attributes = "") => $"<w:r><w:fldChar w:fldCharType=\"{type}\"{attributes}/></w:r>";
-    private static string Start(string instr, string attributes = "") =>
+    internal static string R(string text) => $"<w:r><w:t xml:space=\"preserve\">{text}</w:t></w:r>";
+    internal static string Char(string type, string attributes = "") => $"<w:r><w:fldChar w:fldCharType=\"{type}\"{attributes}/></w:r>";
+    internal static string Start(string instr, string attributes = "") =>
         Char("begin", attributes) + $"<w:r><w:instrText xml:space=\"preserve\">{instr}</w:instrText></w:r>" + Char("separate");
-    private static string Field(string instr, string result, string attributes = "") => Start(instr, attributes) + R(result) + Char("end");
+    internal static string Field(string instr, string result, string attributes = "") => Start(instr, attributes) + R(result) + Char("end");
     private static string Marked(string name, int id, string content) =>
         $"<w:bookmarkStart w:id=\"{id}\" w:name=\"{name}\"/>{content}<w:bookmarkEnd w:id=\"{id}\"/>";
     private const string Tab = "<w:r><w:tab/></w:r>";
@@ -283,10 +283,9 @@ public class DocxSessionUpdateFieldsTests
         string.Concat(entries.Select((e, i) => P((i == 0 ? Start(instr) : "") + e, "TOC1"))) + closing;
     private static string Closing(string after = "", string pPr = "") => P(Char("end") + after, null, pPr);
 
-    private static string[] Lines(DocxSession session) => Body(session).Elements(W + "p").Select(Text).ToArray();
+    internal static string[] Lines(DocxSession session) => Body(session).Elements(W + "p").Select(Text).ToArray();
 
     [Theory]
-    [InlineData(" TOC \\h \\z \\c \"Figure\" ")]
     [InlineData(" TOC \\t \"Clause,1\" \\h ")]
     [InlineData(" TOC \\o \"1-3\" \\b part ")]
     [InlineData(" TOC \\f A ")]
@@ -306,15 +305,15 @@ public class DocxSessionUpdateFieldsTests
     }
 
     [Fact]
-    public void UF011_ATableOfFiguresTheSessionInserted_StaysForWordToFill()
+    public void UF011_ATableOfFiguresTheSessionInserted_IsFilledWithTheCaptions()
     {
         using var session = Open(P(R("Intro"), "Heading1") + P(R("Figure ") + Field(" SEQ Figure \\* ARABIC ", "9"), "Caption"));
         Assert.True(session.InsertTableOfFigures(session.ListOutline()[0].AnchorId, Position.Before).Success);
 
         Assert.True(session.UpdateFields().Success);
 
-        Assert.Equal(new[] { "", "Intro", "Figure 1" }, Lines(session));
-        Assert.True(AsksForUpdate(session));
+        Assert.Equal(new[] { "Figure 1\t1", "Intro", "Figure 1" }, Lines(session));
+        Assert.True(AsksForUpdate(session)); // (the entry's page is not known)
     }
 
     [Fact]

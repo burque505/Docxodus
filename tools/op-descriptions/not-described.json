@@ -31,6 +31,9 @@
     "GetImageCapabilities": "Sessionless: takes no session handle; it reports what the build can decode, not a property of a document.",
     "VerifyDeliverable": "Composite: runs the deliverable-verification policy over a checkpoint of the whole package, with an optional request object.",
     "InsertHtml": "Editor paste (dAHKxodus fork): takes the clipboard's HTML as the browser serializes it, for the editor's paste handler; not yet described for the agent transports.",
-    "InsertPastedText": "Editor paste (dAHKxodus fork): Paste as Plain Text for the editor's paste handler; not yet described for the agent transports."
+    "InsertPastedText": "Editor paste (dAHKxodus fork): Paste as Plain Text for the editor's paste handler; not yet described for the agent transports.",
+    "AddReferenceBookmarkPart": "Fork-only for now (dAHKxodus captions): Python/stdio/MCP parity and a description come with the upstream PR.",
+    "InsertCaption": "Fork-only for now (dAHKxodus captions): Python/stdio/MCP parity and a description come with the upstream PR.",
+    "ListCaptions": "Fork-only for now (dAHKxodus captions): Python/stdio/MCP parity and a description come with the upstream PR."
   }
 }

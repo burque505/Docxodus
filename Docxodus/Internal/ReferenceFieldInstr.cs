@@ -6,7 +6,7 @@ namespace Docxodus.Internal;
 /// <summary>
 /// Recognizes the cross-reference field instructions — <c>REF</c>, <c>PAGEREF</c> and
 /// <c>NOTEREF</c> — with the bookmark each one targets and whether its <c>\h</c> switch makes it a
-/// jump to that bookmark.
+/// jump to that bookmark; and a caption's <c>SEQ</c> number, its identifier as the target.
 /// </summary>
 /// <remarks>
 /// The consumer is <see cref="WmlToHtmlConverterSettings.StampReferenceFields"/>, which an editor's
@@ -28,10 +28,11 @@ internal static class ReferenceFieldInstr
         var tokens = instrText.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
         if (tokens.Length < 2) return null;
         var kind = tokens[0].ToUpperInvariant();
-        if (kind is not ("REF" or "PAGEREF" or "NOTEREF")) return null;
+        if (kind is not ("REF" or "PAGEREF" or "NOTEREF" or "SEQ")) return null;
         var target = tokens[1].Trim('"');
         if (target.Length == 0 || target[0] == '\\') return null;
-        bool hyperlink = tokens.Skip(2).Any(t => string.Equals(t, "\\h", StringComparison.OrdinalIgnoreCase));
+        // (a SEQ field's \h hides its number: it is no jump)
+        bool hyperlink = kind != "SEQ" && tokens.Skip(2).Any(t => string.Equals(t, "\\h", StringComparison.OrdinalIgnoreCase));
         return (kind, target, hyperlink);
     }
 }

@@ -36,6 +36,7 @@ public sealed partial class DocxSession
     private const string ReferenceSourceNotFound = "Error! Reference source not found.";
     private const string BookmarkNotDefined = "Error! Bookmark not defined.";
     private const string NoTocEntries = "No table of contents entries found.";
+    private const string NoFigureEntries = "No table of figures entries found.";
 
     /// <summary>Fields with no cached result that can go stale: Word computes them as it lays the page
     /// out, or they only mark or accept something.</summary>
@@ -54,7 +55,7 @@ public sealed partial class DocxSession
     /// page from <see cref="UpdateFieldsOptions.Pages"/>; <c>SEQ</c> fields are numbered again in
     /// document order. One undo step, or none when nothing changes.
     /// <para>A field whose result the engine cannot work out exactly keeps the result it has: a locked
-    /// field, another kind of field (a table of figures or authorities among them), a switch not listed
+    /// field, another kind of field (a table of authorities among them), a switch not listed
     /// here, a result that holds tracked changes, comments or one end of a range. The document's
     /// request that Word update its fields on open is cleared only when no such field is left in any
     /// story. Refused while changes are tracked: Word regenerates these results wholesale, which no
@@ -537,8 +538,13 @@ public sealed partial class DocxSession
     /// <summary>What a <c>TOC</c> instruction asks for, when it asks only for headings.</summary>
     private sealed record TocSwitches(int From, int To, bool OutlineLevels, bool Links, int NoPagesFrom, int NoPagesTo)
     {
+        /// <summary>A table of figures: the captions numbered by this <c>SEQ</c> identifier (<c>\c</c>,
+        /// or <c>\a</c> without their label and number), not headings.</summary>
+        public string? Label { get; init; }
+        public bool NoLabel { get; init; }
+
         /// <summary>Null for an instruction with a switch that selects other entries or lays them out
-        /// otherwise (<c>\c</c> figures, <c>\t</c> styles, <c>\b</c> bookmark, <c>\f</c>, <c>\p</c>, <c>\w</c>…).</summary>
+        /// otherwise (<c>\t</c> styles, <c>\b</c> bookmark, <c>\f</c>, <c>\p</c>, <c>\w</c>…).</summary>
         public static TocSwitches? Parse(string[] tokens)
         {
             var result = new TocSwitches(1, 9, false, false, 0, -1);
@@ -555,6 +561,8 @@ public sealed partial class DocxSession
                     case "\\h" when !hasArgument: result = result with { Links = true }; break;
                     case "\\u" when !hasArgument: result = result with { OutlineLevels = true }; break;
                     case "\\z" when !hasArgument: break;
+                    case "\\c" when hasArgument && result.Label is null: result = result with { Label = tokens[i + 1] }; break;
+                    case "\\a" when hasArgument && result.Label is null: result = result with { Label = tokens[i + 1], NoLabel = true }; break;
                     case "\\*" when hasArgument && IsKeepFormat(tokens[i + 1]): break;
                     default: return null;
                 }
@@ -588,18 +596,24 @@ public sealed partial class DocxSession
             .GroupBy(f => f.Tokens[1]).ToDictionary(g => g.Key, g => g.First().ResultText());
         var bookmarks = ListBookmarks();
         var found = new List<(XElement Heading, int Level, string? Number, string Text, string? Bookmark, string? Page)>();
+        // (a table of figures lists the captions numbered by its label, each once)
+        var captions = switches.Label is not { } label ? null
+            : ScanFields(body).Where(f => string.Equals(CaptionIdentifier(f), label, StringComparison.OrdinalIgnoreCase))
+                .GroupBy(f => f.Paragraph).ToDictionary(g => g.Key, g => g.First());
         foreach (var heading in StoryParagraphs(body).Where(p => !inTable.Contains(p)))
         {
-            int? level = (levels.BuiltInHeading(heading) ?? (switches.OutlineLevels ? levels.Of(heading) : null)) + 1;
+            int? level = captions is not null ? (captions.ContainsKey(heading) ? 1 : null)
+                : (levels.BuiltInHeading(heading) ?? (switches.OutlineLevels ? levels.Of(heading) : null)) + 1;
             if (level is null || level < switches.From || level > switches.To) continue;
-            var text = Regex.Replace(ParagraphText(heading), @"\s+", " ").Trim();
+            var text = Regex.Replace(switches.NoLabel && captions is not null
+                ? CaptionTextAfterNumber(heading, captions[heading]) : ParagraphText(heading), @"\s+", " ").Trim();
             if (text.Length == 0 || AnchorIn(anchors, heading) is not { } anchor) continue;
             // A hidden _Toc bookmark over the heading's text; one there already is kept, first the one the
             // table used (Word leaves a heading several over time).
             var bookmark = bookmarks.FirstOrDefault(b => shownPages.ContainsKey(b.Name) && b.IsPaired && b.IsValid
                     && b.Range?.StartAnchorId == anchor.Id)?.Name
                 ?? ParagraphBookmark(bookmarks, anchor.Id, heading, "_Toc");
-            found.Add((heading, level.Value, ListNumberResolver.Resolve(heading, _doc!), text, bookmark,
+            found.Add((heading, level.Value, captions is null ? ListNumberResolver.Resolve(heading, _doc!) : null, text, bookmark,
                 update.PageOf(heading) ?? (bookmark is null ? null : shownPages.GetValueOrDefault(bookmark))));
         }
 
@@ -608,9 +622,12 @@ public sealed partial class DocxSession
         bool holdsNoEntry = !ReferenceEquals(first, last) && !toc.End.ElementsBeforeSelf().Any(e => e.Name != W.pPr && VisibleText(e).Length > 0);
         var shown = paragraphs.Where(p => !holdsNoEntry || !ReferenceEquals(p, last)).Select(p => (Paragraph: p,
             Text: string.Concat(p.Elements().Where(e => e.Name != W.pPr && !before.Contains(e) && !after.Contains(e)).Select(VisibleText)))).ToList();
-        if (found.Count == 0 ? shown.Count == 1 && shown[0].Text == NoTocEntries
+        var noEntries = captions is null ? NoTocEntries : NoFigureEntries;
+        string EntryStyle(int level) => captions is null ? TocLevelStyle(level) : FigureEntryStyle();
+        string? FindEntryStyle(int level) => captions is null ? FindTocLevelStyle(level) : FindFigureEntryStyle();
+        if (found.Count == 0 ? shown.Count == 1 && shown[0].Text == noEntries
             : shown.Count == found.Count && shown.Zip(found).All(pair => pair.Second is { Bookmark: { } target } entry
-                && (string?)pair.First.Paragraph.Element(W.pPr)?.Element(W.pStyle)?.Attribute(W.val) == FindTocLevelStyle(entry.Level)
+                && (string?)pair.First.Paragraph.Element(W.pPr)?.Element(W.pStyle)?.Attribute(W.val) == FindEntryStyle(entry.Level)
                 && pair.First.Text == (entry.Number is null ? "" : entry.Number + "\t") + entry.Text
                     + (ShowsPage(entry.Level) ? "\t" + entry.Page : "")
                 && (!ShowsPage(entry.Level) || (entry.Page is not null && ScanFields(pair.First.Paragraph).Any(f => f.Kind == "PAGEREF" && f.Tokens.ElementAtOrDefault(1) == target)))
@@ -653,7 +670,7 @@ public sealed partial class DocxSession
         var built = new List<XElement>();
         if (entries.Count == 0)
             built.Add(new XElement(W.p, WithoutSection(first.Element(W.pPr)),
-                new XElement(W.r, new XElement(W.rPr, new XElement(W.b)), TextContent(NoTocEntries, W.t))));
+                new XElement(W.r, new XElement(W.rPr, new XElement(W.b)), TextContent(noEntries, W.t))));
         foreach (var (level, number, text, bookmark, page) in entries)
         {
             var runs = new List<XElement>();
@@ -670,7 +687,7 @@ public sealed partial class DocxSession
                 runs.Add(TextRun(page ?? "1"));
                 runs.Add(new XElement(W.r, new XElement(W.fldChar, new XAttribute(W.fldCharType, "end"))));
             }
-            var style = TocLevelStyle(level);
+            var style = EntryStyle(level);
             var tabs = new XElement(W.tabs);
             if (number is not null)
                 tabs.Add(new XElement(W.tab, new XAttribute(W.val, "left"), new XAttribute(W.pos,
@@ -744,6 +761,17 @@ public sealed partial class DocxSession
         }
         return id;
     }
+
+    private string FigureEntryStyle()
+    {
+        if (FindFigureEntryStyle() is { } own) return own;
+        StyleFactory.EnsureReferenceFieldStyles(_doc!, ReferenceFieldOps.TofEntryStyleId, "table of figures", withHeading: false);
+        return ReferenceFieldOps.TofEntryStyleId;
+    }
+
+    private string? FindFigureEntryStyle() => (string?)(ParagraphStyles().FirstOrDefault(s =>
+            string.Equals((string?)s.Element(W.name)?.Attribute(W.val), "table of figures", StringComparison.OrdinalIgnoreCase))
+        ?? ParagraphStyles().FirstOrDefault(s => (string?)s.Attribute(W.styleId) == ReferenceFieldOps.TofEntryStyleId))?.Attribute(W.styleId);
 
     private string? FindTocLevelStyle(int level)
     {

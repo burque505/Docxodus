@@ -741,6 +741,22 @@ public static partial class DocxSessionBridge
     public static string AddReferenceBookmark(int h, string anchor) =>
         DocxSessionOps.AddReferenceBookmark(h, anchor);
 
+    /// <summary>The hidden <c>_Ref</c> bookmark over part of a caption — <paramref name="part"/> is
+    /// <c>paragraph</c>, <c>labelAndNumber</c> or <c>captionText</c>.</summary>
+    [JSExport]
+    public static string AddReferenceBookmarkPart(int h, string anchor, string part) =>
+        DocxSessionOps.AddReferenceBookmarkPart(h, anchor, part);
+
+    /// <summary>Word's Insert Caption —
+    /// <c>{label?, position?: "above"|"below", excludeLabel?, numberFormat?, text?}</c>.</summary>
+    [JSExport]
+    public static string InsertCaption(int h, string anchor, string optionsJson) =>
+        DocxSessionOps.InsertCaption(h, anchor, ParseJsonOptions(optionsJson, DocxSessionJson.ParseCaptionOptions));
+
+    /// <summary>The body's captions: <c>[{anchorId, label, number, text}]</c>.</summary>
+    [JSExport]
+    public static string ListCaptions(int h) => DocxSessionOps.ListCaptions(h);
+
     /// <summary>Word's Update Field over the body or a range; <paramref name="optionsJson"/> is
     /// <c>""</c> or <c>{"range"?: DocumentRange, "pages"?: {anchorOrUnid: page}, "tablesOfContentsOnly"?: bool}</c>.</summary>
     [JSExport]
