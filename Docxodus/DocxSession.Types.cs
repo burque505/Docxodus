@@ -826,6 +826,11 @@ public sealed record StyleInfo
     public bool? QuickFormat { get; init; }
     public bool? Locked { get; init; }
 
+    /// <summary>Applied somewhere in the document (body, headers, footers, notes, comments): a
+    /// paragraph, run or table names it, or, for the default paragraph style, a paragraph names
+    /// no style. What Word's Styles pane shows for "In use".</summary>
+    public bool InUse { get; init; }
+
     public ParagraphFormatting? ResolvedParagraph { get; init; }
     public RunFormattingInfo? ResolvedRun { get; init; }
     public TableStyleFormatting? ResolvedTable { get; init; }
@@ -2168,6 +2173,10 @@ public enum EditErrorCode
     /// make a loop, a following style that is not a paragraph style, paragraph formatting on a
     /// character style, or a highlight (Word's styles have none).</summary>
     InvalidStyleDefinition,
+
+    /// <summary><see cref="DocxSession.DeleteStyle"/> refused: the style is built in (Word keeps
+    /// those), a default style, or not a paragraph or character style.</summary>
+    StyleNotDeletable,
 
     /// <summary>A table-styling value the op cannot express: a column-width list whose length
     /// doesn't match the table's column count (or a non-positive width), a shading fill that is

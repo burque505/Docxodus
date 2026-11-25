@@ -1254,6 +1254,10 @@ internal static class DocxSessionOps
     public static string SetStyle(int handle, StyleDefinitionOp op, MutationPreconditions? preconditions = null) =>
         Mutate(handle, preconditions, null, s => s.SetStyle(op));
 
+    /// <summary>Delete a custom paragraph or character style; what used it falls back to its base.</summary>
+    public static string DeleteStyle(int handle, string styleId, MutationPreconditions? preconditions = null) =>
+        Mutate(handle, preconditions, null, s => s.DeleteStyle(styleId));
+
     public static string SetParagraphFormat(int handle, string anchorId, ParagraphFormatOp? op,
         MutationPreconditions? preconditions = null) =>
         Mutate(handle, preconditions, anchorId, s => s.SetParagraphFormat(anchorId, op ?? new ParagraphFormatOp()));

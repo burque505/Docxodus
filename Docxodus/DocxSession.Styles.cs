@@ -187,6 +187,119 @@ public sealed partial class DocxSession
         }
     }
 
+    /// <summary>
+    /// Delete a custom paragraph or character style, as Word's Styles pane does. Paragraphs in a
+    /// deleted paragraph style take the style it was based on (the default paragraph style when
+    /// none); runs in a deleted character style take its base the same way. Styles based on it are
+    /// re-based on its base, a following-style link to it is dropped, and a paragraph style's
+    /// linked character style ("My Style Char") goes with it. Numbering levels tied to it lose the
+    /// tie. Built-in and default styles are refused (<see cref="EditErrorCode.StyleNotDeletable"/>).
+    /// One undo step; not tracked (like <see cref="SetStyle"/>). A caller re-renders the whole
+    /// document.
+    /// </summary>
+    public EditResult DeleteStyle(string styleId)
+    {
+        ArgumentNullException.ThrowIfNull(styleId);
+        if (MutationRefusal() is { } refusal) return EditResult.Fail(refusal);
+        var main = _doc!.MainDocumentPart;
+        var stylesPart = main?.StyleDefinitionsPart;
+        var root = stylesPart?.GetXDocument().Root;
+        XElement? Find(string id) => root?.Elements(W.style).FirstOrDefault(s => (string?)s.Attribute(W.styleId) == id);
+
+        var style = Find(styleId);
+        if (style is null) return EditResult.Fail(EditErrorCode.UnknownStyle, $"no style '{styleId}'", null);
+        string type = (string?)style.Attribute(W.type) ?? "paragraph";
+        string name = (string?)style.Element(W.name)?.Attribute(W.val) ?? styleId;
+        if (type is not ("paragraph" or "character"))
+            return EditResult.Fail(EditErrorCode.StyleNotDeletable, $"only paragraph and character styles can be deleted, not '{type}'", null);
+        if (style.Attribute(W._default).ToBoolean() == true)
+            return EditResult.Fail(EditErrorCode.StyleNotDeletable, $"'{name}' is the default {type} style", null);
+        if (style.Attribute(W.customStyle).ToBoolean() != true)
+            return EditResult.Fail(EditErrorCode.StyleNotDeletable, $"'{name}' is a built-in style; Word keeps it", null);
+
+        // What goes: the style, and for a paragraph style its linked character style (when that
+        // is custom and links back). A deleted character style's partner just loses the link.
+        var doomed = new System.Collections.Generic.Dictionary<string, XElement> { [styleId] = style };
+        if (type == "paragraph" && (string?)style.Element(W.link)?.Attribute(W.val) is { } linkId
+            && Find(linkId) is { } linked && (string?)linked.Attribute(W.type) == "character"
+            && linked.Attribute(W.customStyle).ToBoolean() == true && linked.Attribute(W._default).ToBoolean() != true
+            && (string?)linked.Element(W.link)?.Attribute(W.val) == styleId)
+            doomed[linkId] = linked;
+
+        // Each doomed style's replacement: its nearest surviving base (null = the type's default,
+        // written as no style reference at all).
+        string? Replacement(string id)
+        {
+            var seen = new System.Collections.Generic.HashSet<string>();
+            var current = doomed[id];
+            while ((string?)current.Element(W.basedOn)?.Attribute(W.val) is { } basis && seen.Add(basis))
+            {
+                var next = Find(basis);
+                if (next is null) return null;
+                if (!doomed.ContainsKey(basis))
+                    return next.Attribute(W._default).ToBoolean() == true ? null : basis;
+                current = next;
+            }
+            return null;
+        }
+        var replacements = doomed.Keys.ToDictionary(id => id, Replacement);
+
+        _history.RecordPreOp(TakeSnapshot());
+        try
+        {
+            foreach (var part in EnumerateProjectedParts().Append(main!.NumberingDefinitionsPart).OfType<DocumentFormat.OpenXml.Packaging.OpenXmlPart>())
+            {
+                if (part == stylesPart) continue;
+                var partRoot = part.GetXDocument().Root;
+                if (partRoot is null) continue;
+                bool changed = false;
+                foreach (var reference in partRoot.Descendants().Where(e => e.Name == W.pStyle || e.Name == W.rStyle).ToList())
+                {
+                    if ((string?)reference.Attribute(W.val) is not { } id || !replacements.TryGetValue(id, out var to)) continue;
+                    changed = true;
+                    // A numbering level's tie to a paragraph style is dropped, not moved.
+                    if (to is null || reference.Parent?.Name == W.lvl) Unreference(reference);
+                    else reference.SetAttributeValue(W.val, to);
+                }
+                if (changed) part.PutXDocument();
+            }
+
+            foreach (var other in root!.Elements(W.style).Where(s => !doomed.ContainsValue(s)))
+            {
+                if ((string?)other.Element(W.basedOn)?.Attribute(W.val) is { } basis && replacements.TryGetValue(basis, out var to))
+                {
+                    other.Elements(W.basedOn).Remove();
+                    var fallback = to ?? DefaultStyleId(root, (string?)other.Attribute(W.type) ?? "paragraph");
+                    if (!string.IsNullOrEmpty(fallback) && fallback != (string?)other.Attribute(W.styleId))
+                        SetStyleChild(other, new XElement(W.basedOn, new XAttribute(W.val, fallback)));
+                }
+                if ((string?)other.Element(W.next)?.Attribute(W.val) is { } nextId && doomed.ContainsKey(nextId))
+                    other.Elements(W.next).Remove();
+                if ((string?)other.Element(W.link)?.Attribute(W.val) is { } link && doomed.ContainsKey(link))
+                    other.Elements(W.link).Remove();
+            }
+            foreach (var gone in doomed.Values) gone.Remove();
+
+            stylesPart!.PutXDocument();
+            InvalidateProjectionCache();
+            return new EditResult { Success = true, StyleId = styleId };
+        }
+        catch (Exception ex)
+        {
+            return FailInternal(ex, null);
+        }
+
+        // Remove a style reference, then its pPr/rPr when nothing is left in it.
+        static void Unreference(XElement reference)
+        {
+            var parent = reference.Parent;
+            reference.Remove();
+            if (parent is not null && (parent.Name == W.rPr || parent.Name == W.pPr)
+                && !parent.HasElements && !parent.HasAttributes && parent.Parent?.Name != W.lvl)
+                parent.Remove();
+        }
+    }
+
     /// <summary>Write <paramref name="op"/> into a style's <c>w:rPr</c> as into a run's, then make
     /// an off stick: where the style still inherits the property on, write an explicit off.</summary>
     private void WriteStyleRunFormat(XElement style, string styleId, string type, FormatOp op)

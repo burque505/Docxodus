@@ -1066,6 +1066,11 @@ public static partial class DocxSessionBridge
     public static string SetStyle(int h, string opJson) =>
         DocxSessionOps.SetStyle(h, DocxSessionJson.ParseStyleDefinitionOp(opJson));
 
+    /// <summary>Bridge for <see cref="DocxSession.DeleteStyle"/>.</summary>
+    [JSExport]
+    public static string DeleteStyle(int h, string styleId) =>
+        DocxSessionOps.DeleteStyle(h, styleId);
+
     [JSExport]
     public static string SetListLevel(int h, string anchor, int delta) =>
         DocxSessionOps.SetListLevel(h, anchor, delta);

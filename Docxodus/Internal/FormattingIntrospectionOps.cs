@@ -19,12 +19,46 @@ namespace Docxodus.Internal;
 /// </summary>
 internal static class FormattingIntrospectionOps
 {
+    /// <summary>The style ids paragraphs, runs and tables name in the document's stories, and
+    /// whether a paragraph names none (so is in the default paragraph style).</summary>
+    private static HashSet<string> StylesInUse(WordprocessingDocument doc, out bool unstyledParagraph)
+    {
+        var used = new HashSet<string>(StringComparer.Ordinal);
+        unstyledParagraph = false;
+        var main = doc.MainDocumentPart;
+        if (main is null) return used;
+        var parts = new List<DocumentFormat.OpenXml.Packaging.OpenXmlPart> { main };
+        parts.AddRange(main.HeaderParts);
+        parts.AddRange(main.FooterParts);
+        if (main.FootnotesPart is not null) parts.Add(main.FootnotesPart);
+        if (main.EndnotesPart is not null) parts.Add(main.EndnotesPart);
+        if (main.WordprocessingCommentsPart is not null) parts.Add(main.WordprocessingCommentsPart);
+        foreach (var part in parts)
+        {
+            var partRoot = part.GetXDocument().Root;
+            if (partRoot is null) continue;
+            foreach (var e in partRoot.Descendants())
+            {
+                if (e.Name == W.pStyle || e.Name == W.rStyle || e.Name == W.tblStyle)
+                {
+                    // Old properties a tracked change keeps are not applied.
+                    if (e.Parent?.Parent?.Name is { } holder && (holder == W.pPrChange || holder == W.rPrChange || holder == W.tblPrChange)) continue;
+                    if ((string?)e.Attribute(W.val) is { Length: > 0 } id) used.Add(id);
+                }
+                else if (e.Name == W.p && !unstyledParagraph && e.Element(W.pPr)?.Element(W.pStyle) is null)
+                    unstyledParagraph = true;
+            }
+        }
+        return used;
+    }
+
     public static IReadOnlyList<StyleInfo> ListStyles(WordprocessingDocument doc)
     {
         var root = doc.MainDocumentPart?.StyleDefinitionsPart?.GetXDocument().Root;
         if (root is null) return Array.Empty<StyleInfo>();
 
         var latent = root.Element(W.latentStyles);
+        var used = StylesInUse(doc, out bool unstyledParagraph);
         var result = new List<StyleInfo>();
         foreach (var style in root.Elements(W.style))
         {
@@ -88,6 +122,8 @@ internal static class FormattingIntrospectionOps
                 ResolvedParagraph = paragraph,
                 ResolvedRun = run,
                 ResolvedTable = table,
+                InUse = used.Contains(id)
+                    || (unstyledParagraph && type == "paragraph" && ReadOnOffAttribute(style.Attribute(W._default)) == true),
             });
         }
         return result;
