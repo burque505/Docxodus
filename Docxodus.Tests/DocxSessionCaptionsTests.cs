@@ -239,6 +239,22 @@ public class DocxSessionCaptionsTests
         Assert.Equal("A cat", Lines(session)[0].Split('\t')[0]);
     }
 
+    [Fact]
+    public void CP014_DeletingACaptionsText_TakesItsNumberFieldToo()
+    {
+        using var session = Open(P(R("Intro")) + Caption("Figure", "1", ": A cat") + Caption("Figure", "2", ": A dog"));
+        var first = session.ListCaptions()[0].AnchorId;
+
+        var result = session.ReplaceTextAtSpan(first, 0, "Figure 1: A cat".Length, "");
+
+        Assert.True(result.Success, result.Error?.Message);
+        var paragraph = Body(session).Elements(W + "p").ElementAt(1);
+        Assert.Equal("", Text(paragraph));
+        Assert.Empty(paragraph.Descendants(W + "instrText"));
+        Assert.Empty(paragraph.Descendants(W + "fldChar"));
+        Assert.Single(session.ListCaptions());
+    }
+
     private static string Contents(string instr) =>
         P(Start(instr) + R("old entry") + Char("end"), "TableofFigures");
 }

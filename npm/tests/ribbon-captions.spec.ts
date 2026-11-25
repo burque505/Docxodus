@@ -155,3 +155,33 @@ test('Cross-reference to a caption: only its label and number', async ({ page })
   await expect.poll(() => texts(page)).toEqual(['Cat', 'Figure 1: A cat', 'See Figure 1']);
   await expect(page.locator(`${HOST} [data-field="REF"]`)).toHaveText('Figure 1');
 });
+
+test('Deleting a caption with Backspace takes its number field too: it is no longer a caption', async ({ page }) => {
+  await mount(page, ['Picture', 'After']);
+  await caption(page, /^Picture$/, ': A cat');
+  const cap = page.locator(blocks).filter({ hasText: /^Figure 1/ });
+  await cap.click();
+  await page.keyboard.press('End');
+  await page.keyboard.press('Shift+Home');
+  await page.keyboard.press('Backspace');
+  await expect(page.locator(`${HOST} [data-field="SEQ"]`)).toHaveCount(0);
+  // (the edit reaches the engine when the caret leaves the paragraph)
+  await page.locator(blocks).filter({ hasText: /^After$/ }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__ribbon.editor.captions().length)).toBe(0);
+});
+
+test('Ctrl+A with the focus on a ribbon button selects the document, not the page', async ({ page }) => {
+  await mount(page, ['One', 'Two']);
+  await page.locator(`${HOST} .dxr-tab[data-tab="references"]`).focus();
+  await page.keyboard.press('Control+a');
+  const result = await page.evaluate(() => {
+    const sel = window.getSelection()!;
+    const ribbon = document.querySelector('#cp-host .dxr-tabs, #cp-host [role="tablist"]');
+    const range = (window as any).__ribbon.editor.selectionDocumentRange();
+    const ids = Array.from(document.querySelectorAll<HTMLElement>('#cp-host [data-anchor][contenteditable="true"]'))
+      .map((b) => b.dataset.sourceAnchorId);
+    return { inRibbon: !!ribbon && sel.rangeCount > 0 && sel.getRangeAt(0).intersectsNode(ribbon),
+      start: range?.startOffset === 0, end: !!range && range.endAnchorId !== range.startAnchorId && range.endOffset === 3, ids: ids.length };
+  });
+  expect(result).toEqual({ inRibbon: false, start: true, end: true, ids: 2 });
+});

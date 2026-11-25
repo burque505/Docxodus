@@ -109,6 +109,41 @@ public sealed partial class DocxSession
         }
     }
 
+    /// <summary>The complex fields in <paramref name="target"/>'s paragraph (begin and end its own
+    /// runs) whose whole, non-empty result lies in one of <paramref name="spans"/>: an edit over them
+    /// takes the field. None while changes are tracked (the deleted result stays, marked).</summary>
+    private List<FoundField> FieldsWithResultIn(AnchorTarget target, IReadOnlyList<CharSpan> spans)
+    {
+        var found = new List<FoundField>();
+        if (_trackedChanges == TrackedChangeMode.RenderInline || spans.All(s => s.Length == 0)) return found;
+        if (target.Resolve(_doc!) is not { } paragraph || paragraph.Name != W.p) return found;
+        var map = Internal.RunTextMap.Build(paragraph);
+        foreach (var field in ScanFields(paragraph))
+        {
+            if (!field.Complex || field.Separate is null || field.End is null
+                || !ReferenceEquals(field.Begin.Parent, paragraph) || !ReferenceEquals(field.End.Parent, paragraph)) continue;
+            var result = map.Segments.Where(s => XNode.DocumentOrderComparer.Compare(s.Run, field.Separate) > 0
+                && XNode.DocumentOrderComparer.Compare(s.Run, field.End) < 0).ToList();
+            if (result.Count == 0) continue;
+            int start = result.Min(s => s.StartOffsetInBlock), end = result.Max(s => s.EndOffsetInBlock);
+            if (spans.Any(s => s.Length > 0 && s.Start <= start && end <= s.Start + s.Length)) found.Add(field);
+        }
+        return found;
+    }
+
+    /// <summary>Take out what is left of a field whose result was deleted: its begin, instruction,
+    /// separator and end runs (anything else between them, a bookmark say, stays).</summary>
+    private static void RemoveFieldMarkers(FoundField field)
+    {
+        if (field.Begin.Parent is null || field.End?.Parent is null) return;
+        var runs = new List<XElement> { field.Begin };
+        runs.AddRange(field.Begin.ElementsAfterSelf().TakeWhile(e => !ReferenceEquals(e, field.End))
+            .Where(e => e.Name == W.r && e.Elements().All(c => c.Name == W.rPr || c.Name == W.instrText || c.Name == W.fldChar
+                || (c.Name == W.t && c.Value.Length == 0))));
+        runs.Add(field.End);
+        foreach (var run in runs) run.Remove();
+    }
+
     /// <summary>The text box (<c>w:txbxContent</c>) <paramref name="element"/> is in, else its part's root.</summary>
     private static XElement StoryRootOf(XElement element) =>
         element.Ancestors(W.txbxContent).FirstOrDefault() ?? element.AncestorsAndSelf().Last();

@@ -670,6 +670,7 @@ class RibbonSurface implements RibbonEditor {
   private readonly englishAttrs = new WeakMap<Element, Record<string, { english: string; written: string }>>();
   private readonly onSelectionChange: () => void;
   private readonly onDocumentMouseDown: (event: MouseEvent) => void;
+  private readonly onPageSelectAll: (event: KeyboardEvent) => void;
   private readonly onKeydown: (event: KeyboardEvent) => void;
   private readonly onOutlineKey: (event: KeyboardEvent) => void;
   private readonly onInput: (event: Event) => void;
@@ -738,6 +739,18 @@ class RibbonSurface implements RibbonEditor {
     doc.addEventListener("selectionchange", this.onSelectionChange);
     this.onDocumentMouseDown = (event) => this.maybeClosePopovers(event);
     doc.addEventListener("mousedown", this.onDocumentMouseDown);
+    // Ctrl+A with the focus outside the document (on the page, a ribbon button): the browser would
+    // select the whole page, ribbon and all; Word selects the document.
+    this.onPageSelectAll = (event) => {
+      if (!this.live || event.defaultPrevented || !(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey
+        || (event.key ?? "").toLowerCase() !== "a") return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest('input, textarea, select, [contenteditable="true"], dialog[open]')) return;
+      if (doc.querySelector("dialog[open]:modal")) return;
+      event.preventDefault();
+      this.live.selectAll();
+    };
+    doc.addEventListener("keydown", this.onPageSelectAll);
     this.onKeydown = (event) => this.handleShortcut(event);
     root.addEventListener("keydown", this.onKeydown);
     this.onOutlineKey = (event) => this.handleOutlineKey(event);
@@ -1583,6 +1596,7 @@ class RibbonSurface implements RibbonEditor {
     const doc = this.element.ownerDocument ?? document;
     doc.removeEventListener("selectionchange", this.onSelectionChange);
     doc.removeEventListener("mousedown", this.onDocumentMouseDown);
+    doc.removeEventListener("keydown", this.onPageSelectAll);
     this.element.removeEventListener("keydown", this.onKeydown);
     this.element.removeEventListener("keydown", this.onOutlineKey, true);
     this.element.removeEventListener("input", this.onInput);

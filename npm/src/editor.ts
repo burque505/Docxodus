@@ -4968,6 +4968,18 @@ export class DocxEditor {
     if (setSelectionBetween(anchor, focus)) this.extendedSelection = { anchor, focus };
   }
 
+  /** Select the whole of the document's body (Ctrl+A when the focus is not in the document); false
+   *  when there is nothing to select. */
+  selectAll(): boolean {
+    const first = this.editRoot.querySelector<HTMLElement>('[data-anchor][contenteditable="true"]');
+    if (this.closed || !first) return false;
+    const body = this.storyBlocks(first).filter((b) => !this.isBandBlock(b));
+    const last = body[body.length - 1];
+    if (!body[0] || !last) return false;
+    this.selectBetween(contentPositionIn(body[0], 0), contentPositionIn(last, blockContentText(last).length));
+    return true;
+  }
+
   /** Put a collapsed caret at `point` (in an editable block) and scroll it into view. */
   private moveCaretTo(point: DomSelectionPoint, scrollTo?: HTMLElement): void {
     const block = this.editableBlockOf(point.node);

@@ -243,7 +243,21 @@ public sealed partial class DocxSession
                 "textbox alternatives have different text or structure; reconcile them before editing", target.Anchor.Id);
         var revisionDate = RevisionDateNow();
         if (targets.Count == 1 && format is null)
-            return ReplaceTextSpansCore(target, spans, replace, deletedTextSide, revisionDate);
+        {
+            // (a field whose whole result the edit takes goes with it, as in Word: a caption's number, a
+            // cross-reference; else its markers would stay behind, an empty field still counted)
+            var swallowed = FieldsWithResultIn(target, spans);
+            var replaced = ReplaceTextSpansCore(target, spans, replace, deletedTextSide, revisionDate);
+            if (replaced.Success && swallowed.Count > 0)
+            {
+                foreach (var field in swallowed) RemoveFieldMarkers(field);
+                InvalidateProjectionCache();
+                if (FindAnchor(target.Anchor.Id) is { } after)
+                    replaced = new EditResult { Success = true, Created = replaced.Created, Removed = replaced.Removed,
+                        Modified = replaced.Modified, Patch = PatchFor(after), Caret = replaced.Caret };
+            }
+            return replaced;
+        }
 
         // Every physical branch keeps its own runs and revision ids. Roll back all branches
         // if any existing text/format boundary check refuses, and publish only one patch.
