@@ -3432,6 +3432,7 @@ internal static class DocxSessionJson
             AppendNullableBool(sb, "unhideWhenUsed", style.UnhideWhenUsed);
             AppendNullableBool(sb, "quickFormat", style.QuickFormat);
             AppendNullableBool(sb, "locked", style.Locked);
+            if (style.InUse) sb.Append(",\"inUse\":true");
             if (style.ResolvedParagraph is not null)
             {
                 sb.Append(",\"resolvedParagraph\":");

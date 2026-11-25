@@ -2039,6 +2039,7 @@ export interface DocxodusWasmExports {
     SetStyle: (handle: number, opJson: string) => string;
     ListStylesIn: (documentBase64: string) => string;
     CopyStyles: (handle: number, documentBase64: string, styleIdsJson: string) => string;
+    DeleteStyle?: (handle: number, styleId: string) => string;
     SetListLevel: (handle: number, anchor: string, delta: number) => string;
     RemoveListMembership: (handle: number, anchor: string) => string;
     ApplyListFormat: (handle: number, anchor: string, kind: string) => string;
@@ -2163,6 +2164,7 @@ export type EditErrorCode =
   | "invalid_position"
   | "text_not_found"
   | "unknown_style"
+  | "style_not_deletable"
   | "invalid_list_level"
   | "invalid_list_start_value"
   | "invalid_page_numbering"
@@ -4193,6 +4195,9 @@ export interface StyleInfo {
   unhideWhenUsed?: boolean;
   quickFormat?: boolean;
   locked?: boolean;
+  /** Applied somewhere in the document (a paragraph, run or table names it; the default
+   *  paragraph style when a paragraph names none). */
+  inUse?: boolean;
   resolvedParagraph?: ParagraphFormatting;
   resolvedRun?: RunFormattingInfo;
   resolvedTable?: TableStyleFormatting;

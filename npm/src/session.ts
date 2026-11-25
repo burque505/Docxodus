@@ -1868,6 +1868,15 @@ export class DocxSession {
     return JSON.parse(this.wasm.CopyStyles(this.handle, imageBytesToBase64(bytes), JSON.stringify(styleIds))) as EditResult;
   }
 
+  /** Delete a custom paragraph or character style. Paragraphs and runs in it take the style it
+   *  was based on; styles based on it are re-based; a paragraph style's linked character style
+   *  goes too. Built-in and default styles are refused (`style_not_deletable`). One undo step;
+   *  re-render the whole document. */
+  deleteStyle(styleId: string): EditResult {
+    if (!this.wasm.DeleteStyle) throw new Error("this Docxodus build has no DeleteStyle");
+    return JSON.parse(this.wasm.DeleteStyle(this.handle, styleId)) as EditResult;
+  }
+
   /** Set paragraph alignment / indent / page-break-before (omitted fields are left unchanged). */
   setParagraphFormat(anchorId: string, op: ParagraphFormatOp): EditResult {
     return JSON.parse(this.wasm.SetParagraphFormat(this.handle, anchorId, JSON.stringify(op))) as EditResult;
