@@ -1354,6 +1354,17 @@ export const RIBBON_HTML = `
         </div>
       </div>
       <div class="dxr-group">
+        <span class="dxr-glabel">Captions</span>
+        <div class="dxr-row">
+          <button type="button" data-dxr="caption" title="Number the selected table or picture with a caption: Figure 1, Table 1...">&#9638; Insert Caption</button>
+          <button type="button" data-dxr="tof" title="Insert a table of figures: the captions of one label and their pages">&#9776; Insert Table of Figures</button>
+        </div>
+        <div class="dxr-row">
+          <button type="button" data-dxr="updatetof" title="Update the tables of contents and figures: their entries and page numbers">&#8635; Update Table</button>
+          <button type="button" data-dxr="crossrefcap" title="Refer to a heading, a bookmark, a numbered item or a caption: its text, its number or its page">&#8618; Cross-reference</button>
+        </div>
+      </div>
+      <div class="dxr-group">
         <span class="dxr-glabel">Footnotes</span>
         <div class="dxr-row">
           <button type="button" data-dxr="footnote" title="Cite a new footnote at the caret">Insert Footnote</button>
@@ -1837,6 +1848,7 @@ export const RIBBON_STATUS_TEXTS = {
   bookmarkInUse: "A link or cross-reference uses this bookmark, so it is not deleted",
   fieldsUpdated: "Fields updated",
   fieldsRefused: "Fields cannot be updated here, nor while changes are tracked",
+  nothingToCaption: "Put the caret in a table or a paragraph of the document to caption it",
   headingMoveRefused: "This heading cannot move there: a section break or a range of the document is in the way, or changes are tracked",
   headingRefused: "This heading cannot be changed that way",
   modifyStyle: "Modify {0}…",

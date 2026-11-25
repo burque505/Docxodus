@@ -29,6 +29,7 @@ const LABELS = [
   "Heading text", "Bookmark text", "Paragraph text", "Page number", "Heading number",
   "Heading number (no context)", "Heading number (full context)", "Paragraph number",
   "Paragraph number (no context)", "Paragraph number (full context)", "Above/below",
+  "Entire caption", "Only label and number", "Only caption text",
 ];
 
 export const CROSSREF_DIALOG_HTML = `
@@ -44,7 +45,7 @@ export const CROSSREF_DIALOG_HTML = `
       <label class="dxr-xrfield">Insert reference to <select data-xr="insert"></select></label>
       <label class="dxr-dcheck"><input type="checkbox" data-xr="hyperlink" checked /> Insert as hyperlink</label>
       <label class="dxr-dcheck"><input type="checkbox" data-xr="position" /> Include above/below</label>
-      <label class="dxr-xrfield dxr-xrwide"><span data-xr-for="heading">For which heading:</span><span data-xr-for="bookmark" hidden>For which bookmark:</span><span data-xr-for="numbered" hidden>For which numbered item:</span>
+      <label class="dxr-xrfield dxr-xrwide"><span data-xr-for="heading">For which heading:</span><span data-xr-for="bookmark" hidden>For which bookmark:</span><span data-xr-for="numbered" hidden>For which numbered item:</span><span data-xr-for="caption" hidden>For which caption:</span>
         <select size="12" data-xr="list"></select></label>
     </div>
     <div class="dxr-derror" role="alert"><span data-xr-msg="refused" hidden>The cross-reference cannot be put there.</span></div>
@@ -67,9 +68,12 @@ export interface CrossReferenceTarget {
 }
 
 export interface CrossReferenceDialogHost {
-  targets(type: CrossReferenceType): CrossReferenceTarget[];
+  /** The caption labels to offer as reference types (after Heading, Bookmark, Numbered item). */
+  captionLabels(): string[];
+  /** The targets of a type; for "caption", those of `label`. */
+  targets(type: CrossReferenceType, label?: string): CrossReferenceTarget[];
   /** Insert the reference at the document's caret (or over its selection). */
-  insert(type: CrossReferenceType, key: string, insert: CrossReferenceInsert, hyperlink: boolean, position: boolean): { ok: boolean; code?: string };
+  insert(type: CrossReferenceType, key: string, insert: CrossReferenceInsert, hyperlink: boolean, position: boolean, label?: string): { ok: boolean; code?: string };
   /** The dialog closed: the focus goes back to the document. */
   closed(): void;
 }
@@ -114,7 +118,8 @@ export class CrossReferenceDialog {
 
   /** Open beside the document (or, already open, bring the focus to it). */
   show(): void {
-    if (this.dialog.open) { this.fillList(); this.list.focus(); return; }
+    if (this.dialog.open) { this.fillTypes(); this.fillList(); this.list.focus(); return; }
+    this.fillTypes();
     this.fillInsert();
     this.fillList();
     this.closeLabel(false);
@@ -146,7 +151,7 @@ export class CrossReferenceDialog {
     const key = this.list.value;
     if (!key) return;
     const result = this.host.insert(this.type, key, this.insertChoice,
-      this.input("hyperlink").checked, this.input("position").checked && !this.input("position").disabled);
+      this.input("hyperlink").checked, this.input("position").checked && !this.input("position").disabled, this.label);
     if (!result.ok) { this.showError("refused"); return; }
     this.showError(null);
     this.closeLabel(true);
@@ -158,8 +163,29 @@ export class CrossReferenceDialog {
     this.list.focus();
   }
 
+  /** A caption label's type is "caption:<label>" in the list. */
   private get type(): CrossReferenceType {
-    return this.select("type").value as CrossReferenceType;
+    const value = this.select("type").value;
+    return value.startsWith("caption:") ? "caption" : value as CrossReferenceType;
+  }
+
+  private get label(): string | undefined {
+    const value = this.select("type").value;
+    return value.startsWith("caption:") ? value.slice("caption:".length) : undefined;
+  }
+
+  /** The caption labels after the fixed types, as Word lists Equation, Figure, Table. */
+  private fillTypes(): void {
+    const select = this.select("type");
+    const keep = select.value;
+    for (const option of Array.from(select.options)) if (option.value.startsWith("caption:")) option.remove();
+    for (const label of this.host.captionLabels()) {
+      const option = select.ownerDocument.createElement("option");
+      option.value = `caption:${label}`;
+      option.textContent = label;
+      select.appendChild(option);
+    }
+    select.value = Array.from(select.options).some((o) => o.value === keep) ? keep : "heading";
   }
 
   private get insertChoice(): CrossReferenceInsert {
@@ -187,7 +213,7 @@ export class CrossReferenceDialog {
   private fillList(): void {
     const list = this.list;
     const keep = list.value;
-    const targets = this.host.targets(this.type);
+    const targets = this.host.targets(this.type, this.label);
     list.replaceChildren();
     for (const target of targets) {
       const option = list.ownerDocument.createElement("option");

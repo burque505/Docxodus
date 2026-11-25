@@ -67,7 +67,8 @@ import { STYLE_DIALOG_CSS, STYLE_DIALOG_HTML, StyleDialog, paragraphDifference, 
 import { COPY_STYLES_DIALOG_CSS, COPY_STYLES_DIALOG_HTML, CopyStylesDialog } from "./ribbon-copy-styles-dialog.js";
 import { BOOKMARK_DIALOG_CSS, BOOKMARK_DIALOG_HTML, BookmarkDialog } from "./ribbon-bookmark-dialog.js";
 import { CROSSREF_DIALOG_CSS, CROSSREF_DIALOG_HTML, CrossReferenceDialog } from "./ribbon-crossref-dialog.js";
-import { crossReferenceOptionsFor } from "./cross-reference.js";
+import { CAPTION_DIALOG_CSS, CAPTION_DIALOG_HTML, CaptionDialog, TableOfFiguresDialog } from "./ribbon-caption-dialog.js";
+import { crossReferenceOptionsFor, crossReferencePart } from "./cross-reference.js";
 import { NAV_PANE_CSS, NavPane, type NavPaneCommand } from "./ribbon-navpane.js";
 import type { FormatOp, OutlineEntry, StyleDefinitionOp } from "./types.js";
 import { Ruler, RULER_CSS } from "./ruler.js";
@@ -234,6 +235,10 @@ export interface RibbonOptions extends DocxEditorOptions {
   recentFonts?: string[];
   /** The recently used fonts changed (a font was applied), for a host to keep. */
   onRecentFontsChange?: (names: string[]) => void;
+  /** The caption labels the user made (Insert Caption's New Label), kept by a host from one session to the next. */
+  captionLabels?: string[];
+  /** A caption label was made or deleted, for a host to keep. */
+  onCaptionLabelsChange?: (labels: string[]) => void;
   /** Find's options at the start (Match case, whole words, wildcards...: see find-query.ts);
    *  `setFindOptions` changes them later. */
   findOptions?: FindOptions;
@@ -401,6 +406,13 @@ export interface RibbonEditor {
   /** Open the Cross-reference dialog (Word's Insert > Cross-reference) at the selection; false when
    *  no document is open. */
   openCrossReferenceDialog(): boolean;
+  /** Open Insert Caption (References > Insert Caption) on the caret's table or paragraph; false
+   *  when there is nothing to caption. */
+  openCaptionDialog(): boolean;
+  /** Open Insert Table of Figures (References); false when no document is open. */
+  openTableOfFiguresDialog(): boolean;
+  /** The caption labels the user made (as the `captionLabels` option). */
+  setCaptionLabels(labels: string[]): void;
   /** Show or hide bookmarks in the text as gray brackets (the View tab's Bookmarks box, Word's
    *  Show bookmarks). */
   setShowBookmarks(on: boolean): void;
@@ -504,7 +516,7 @@ const CONTROL_NAMES = [
   "gridpicker", "gridcells", "gridlabel", "gridalign", "gridborderless",
   "filebutton", "filemenu", "filerecent", "filerecentitems", "filehostitems",
   "linkpop", "linkform", "linkurl", "linkbookmark", "linkcancel",
-  "bookmark", "bookmarkdialog", "showbookmarks", "crossref", "crossrefdialog", "updatetoc", "fieldmenu", "navpane", "navmenu", "shownav",
+  "bookmark", "bookmarkdialog", "showbookmarks", "crossref", "crossrefdialog", "updatetoc", "caption", "tof", "updatetof", "crossrefcap", "captiondialog", "tofdialog", "fieldmenu", "navpane", "navmenu", "shownav",
   "editor",
   "loader", "loaderEyebrow", "loaderTitle", "loaderCopy", "loaderAd", "loaderNumber",
   "loaderAdTitle", "loaderAdCopy", "loaderBar", "loaderLabel", "loaderMeta", "loaderRetry",
@@ -523,7 +535,7 @@ function ensureStyles(doc: Document): void {
   existing?.remove();
   const style = doc.createElement("style");
   style.setAttribute(RIBBON_STYLE_ATTR, RIBBON_STYLE_VERSION);
-  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + FONT_DIALOG_CSS + STYLE_DIALOG_CSS + COPY_STYLES_DIALOG_CSS + BOOKMARK_DIALOG_CSS + CROSSREF_DIALOG_CSS + NAV_PANE_CSS + RULER_CSS;
+  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + FONT_DIALOG_CSS + STYLE_DIALOG_CSS + COPY_STYLES_DIALOG_CSS + BOOKMARK_DIALOG_CSS + CROSSREF_DIALOG_CSS + CAPTION_DIALOG_CSS + NAV_PANE_CSS + RULER_CSS;
   (doc.head ?? doc.documentElement).appendChild(style);
 }
 
@@ -638,6 +650,9 @@ class RibbonSurface implements RibbonEditor {
   private focusRing: HTMLElement | null = null;
   private bookmarkDialog!: BookmarkDialog;
   private crossRefDialog!: CrossReferenceDialog;
+  private captionDialog!: CaptionDialog;
+  private tofDialog!: TableOfFiguresDialog;
+  private customCaptionLabels: string[] = [];
   /** The layer Show bookmarks draws its brackets in (made the first time they show). */
   private bookmarkLayer: HTMLElement | null = null;
   private showBookmarks = false;
@@ -689,7 +704,7 @@ class RibbonSurface implements RibbonEditor {
     root.className = "dxr";
     root.dataset.state = "idle";
     root.dataset.frame = this.options.frame ?? "flush";
-    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML + TABLE_DIALOG_HTML + LINE_NUMBERS_DIALOG_HTML + TABS_DIALOG_HTML + FONT_DIALOG_HTML + STYLE_DIALOG_HTML + COPY_STYLES_DIALOG_HTML + BOOKMARK_DIALOG_HTML + CROSSREF_DIALOG_HTML;
+    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML + TABLE_DIALOG_HTML + LINE_NUMBERS_DIALOG_HTML + TABS_DIALOG_HTML + FONT_DIALOG_HTML + STYLE_DIALOG_HTML + COPY_STYLES_DIALOG_HTML + BOOKMARK_DIALOG_HTML + CROSSREF_DIALOG_HTML + CAPTION_DIALOG_HTML;
     for (const el of Array.from(root.querySelectorAll<HTMLElement>("[data-dxr]"))) {
       el.id = this.idPrefix + el.dataset.dxr;
     }
@@ -2011,6 +2026,7 @@ class RibbonSurface implements RibbonEditor {
     // (a way of looking, as the Ruler box: not a command a recording replays)
     box.addEventListener("change", () => this.setShowBookmarks(box.checked));
     this.wireCrossReferences();
+    this.wireCaptions();
     this.wireFields();
   }
 
@@ -2019,6 +2035,9 @@ class RibbonSurface implements RibbonEditor {
     const button = this.require("updatetoc");
     this.keepSelection(button);
     button.addEventListener("click", () => { this.updateFields("tables"); });
+    const tables = this.require("updatetof");
+    this.keepSelection(tables);
+    tables.addEventListener("click", () => { this.updateFields("tables"); });
     const menu = this.require("fieldmenu");
     const surface = this.require("editor");
     surface.addEventListener("contextmenu", (event) => {
@@ -2064,9 +2083,11 @@ class RibbonSurface implements RibbonEditor {
 
   private wireCrossReferences(): void {
     this.crossRefDialog = new CrossReferenceDialog(this.require<HTMLDialogElement>("crossrefdialog"), {
-      targets: (type) => {
+      captionLabels: () => this.captionLabels(),
+      targets: (type, label) => {
         const live = this.live;
         if (!live) return [];
+        if (type === "caption") return this.captionsOf(label ?? "").map((c) => ({ key: c.anchorId, label: c.text }));
         if (type === "bookmark") return live.bookmarks(false).map((b) => ({ key: b.name, label: b.name }));
         if (type === "numbered") return live.numberedItems().map((n) => ({ key: n.anchorId, label: `${n.number} ${n.text}`.trim() }));
         return live.outline().map((h) => {
@@ -2074,18 +2095,20 @@ class RibbonSurface implements RibbonEditor {
           return { key: h.anchorId, label: number ? `${number} ${h.text}` : h.text, level: h.level };
         });
       },
-      insert: (type, key, insert, hyperlink, position) => {
+      insert: (type, key, insert, hyperlink, position, label) => {
         let result: { ok: boolean; code?: string; after?: DocumentRange } = { ok: false };
         const live = this.live!;
         // (the recorded command names the target as a reader would: a heading's text, an item's number and text)
         const target = type === "bookmark" ? key
+          : type === "caption" ? live.captions().find((c) => c.anchorId === key)?.text ?? key
           : type === "heading" ? live.outline().find((h) => h.anchorId === key)?.text ?? key
           : (() => { const n = live.numberedItems().find((i) => i.anchorId === key); return n ? `${n.number} ${n.text}`.trim() : key; })();
         const options = crossReferenceOptionsFor(insert, hyperlink, position);
         this.run("cross-reference", () => {
           // (the dialog is not modal: the reference goes at the document's caret as it is now)
-          result = live.insertCrossReference(live.selectionDocumentRange(), type === "bookmark" ? { bookmark: key } : { anchorId: key }, options);
-        }, () => result.ok ? cmd("crossReference", { type, target, insert, ...(hyperlink ? { hyperlink } : {}), ...(position && options.includePosition ? { position } : {}) }) : undefined);
+          result = live.insertCrossReference(live.selectionDocumentRange(),
+            type === "bookmark" ? { bookmark: key } : { anchorId: key, part: crossReferencePart(insert) }, options);
+        }, () => result.ok ? cmd("crossReference", { type, target, insert, ...(label ? { label } : {}), ...(hyperlink ? { hyperlink } : {}), ...(position && options.includePosition ? { position } : {}) }) : undefined);
         return result;
       },
       closed: () => {
@@ -2095,9 +2118,106 @@ class RibbonSurface implements RibbonEditor {
         this.scheduleRuler();
       },
     });
-    const button = this.require("crossref");
-    this.keepSelection(button);
-    button.addEventListener("click", () => { this.openCrossReferenceDialog(); });
+    for (const name of ["crossref", "crossrefcap"]) {
+      const button = this.require(name);
+      this.keepSelection(button);
+      button.addEventListener("click", () => { this.openCrossReferenceDialog(); });
+    }
+  }
+
+  // ─── Captions: Insert Caption, Insert Table of Figures ─────────────────
+
+  /** Word's built-in caption labels, with the user's own and those the document numbers by (its
+   *  SEQ identifiers, underscores shown as spaces), sorted as Word lists them. */
+  private captionLabels(): string[] {
+    const seen = new Map<string, string>();
+    const add = (label: string) => { const t = label.trim(); if (t && !seen.has(t.toLowerCase())) seen.set(t.toLowerCase(), t); };
+    for (const label of ["Equation", "Figure", "Table"]) add(label);
+    for (const label of this.customCaptionLabels) add(label);
+    for (const caption of this.live?.captions() ?? []) add(caption.label.replace(/_/g, " "));
+    return [...seen.values()].sort((a, b) => a.localeCompare(b));
+  }
+
+  private captionsOf(label: string) {
+    const id = label.trim().replace(/ /g, "_").toLowerCase();
+    return (this.live?.captions() ?? []).filter((c) => c.label.toLowerCase() === id);
+  }
+
+  setCaptionLabels(labels: string[]): void {
+    const seen = new Set<string>();
+    this.customCaptionLabels = labels.map((l) => l.trim())
+      .filter((l) => l && !["equation", "figure", "table"].includes(l.toLowerCase()) && !seen.has(l.toLowerCase()) && !!seen.add(l.toLowerCase()));
+  }
+
+  private wireCaptions(): void {
+    this.setCaptionLabels(this.options.captionLabels ?? []);
+    const changed = () => this.options.onCaptionLabelsChange?.([...this.customCaptionLabels]);
+    this.captionDialog = new CaptionDialog(this.require<HTMLDialogElement>("captiondialog"), {
+      labels: () => this.captionLabels(),
+      isCustomLabel: (label) => this.customCaptionLabels.some((l) => l.toLowerCase() === label.toLowerCase()),
+      addLabel: (label) => {
+        if (this.customCaptionLabels.some((l) => l.toLowerCase() === label.toLowerCase())
+          || ["equation", "figure", "table"].includes(label.toLowerCase())) return;
+        this.customCaptionLabels = [...this.customCaptionLabels, label];
+        changed();
+      },
+      deleteLabel: (label) => {
+        this.customCaptionLabels = this.customCaptionLabels.filter((l) => l.toLowerCase() !== label.toLowerCase());
+        changed();
+      },
+      closed: () => this.refocusDocument(),
+      nextNumber: (label, position) => this.live?.nextCaptionNumber(label, position) ?? 1,
+      target: () => this.live?.captionTarget()?.kind ?? null,
+      insert: (options) => {
+        const live = this.live;
+        if (!live) return false;
+        let ok = false;
+        this.run("insert caption", () => { ok = live.insertCaption(options); },
+          () => ok ? cmd("insertCaption", { ...options }) : undefined);
+        return ok;
+      },
+    });
+    this.tofDialog = new TableOfFiguresDialog(this.require<HTMLDialogElement>("tofdialog"), {
+      labels: () => this.captionLabels(),
+      closed: () => this.refocusDocument(),
+      insert: (options) => {
+        const live = this.live;
+        if (!live) return false;
+        let ok = false;
+        this.run("table of figures", () => { ok = live.insertTableOfFigures(options); },
+          () => ok ? cmd("tableOfFigures", { options: { ...options } }) : undefined);
+        return ok;
+      },
+    });
+    const caption = this.require("caption");
+    this.keepSelection(caption);
+    caption.addEventListener("click", () => {
+      if (!this.openCaptionDialog()) this.setStatus(this.translateText(RIBBON_STATUS_TEXTS.nothingToCaption));
+    });
+    const tof = this.require("tof");
+    this.keepSelection(tof);
+    tof.addEventListener("click", () => { this.openTableOfFiguresDialog(); });
+  }
+
+  /** After a modal dialog that changed the document: the caret back where the edit left it (the
+   *  element focused before the dialog may be gone, and the focus with it). */
+  private refocusDocument(): void {
+    const live = this.live;
+    const at = live?.selectionDocumentRange();
+    if (live && at) live.placeCaretAt(at);
+  }
+
+  openCaptionDialog(): boolean {
+    if (!this.live || this.captionDialog.open) return false;
+    this.closePopovers();
+    return this.captionDialog.show();
+  }
+
+  openTableOfFiguresDialog(): boolean {
+    if (!this.live || this.tofDialog.open) return false;
+    this.closePopovers();
+    this.tofDialog.show();
+    return true;
   }
 
   openCrossReferenceDialog(): boolean {

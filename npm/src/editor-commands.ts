@@ -12,10 +12,10 @@
  * matching ribbon control is.
  */
 import type { DocxEditor, EditorAlignment, EditorPageSetup, EditorParagraphFormat, FormatKey, PasteFormatting } from "./editor.js";
-import type { FloatingImageLayout, ListFormat, ListLevelSpec, NumberFormat, TableBorderSpec, TableOfContentsOptions, StyleDefinitionOp, TablePropertiesOp, TableRowOptions, CellPropertiesOp } from "./types.js";
+import type { FloatingImageLayout, ListFormat, ListLevelSpec, NumberFormat, TableBorderSpec, TableOfContentsOptions, TableOfFiguresOptions, CaptionOptions, StyleDefinitionOp, TablePropertiesOp, TableRowOptions, CellPropertiesOp } from "./types.js";
 import { TrackedChangeMode } from "./types.js";
 import { FIND_OPTION_KEYS, type FindOptions } from "./find-query.js";
-import { CROSS_REFERENCE_INSERTS, CROSS_REFERENCE_TYPES, crossReferenceOptionsFor } from "./cross-reference.js";
+import { CROSS_REFERENCE_INSERTS, CROSS_REFERENCE_TYPES, crossReferenceOptionsFor, crossReferencePart } from "./cross-reference.js";
 
 /** The find options as command arguments (all optional booleans). */
 const FIND_OPTION_ARGS = Object.fromEntries(FIND_OPTION_KEYS.map((k) => [`${k}?`, "boolean"])) as Record<string, string>;
@@ -453,6 +453,27 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     group: "insert", description: "Insert a table of contents (options as TableOfContentsOptions).", args: { "options?": "object" },
     run: (e, a) => must(e.insertTableOfContents((a.optObject("options") ?? {}) as TableOfContentsOptions), "tableOfContents", "the engine refused it"),
   },
+  tableOfFigures: {
+    group: "insert", description: "Insert a table of figures for one caption label, filled at once (options as TableOfFiguresOptions).", args: { "options?": "object" },
+    run: (e, a) => must(e.insertTableOfFigures((a.optObject("options") ?? {}) as TableOfFiguresOptions), "tableOfFigures", "the engine refused it"),
+  },
+  insertCaption: {
+    group: "insert", description: "Word's Insert Caption on the caret's table (above) or paragraph (below): a label (Figure, Table, Equation or your own), its number and `text` after it.",
+    args: { "label?": "string", "position?": "above|below", "excludeLabel?": "boolean", "numberFormat?": "ARABIC|alphabetic|ALPHABETIC|roman|ROMAN", "text?": "string" },
+    run: (e, a) => {
+      const options: CaptionOptions = {};
+      const label = a.optString("label");
+      if (label !== undefined) options.label = label;
+      const position = a.optOneOf("position", ["above", "below"] as const);
+      if (position) options.position = position;
+      if (a.optBool("excludeLabel")) options.excludeLabel = true;
+      const format = a.optOneOf("numberFormat", ["ARABIC", "alphabetic", "ALPHABETIC", "roman", "ROMAN"] as const);
+      if (format) options.numberFormat = format;
+      const text = a.optString("text");
+      if (text) options.text = text;
+      must(e.insertCaption(options), "insertCaption", "there is nothing to caption at the caret, or the engine refused it (changes are tracked?)");
+    },
+  },
   hyperlink: {
     group: "insert", description: "Link the selection to a web address, or to a bookmark (kind \"internal\").",
     args: { target: "string", "kind?": "external|internal" },
@@ -515,14 +536,18 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     run: (e, a) => must(e.selectHeadingSection(headingArg(e, a, "selectHeading")), "selectHeading", "the heading is not shown"),
   },
   crossReference: {
-    group: "insert", description: "Word's Insert > Cross-reference at the caret (a selection is replaced): to a heading (by its text), a bookmark (by its name) or a numbered item (by its text, or its number and text); `insert` is what it shows.",
-    args: { type: CROSS_REFERENCE_TYPES.join("|"), target: "string", insert: "text|page|number|numberNoContext|numberFullContext|position", "hyperlink?": "boolean", "position?": "boolean" },
+    group: "insert", description: "Word's Insert > Cross-reference at the caret (a selection is replaced): to a heading (by its text), a bookmark (by its name), a numbered item (by its text, or its number and text) or a caption (by its text; `label` is its label); `insert` is what it shows.",
+    args: { type: CROSS_REFERENCE_TYPES.join("|"), target: "string", insert: "text|page|number|numberNoContext|numberFullContext|position|labelNumber|captionText", "label?": "string", "hyperlink?": "boolean", "position?": "boolean" },
     run: (e, a) => {
       const type = a.oneOf("type", CROSS_REFERENCE_TYPES);
       const insert = a.oneOf("insert", CROSS_REFERENCE_INSERTS[type]);
       const wanted = a.string("target").trim();
-      let target: { bookmark: string } | { anchorId: string } | null = null;
-      if (type === "bookmark") {
+      let target: { bookmark: string } | { anchorId: string; part?: ReturnType<typeof crossReferencePart> } | null = null;
+      if (type === "caption") {
+        const id = (a.optString("label") ?? "").trim().replace(/ /g, "_").toLowerCase();
+        const found = e.captions().find((c) => (!id || c.label.toLowerCase() === id) && c.text.trim() === wanted);
+        if (found) target = { anchorId: found.anchorId, part: crossReferencePart(insert) };
+      } else if (type === "bookmark") {
         if (e.bookmarks(true).some((b) => b.name === wanted)) target = { bookmark: wanted };
       } else if (type === "heading") {
         const id = e.outline().find((h) => h.text.trim() === wanted)?.anchorId;

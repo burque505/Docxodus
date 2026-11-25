@@ -81,6 +81,10 @@ import type {
   CellPropertiesOp,
   TableCellScope,
   TableOfContentsOptions,
+  TableOfFiguresOptions,
+  CaptionOptions,
+  CaptionInfo,
+  ReferenceTargetPart,
   CrossReferenceOptions,
   UpdateFieldsOptions,
 } from "./types.js";
@@ -265,6 +269,9 @@ export interface DocxEditorExports {
     MoveBookmark?: (handle: number, name: string, startAnchor: string, startOffset: number, endAnchor: string, endOffset: number) => string;
     RemoveBookmark?: (handle: number, name: string) => string;
     AddReferenceBookmark?: (handle: number, anchor: string) => string;
+    AddReferenceBookmarkPart?: (handle: number, anchor: string, part: string) => string;
+    InsertCaption?: (handle: number, anchor: string, optionsJson: string) => string;
+    ListCaptions?: (handle: number) => string;
     UpdateFields?: (handle: number, optionsJson: string) => string;
     ExpandRangeToFields?: (handle: number, startAnchor: string, startOffset: number, endAnchor: string, endOffset: number) => string;
     RepairFields?: (handle: number, anchorId: string) => string;
@@ -284,6 +291,7 @@ export interface DocxEditorExports {
     ReplaceImage?: (handle: number, imageId: string, imageBase64: string) => string;
     RemoveImage?: (handle: number, imageId: string) => string;
     InsertTableOfContents?: (handle: number, anchor: string, pos: string, optionsJson: string) => string;
+    InsertTableOfFigures?: (handle: number, anchor: string, pos: string, optionsJson: string) => string;
     /** Paste (optional): the clipboard's HTML as XHTML, or plain text, at a caret. */
     InsertHtml?: (
       handle: number,
@@ -8018,7 +8026,7 @@ export class DocxEditor {
    */
   insertCrossReference(
     at: DocumentRange | null,
-    target: { bookmark: string } | { anchorId: string },
+    target: { bookmark: string } | { anchorId: string; part?: ReferenceTargetPart },
     options: CrossReferenceOptions,
   ): { ok: boolean; code?: string; after?: DocumentRange } {
     const bridge = this.exports.DocxSessionBridge;
@@ -8044,7 +8052,10 @@ export class DocxEditor {
       let targetAnchor: string | null = null;
       if ("anchorId" in target) {
         if (typeof bridge.AddReferenceBookmark !== "function") throw new Error("no AddReferenceBookmark");
-        const made = step(bridge.AddReferenceBookmark(this.handle, target.anchorId));
+        const part = target.part ?? "paragraph";
+        if (part !== "paragraph" && typeof bridge.AddReferenceBookmarkPart !== "function") throw new Error("no AddReferenceBookmarkPart");
+        const made = step(part === "paragraph" ? bridge.AddReferenceBookmark(this.handle, target.anchorId)
+          : bridge.AddReferenceBookmarkPart!(this.handle, target.anchorId, part));
         name = made.bookmarkName ?? "";
         targetAnchor = target.anchorId;
         // (the bookmark's markers may give the insertion paragraph a new anchor, when they share it)
@@ -9224,9 +9235,92 @@ export class DocxEditor {
 
   /** Insert a table of contents (a real TOC field) before the active block. */
   insertTableOfContents(options: TableOfContentsOptions = {}): boolean {
+    const bridge = this.exports.DocxSessionBridge;
+    if (typeof bridge.InsertTableOfContents !== "function") return false;
+    return this.insertReferenceTable((id) => bridge.InsertTableOfContents!(this.handle, id, "before", JSON.stringify(options)));
+  }
+
+  /** Insert a table of figures (Word's References > Insert Table of Figures) before the active
+   *  block, filled with the label's captions at once. */
+  insertTableOfFigures(options: TableOfFiguresOptions = {}): boolean {
+    const bridge = this.exports.DocxSessionBridge;
+    if (typeof bridge.InsertTableOfFigures !== "function") return false;
+    return this.insertReferenceTable((id) => bridge.InsertTableOfFigures!(this.handle, id, "before", JSON.stringify(options)));
+  }
+
+  /** The body's captions, in document order (see {@link DocxSession.listCaptions}). */
+  captions(): CaptionInfo[] {
+    const bridge = this.exports.DocxSessionBridge;
+    if (this.closed || typeof bridge.ListCaptions !== "function") return [];
+    try {
+      return JSON.parse(bridge.ListCaptions(this.handle)) as CaptionInfo[];
+    } catch {
+      return [];
+    }
+  }
+
+  /** What Insert Caption would caption: the caret's table, else the caret's paragraph (one holding
+   *  a picture among them); null outside the body. */
+  captionTarget(): { kind: "table" | "paragraph"; element: HTMLElement } | null {
+    const block = this.activeBlock;
+    if (this.closed || !block || this.isBandBlock(block) || block.closest(".footnotes, .endnotes")) return null;
+    const anchor = this.anchorIdOf(block);
+    if (!anchor || !anchor.includes(":body:")) return null;
+    // (the outermost table: a caption goes beside the whole of it)
+    let table: HTMLElement | null = block.closest<HTMLElement>("table");
+    for (let outer = table?.parentElement?.closest<HTMLElement>("table"); outer; outer = outer.parentElement?.closest<HTMLElement>("table") ?? null)
+      table = outer;
+    if (table && this.anchorIdOf(table)) return { kind: "table", element: table };
+    return { kind: "paragraph", element: block };
+  }
+
+  /** The number a new caption of `label` (as shown: spaces, not underscores) would take at the
+   *  caret: one more than the captions of that label before the captioned item (below it: through it). */
+  nextCaptionNumber(label: string, position: "above" | "below"): number {
+    const target = this.captionTarget();
+    const id = label.trim().replace(/ /g, "_").toLowerCase();
+    let n = 1;
+    for (const caption of this.captions()) {
+      if (caption.label.toLowerCase() !== id) continue;
+      const unid = unidOfAnchor(caption.anchorId);
+      const el = unid ? this.editRoot.querySelector<HTMLElement>(`[data-anchor="${CSS.escape(unid)}"]`) : null;
+      if (!target || !el) continue;
+      const order = target.element.compareDocumentPosition(el);
+      if (order & Node.DOCUMENT_POSITION_PRECEDING || (position === "below" && order & Node.DOCUMENT_POSITION_CONTAINED_BY)) n++;
+    }
+    return n;
+  }
+
+  /** Word's Insert Caption on {@link captionTarget}: one undo step; false when the engine refused
+   *  (changes are tracked) or there is nothing to caption. */
+  insertCaption(options: CaptionOptions = {}): boolean {
+    const bridge = this.exports.DocxSessionBridge;
+    const target = this.captionTarget();
+    const block = this.activeBlock;
+    if (!target || !block || typeof bridge.InsertCaption !== "function") return false;
+    this.commitActiveTyping();
+    let id = this.anchorIdOf(target.element);
+    if (!id) return false;
+    if (target.kind === "paragraph") id = this.syncBlock(block, id);
+    if (!id) return false;
+    const idx = this.blockIndex(block);
+    const res = this.parseEdit(bridge.InsertCaption(this.handle, id, JSON.stringify(options)), { expectRejection: true });
+    if (!res.success) return false;
+    this.refreshAfter(block, idx, false, /* forceRemount */ true);
+    // (the caret goes to the end of the new caption, where Word leaves it)
+    const created = res.created?.[0]?.id;
+    const unid = created ? unidOfAnchor(created) : null;
+    const caption = unid ? this.editRoot.querySelector<HTMLElement>(`[data-anchor="${CSS.escape(unid)}"]`) : null;
+    if (caption) { this.activeBlock = caption; placeCaretAtOffset(caption, blockContentText(caption).length); }
+    return true;
+  }
+
+  /** Insert a reference table (contents, figures) before the active block with `insert`, and fill it
+   *  in the same undo step, as Word does. */
+  private insertReferenceTable(insert: (anchorId: string) => string): boolean {
     const block = this.activeBlock;
     const bridge = this.exports.DocxSessionBridge;
-    if (this.closed || !block || typeof bridge.InsertTableOfContents !== "function") return false;
+    if (this.closed || !block) return false;
     if (this.isBandBlock(block) || block.closest("table, .footnotes, .endnotes")) return false;
     let fullId = this.anchorIdOf(block);
     if (!fullId) return false;
@@ -9236,9 +9330,7 @@ export class DocxEditor {
     // (Word fills a new table at once: the insert and its first update are one undo step)
     const tx = typeof bridge.BeginTransaction === "function" && typeof bridge.UpdateFields === "function"
       ? bridge.BeginTransaction(this.handle) : 0;
-    const res = this.parseEdit(
-      bridge.InsertTableOfContents(this.handle, fullId, "before", JSON.stringify(options)),
-    );
+    const res = this.parseEdit(insert(fullId));
     if (res.success && tx) {
       const filled: UpdateFieldsOptions = { tablesOfContentsOnly: true, pages: this.pageMap(true) };
       this.parseEdit(bridge.UpdateFields!(this.handle, JSON.stringify(filled)));

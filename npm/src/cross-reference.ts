@@ -3,22 +3,25 @@
  * reference to"), and the REF / PAGEREF switches each choice stands for. Shared by the ribbon's
  * dialog and the `crossReference` command.
  */
-import type { CrossReferenceOptions } from "./types.js";
+import type { CrossReferenceOptions, ReferenceTargetPart } from "./types.js";
 
-/** Reference type: a heading, a bookmark, a numbered paragraph. */
-export type CrossReferenceType = "heading" | "bookmark" | "numbered";
+/** Reference type: a heading, a bookmark, a numbered paragraph, a caption (of one label: the
+ *  dialog lists one type per label, "Figure", "Table"...). */
+export type CrossReferenceType = "heading" | "bookmark" | "numbered" | "caption";
 
-/** "Insert reference to": the target's text, its page, its number (in relative, no or full
- *  context), or only "above" / "below". */
-export type CrossReferenceInsert = "text" | "page" | "number" | "numberNoContext" | "numberFullContext" | "position";
+/** "Insert reference to": the target's text (a caption's entire caption), its page, its number (in
+ *  relative, no or full context), only "above" / "below"; a caption's label and number, or its text. */
+export type CrossReferenceInsert = "text" | "page" | "number" | "numberNoContext" | "numberFullContext" | "position"
+  | "labelNumber" | "captionText";
 
-export const CROSS_REFERENCE_TYPES: readonly CrossReferenceType[] = ["heading", "bookmark", "numbered"];
+export const CROSS_REFERENCE_TYPES: readonly CrossReferenceType[] = ["heading", "bookmark", "numbered", "caption"];
 
 /** The choices of "Insert reference to" for each reference type, in Word's order. */
 export const CROSS_REFERENCE_INSERTS: Readonly<Record<CrossReferenceType, readonly CrossReferenceInsert[]>> = {
   heading: ["text", "page", "number", "numberNoContext", "numberFullContext", "position"],
   bookmark: ["text", "page", "number", "numberNoContext", "numberFullContext", "position"],
   numbered: ["page", "number", "numberNoContext", "numberFullContext", "text", "position"],
+  caption: ["text", "labelNumber", "captionText", "page", "position"],
 };
 
 /** Word's own label of each choice, per reference type (the ribbon translates them). */
@@ -26,7 +29,9 @@ export function crossReferenceInsertLabel(type: CrossReferenceType, insert: Cros
   const noun = type === "heading" ? "Heading" : type === "bookmark" ? "Bookmark" : "Paragraph";
   const number = type === "heading" ? "Heading number" : "Paragraph number";
   switch (insert) {
-    case "text": return `${noun} text`;
+    case "text": return type === "caption" ? "Entire caption" : `${noun} text`;
+    case "labelNumber": return "Only label and number";
+    case "captionText": return "Only caption text";
     case "page": return "Page number";
     case "number": return number;
     case "numberNoContext": return `${number} (no context)`;
@@ -37,7 +42,12 @@ export function crossReferenceInsertLabel(type: CrossReferenceType, insert: Cros
 
 /** "Include above/below" applies to numbers and pages only, as in Word. */
 export function crossReferenceTakesPosition(insert: CrossReferenceInsert): boolean {
-  return insert !== "text" && insert !== "position";
+  return insert !== "text" && insert !== "position" && insert !== "captionText";
+}
+
+/** Which part of the target paragraph the reference's hidden bookmark spans. */
+export function crossReferencePart(insert: CrossReferenceInsert): ReferenceTargetPart {
+  return insert === "labelNumber" ? "labelAndNumber" : insert === "captionText" ? "captionText" : "paragraph";
 }
 
 /** The engine options for a choice, "Insert as hyperlink" and "Include above/below". */
