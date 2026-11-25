@@ -255,6 +255,16 @@ public class DocxSessionCaptionsTests
         Assert.Single(session.ListCaptions());
     }
 
+    [Fact]
+    public void CP015_UpdateTable_NumbersTheCaptionsAgain_WithOrWithoutATableOfFigures()
+    {
+        using var session = Open(Caption("Figure", "7", ": A cat") + P(R("Body")) + Caption("Figure", "3", ": A dog"));
+
+        Assert.True(session.UpdateFields(new UpdateFieldsOptions { TablesOfContentsOnly = true }).Success);
+
+        Assert.Equal(new[] { "Figure 1: A cat", "Body", "Figure 2: A dog" }, Lines(session));
+    }
+
     private static string Contents(string instr) =>
         P(Start(instr) + R("old entry") + Char("end"), "TableofFigures");
 }

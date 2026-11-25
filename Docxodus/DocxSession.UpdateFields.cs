@@ -27,7 +27,8 @@ public sealed record UpdateFieldsOptions
     /// marked dirty, so Word updates it.</summary>
     public IReadOnlyDictionary<string, string>? Pages { get; init; }
 
-    /// <summary>Only tables of contents (Word's Update Table); other fields are left as they are.</summary>
+    /// <summary>Only tables of contents and figures (Word's Update Table), with the captions' <c>SEQ</c>
+    /// numbers they copy; other fields (<c>REF</c>, <c>PAGEREF</c>) are left as they are.</summary>
     public bool TablesOfContentsOnly { get; init; }
 }
 
@@ -99,7 +100,7 @@ public sealed partial class DocxSession
         }
 
         // (no field this updates: no edit, and no undo step, as when printing a document without any)
-        var updatable = o.TablesOfContentsOnly ? new[] { "TOC" } : new[] { "TOC", "REF", "PAGEREF", "SEQ" };
+        var updatable = o.TablesOfContentsOnly ? new[] { "TOC", "SEQ" } : new[] { "TOC", "REF", "PAGEREF", "SEQ" };
         if (!ScanFields(body).Any(f => updatable.Contains(f.Kind) && f.StartsIn(inRange)))
             return new EditResult { Success = true };
 
@@ -109,13 +110,14 @@ public sealed partial class DocxSession
         try
         {
             // What the headings hold first: a table of contents copies their text.
+            // (the captions' numbers too for Update Table: a table of figures copies them)
+            UpdateSequences(body, ScanFields(body), inRange, update);
             if (!o.TablesOfContentsOnly)
             {
-                UpdateSequences(body, ScanFields(body), inRange, update);
                 UpdatePageReferences(body, inRange, update);
                 UpdateReferences(body, inRange, update);
-                if (update.Changed) InvalidateProjectionCache();
             }
+            if (update.Changed) InvalidateProjectionCache();
             foreach (var toc in ScanFields(body).Where(f => f.Kind == "TOC" && f.StartsIn(inRange)).ToList())
                 RebuildTableOfContents(body, toc, update);
             if (!o.TablesOfContentsOnly)

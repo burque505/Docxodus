@@ -531,11 +531,11 @@ public class DocxSessionUpdateFieldsTests
     }
 
     [Fact]
-    public void UF028_TablesOfContentsOnly_CopiesTheHeadingAsItIs()
+    public void UF028_TablesOfContentsOnly_NumbersTheSequencesFirst_ThenCopiesTheHeading()
     {
         using var session = Open(Contents(" TOC \\o \"1-3\" ", Closing(), R("x")) + P(R("Schedule ") + Field(" SEQ Schedule ", "9"), "Heading1"));
         Assert.True(session.UpdateFields(new UpdateFieldsOptions { TablesOfContentsOnly = true }).Success);
-        Assert.Equal(new[] { "Schedule 9\t1", "", "Schedule 9" }, Lines(session));
+        Assert.Equal(new[] { "Schedule 1\t1", "", "Schedule 1" }, Lines(session));
     }
 
     [Fact]
