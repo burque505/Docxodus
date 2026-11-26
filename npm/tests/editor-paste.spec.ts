@@ -141,4 +141,27 @@ test.describe('Paste', () => {
     await expect.poll(() => listMarkers(page)).toHaveLength(4);
     expect(await text(page)).toContain('alpha\nbeta');
   });
+
+  test('selectedHtml keeps the selection with its formatting, and pasteHtml takes it back', async ({ page }) => {
+    await openHello(page);
+    expect(await page.evaluate(() => (window as any).__ed.exec('selectedHtml'))).toBe('');
+    // Bold "world", then select "Hello world" and keep it.
+    await page.evaluate(() => {
+      const ed = (window as any).__ed;
+      ed.exec('find', { text: 'world', matchCase: true });
+      ed.exec('bold');
+      ed.exec('find', { text: 'Hello world', matchCase: true });
+    });
+    const kept = await page.evaluate(() => (window as any).__ed.selectionHtml());
+    expect(kept.text).toBe('Hello world');
+    expect(kept.html).toMatch(/font-weight:\s*(700|bold)/);
+    expect(await page.evaluate(() => (window as any).__ed.exec('selectedHtml'))).toBe(kept.html);
+    await page.evaluate(() => (window as any).__ed.exec('moveCaret', { to: 'documentEnd' }));
+    await page.evaluate(async (html) => { await (window as any).__ed.exec('pasteHtml', { html, formatting: 'keep' }); }, kept.html);
+    await expect.poll(() => text(page)).toBe('Hello worldHello world');
+    // Both "world"s are bold.
+    const boldWorlds = () => page.evaluate(() => Array.from(document.querySelectorAll<HTMLElement>('#ex-editor [data-anchor] *'))
+      .filter((s) => s.childElementCount === 0 && s.textContent === 'world' && Number(getComputedStyle(s).fontWeight) >= 700).length);
+    await expect.poll(boldWorlds).toBe(2);
+  });
 });
