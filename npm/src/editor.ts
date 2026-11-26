@@ -2276,10 +2276,17 @@ export class DocxEditor {
     // Range.cloneContents keeps selected descendants in document order, including partial
     // ancestors. Read styles and placeholder status from their live counterparts before the
     // clone loses its editing host and the document's class-based stylesheet.
+    // Text in the document's automatic color shows in the editor's own text color: that color is
+    // not the text's, so it is left out (Keep Source Formatting would otherwise make it a color).
+    const view = this.container.ownerDocument.defaultView!;
+    const autoColor = view.getComputedStyle(this.container).color;
     const inlineTextStyle = (copy: HTMLElement, original: Element): CSSStyleDeclaration => {
-      const style = this.container.ownerDocument.defaultView!.getComputedStyle(original);
-      for (const key of ["direction", "unicode-bidi", "white-space", "font-family", "font-size", "font-weight", "font-style", "font-variant", "font-kerning", "letter-spacing", "color", "background-color", "text-decoration", "text-transform", "vertical-align"])
-        copy.style.setProperty(key, style.getPropertyValue(key));
+      const style = view.getComputedStyle(original);
+      for (const key of ["direction", "unicode-bidi", "white-space", "font-family", "font-size", "font-weight", "font-style", "font-variant", "font-kerning", "letter-spacing", "color", "background-color", "text-decoration", "text-transform", "vertical-align"]) {
+        const value = style.getPropertyValue(key);
+        if (key === "color" && value === autoColor) continue;
+        copy.style.setProperty(key, value);
+      }
       return style;
     };
     const common = range.commonAncestorContainer;

@@ -137,6 +137,26 @@ public class DocxSessionPasteHtmlTests
         Assert.Equal("FF0000", (string?)run.Element(W + "rPr")?.Element(W + "color")?.Attribute(W + "val"), ignoreCase: true);
     }
 
+    [Theory]
+    // A font list keeps its first family, as Word's and a browser's clipboard write it.
+    [InlineData("&quot;Book Antiqua&quot;, serif", "Book Antiqua")]
+    [InlineData("\"Calibri\",sans-serif", "Calibri")]
+    [InlineData("Garamond Premier Pro, serif", "Garamond Premier Pro")]
+    [InlineData("-apple-system, Georgia, serif", "Georgia")]
+    [InlineData("monospace", "Courier New")]
+    [InlineData("Courier New", "Courier New")]
+    public void PH005b_Keep_KeepsTheFirstFontOfAList(string css, string expected)
+    {
+        using var session = new DocxSession(Fixture());
+        var style = css.Contains('"') ? $"style='font-family: {css}'" : $"style=\"font-family: {css}\"";
+        var result = session.InsertHtml(Blocks(session)[1], 0, 0,
+            $"<html><body><p><span {style}>A</span></p></body></html>",
+            new HtmlInsertOptions { Formatting = HtmlPasteFormatting.Keep });
+        Assert.True(result.Success, result.Error?.Message);
+        var run = Paragraphs(session)[1].Descendants(W + "r").First(r => Text(r) == "A");
+        Assert.Equal(expected, (string?)run.Element(W + "rPr")?.Element(W + "rFonts")?.Attribute(W + "ascii"));
+    }
+
     [Fact]
     public void PH006_OneUndoStep_EvenOverASelection()
     {

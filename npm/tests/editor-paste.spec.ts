@@ -150,18 +150,22 @@ test.describe('Paste', () => {
       const ed = (window as any).__ed;
       ed.exec('find', { text: 'world', matchCase: true });
       ed.exec('bold');
+      ed.exec('fontFamily', { name: 'Courier New' });
       ed.exec('find', { text: 'Hello world', matchCase: true });
     });
     const kept = await page.evaluate(() => (window as any).__ed.selectionHtml());
     expect(kept.text).toBe('Hello world');
     expect(kept.html).toMatch(/font-weight:\s*(700|bold)/);
+    // (the editor's own text color is not the text's: automatic text keeps no color)
+    expect(kept.html).not.toMatch(/(^|[^-])color:/);
     expect(await page.evaluate(() => (window as any).__ed.exec('selectedHtml'))).toBe(kept.html);
     await page.evaluate(() => (window as any).__ed.exec('moveCaret', { to: 'documentEnd' }));
     await page.evaluate(async (html) => { await (window as any).__ed.exec('pasteHtml', { html, formatting: 'keep' }); }, kept.html);
     await expect.poll(() => text(page)).toBe('Hello worldHello world');
-    // Both "world"s are bold.
+    // Both "world"s are bold, in Courier New (the font list "Courier New", monospace keeps its first family).
     const boldWorlds = () => page.evaluate(() => Array.from(document.querySelectorAll<HTMLElement>('#ex-editor [data-anchor] *'))
-      .filter((s) => s.childElementCount === 0 && s.textContent === 'world' && Number(getComputedStyle(s).fontWeight) >= 700).length);
+      .filter((s) => s.childElementCount === 0 && s.textContent === 'world' && Number(getComputedStyle(s).fontWeight) >= 700
+        && getComputedStyle(s).fontFamily.includes('Courier New')).length);
     await expect.poll(boldWorlds).toBe(2);
   });
 });
