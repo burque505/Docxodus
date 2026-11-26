@@ -5185,11 +5185,146 @@ export class DocxEditor {
       this.clearCellSelection();
       return true;
     }
-    // Copy (Ctrl+C, Ctrl+Insert) keeps it: the browser's copy event, which onCopy fills with the cells.
+    // Copy (Ctrl+C, Ctrl+Insert) and Cut (Ctrl+X, Shift+Delete) keep it: the browser's copy and
+    // cut events, which onCopy and onCut fill with the cells.
     const ctrl = (ev.ctrlKey || ev.metaKey) && !ev.altKey && !ev.shiftKey;
-    if (ctrl && ((ev.key ?? "").toLowerCase() === "c" || ev.key === "Insert")) return true;
+    const key = (ev.key ?? "").toLowerCase();
+    if (ctrl && (key === "c" || key === "x" || ev.key === "Insert")) return true;
+    if (ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey && ev.key === "Delete") return true;
+    const plain = !ev.ctrlKey && !ev.altKey && !ev.metaKey && !ev.isComposing;
+    // Delete: the cells' contents go. Backspace: whole rows (or the whole table) go, else as Delete.
+    if (plain && !ev.shiftKey && (ev.key === "Delete" || ev.key === "Backspace")) {
+      ev.preventDefault();
+      if (ev.key === "Backspace") this.deleteSelectedCells();
+      else this.clearSelectedCells();
+      return true;
+    }
+    // Typing: the cells' contents go and the character goes in the first cell (one undo step).
+    if (plain && ev.key.length === 1) {
+      ev.preventDefault();
+      this.clearSelectedCells(ev.key);
+      return true;
+    }
     this.clearCellSelection();
     return false;
+  }
+
+  /** A transaction around `run` (its edits one undo step): committed when it returns, rolled back
+   *  when it throws. True when it was committed. */
+  private cellEdit(run: (step: (json: string) => EditResultLite) => void): boolean {
+    const bridge = this.exports.DocxSessionBridge;
+    const tx = typeof bridge.BeginTransaction === "function" ? bridge.BeginTransaction(this.handle) : 0;
+    let ok = true;
+    try {
+      run((json) => {
+        const res = this.parseEdit(json);
+        if (!res.success) throw new Error("the engine refused the edit");
+        return res;
+      });
+    } catch {
+      ok = false;
+    } finally {
+      if (tx) {
+        if (ok) bridge.CommitTransaction!(tx);
+        else bridge.RollbackTransaction?.(tx);
+      }
+    }
+    return ok;
+  }
+
+  /** After a cell edit: render afresh, the caret in the block at `index` (at `offset`). */
+  private afterCellEdit(ok: boolean, index: number, offset: number): void {
+    this.clearCellSelection();
+    this.remount(Math.max(0, index));
+    const list = this.editableList();
+    const target = list[Math.max(0, Math.min(index, list.length - 1))];
+    if (target) placeCaretAtOffset(target, ok ? offset : 0);
+    if (ok && target) this.options.onEdit?.({ anchorId: this.anchorIdOf(target) ?? "", unid: target.getAttribute("data-anchor") ?? "" });
+  }
+
+  /**
+   * Clear the selected cells' contents (Word's Delete over cells): each cell keeps one empty
+   * paragraph, the first cell's taking `text`, with the caret after it. One undo step. False when
+   * no cells are selected or the engine refused (the document then as it was).
+   */
+  clearSelectedCells(text = ""): boolean {
+    const sel = this.cellSel;
+    if (this.closed || !this.options.editable || !sel || !sel.anchor.isConnected) return false;
+    const bridge = this.exports.DocxSessionBridge;
+    const ownBlocks = (cell: HTMLTableCellElement) => Array.from(cell.querySelectorAll<HTMLElement>('[data-anchor][contenteditable="true"]'))
+      .filter((b) => b.closest("td, th") === cell);
+    const firstBlock = ownBlocks(sel.cells[0])[0];
+    const firstIndex = firstBlock ? this.editableList().indexOf(firstBlock) : -1;
+    const ok = this.cellEdit((step) => {
+      sel.cells.forEach((cell, n) => {
+        // (the cell's own paragraphs and tables: a nested table's paragraphs go with it)
+        const blocks = ownBlocks(cell);
+        const tables = Array.from(cell.querySelectorAll<HTMLElement>("table"))
+          .filter((t) => t.parentElement?.closest("td, th") === cell);
+        const typed = n === 0 ? text : "";
+        for (const table of tables) {
+          const id = this.anchorIdOf(table);
+          if (id) step(bridge.DeleteBlock(this.handle, id));
+        }
+        for (const block of blocks.slice(1)) {
+          const id = this.anchorIdOf(block);
+          const synced = id ? this.syncBlock(block, id) : undefined;
+          if (!synced) throw new Error("a block could not be committed");
+          step(bridge.DeleteBlock(this.handle, synced));
+        }
+        const keep = blocks[0];
+        if (keep) {
+          const fullId = this.anchorIdOf(keep);
+          const id = fullId ? this.syncBlock(keep, fullId) : undefined;
+          if (!id) throw new Error("a block could not be committed");
+          const length = blockContentText(keep).length;
+          if (length > 0 || typed) step(bridge.ReplaceTextAtSpan(this.handle, id, 0, length, typed, ""));
+        }
+      });
+    });
+    this.afterCellEdit(ok, firstIndex, text.length);
+    return ok;
+  }
+
+  /**
+   * Word's Backspace (and Cut) over cells: when the selection takes whole rows they go, and the
+   * whole table when it takes all of it; otherwise the cells' contents go ({@link clearSelectedCells}).
+   * One undo step. False when no cells are selected or the engine refused.
+   */
+  deleteSelectedCells(): boolean {
+    const sel = this.cellSel;
+    if (this.closed || !this.options.editable || !sel || !sel.anchor.isConnected) return false;
+    const { rect, grid } = sel;
+    if (rect.c0 !== 0 || rect.c1 !== grid.columns - 1) return this.clearSelectedCells();
+    const bridge = this.exports.DocxSessionBridge;
+    const table = grid.table;
+    const firstBlock = Array.from(sel.cells[0].querySelectorAll<HTMLElement>('[data-anchor][contenteditable="true"]'))[0];
+    let index = firstBlock ? this.editableList().indexOf(firstBlock) : -1;
+    const whole = rect.r0 === 0 && rect.r1 === grid.rows - 1;
+    // (typing not yet committed goes in first)
+    const active = this.activeBlock;
+    const activeId = active?.isConnected ? this.anchorIdOf(active) : undefined;
+    if (active && activeId && !this.syncBlock(active, activeId)) return false;
+    const ok = this.cellEdit((step) => {
+      if (whole) {
+        const id = this.anchorIdOf(table);
+        if (!id) throw new Error("the table has no anchor");
+        step(bridge.DeleteBlock(this.handle, id));
+        return;
+      }
+      // (each row by a cell of its own, the last first)
+      const ids: string[] = [];
+      for (let r = rect.r1; r >= rect.r0; r--) {
+        const cell = table.rows[r]?.cells[0] as HTMLElement | undefined;
+        const id = cell ? this.anchorIdOf(cell) : undefined;
+        if (!id) throw new Error("a row has no cell of its own");
+        ids.push(id);
+      }
+      for (const id of ids) step(bridge.DeleteTableRow(this.handle, id));
+    });
+    if (ok && whole) index = Math.max(0, index - 1);
+    this.afterCellEdit(ok, index, 0);
+    return ok;
   }
 
   /**
@@ -5862,6 +5997,17 @@ export class DocxEditor {
    *  only. The clipboard gets the selection (as copy gives it), then the selection goes. */
   private readonly onCut = (ev: ClipboardEvent): void => {
     if (this.closed || ev.defaultPrevented || !ev.clipboardData) return;
+    // Cells: copied as copy gives them, then taken as Backspace takes them (whole rows, the
+    // table, or the cells' contents).
+    const cells = this.serializeCellSelection();
+    if (cells) {
+      ev.preventDefault();
+      if (!this.options.editable) return;
+      ev.clipboardData.setData("text/plain", cells.text);
+      ev.clipboardData.setData("text/html", cells.html);
+      this.deleteSelectedCells();
+      return;
+    }
     const blocks = this.crossBlockSelection();
     if (!blocks || !this.crossBlockEditable(blocks)) return;
     ev.preventDefault();

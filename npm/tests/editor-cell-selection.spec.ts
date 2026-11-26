@@ -196,6 +196,69 @@ test.describe('Cell selection', () => {
     expect(pasted).toEqual([['A2/r2', 'B2'], ['B3'], ['A4/c2']]);
   });
 
+  /** The outer table's cells, row by row: each cell's own paragraphs' text (a nested table: "[n]"). */
+  const grid = (page: Page) => page.evaluate(() => {
+    const t = Array.from(document.querySelectorAll<HTMLTableElement>('#ex-editor table')).find((x) => !x.parentElement!.closest('table'));
+    if (!t) return null;
+    return Array.from(t.rows).map((tr) => Array.from(tr.cells).map((c) => {
+      const own = Array.from(c.querySelectorAll<HTMLElement>('[data-anchor][contenteditable="true"]')).filter((b) => b.closest('td, th') === c);
+      const nested = Array.from(c.querySelectorAll('table')).filter((x) => x.parentElement!.closest('td, th') === c).length;
+      return own.map((b) => (b.textContent ?? '').trim()).join('|') + (nested ? '[n]' : '');
+    }));
+  });
+  const FULL = [['A1', 'B1', 'C1'], ['A2', 'B2', 'C2[n]'], ['B3', 'C3'], ['A4', 'C4']];
+
+  test('Delete clears the selected cells (a nested table goes with its cell\'s contents); one undo puts them back', async ({ page }) => {
+    await openTable(page);
+    expect(await grid(page)).toEqual(FULL);
+    await drag(page, 'B2', 'C3');
+    await page.keyboard.press('Delete');
+    await expect.poll(() => grid(page)).toEqual([['A1', 'B1', 'C1'], ['A2', '', ''], ['', ''], ['A4', 'C4']]);
+    expect(await selection(page)).toBeNull();
+    await page.keyboard.press('Control+z');
+    await expect.poll(() => grid(page)).toEqual(FULL);
+  });
+
+  test('typing over cells clears them and types into the first', async ({ page }) => {
+    await openTable(page);
+    await drag(page, 'B1', 'C1');
+    await page.keyboard.type('xy');
+    await expect.poll(() => grid(page)).toEqual([['A1', 'xy', ''], ...FULL.slice(1)]);
+    expect(await selection(page)).toBeNull();
+  });
+
+  test('Backspace on whole rows deletes them; on the whole table, the table; else it clears', async ({ page }) => {
+    await openTable(page);
+    const b1 = await pointOf(page, 'B1');
+    await page.mouse.click(b1.x, b1.y);
+    await page.evaluate(() => (window as any).__ed.exec('selectCells', { part: 'row' }));
+    await page.keyboard.press('Backspace');
+    await expect.poll(() => grid(page)).toEqual(FULL.slice(1));
+    await page.keyboard.press('Control+z');
+    await expect.poll(() => grid(page)).toEqual(FULL);
+    // part of a row: cleared
+    await drag(page, 'A1', 'B1');
+    await page.keyboard.press('Backspace');
+    await expect.poll(() => grid(page)).toEqual([['', '', 'C1'], ...FULL.slice(1)]);
+    // the whole table
+    const c4 = await pointOf(page, 'C4');
+    await page.mouse.click(c4.x, c4.y);
+    await page.evaluate(() => (window as any).__ed.exec('selectCells', { part: 'table' }));
+    await page.keyboard.press('Backspace');
+    await expect.poll(() => page.evaluate(() => document.querySelectorAll('#ex-editor table').length)).toBe(0);
+    expect(await page.evaluate(() => Array.from(document.querySelectorAll('#ex-editor [data-anchor][contenteditable="true"]'))
+      .map((b) => (b.textContent ?? '').trim()).filter(Boolean))).toEqual(['Before', 'After']);
+  });
+
+  test('Ctrl+X on whole rows puts them on the clipboard and deletes them', async ({ page, context }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    await openTable(page);
+    await drag(page, 'A1', 'C1');
+    await page.keyboard.press('Control+x');
+    await expect.poll(() => grid(page)).toEqual(FULL.slice(1));
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('A1\tB1\tC1');
+  });
+
   test('the table handle shows at the table under the mouse (the innermost) and selects it', async ({ page }) => {
     await openTable(page);
     const handle = () => page.evaluate(() => {
