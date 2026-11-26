@@ -259,6 +259,74 @@ test.describe('Cell selection', () => {
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('A1\tB1\tC1');
   });
 
+  /** The left edge of character `index` of the block holding exactly `text`. */
+  const charPoint = (page: Page, text: string, index: number) => page.evaluate(({ text, index }) => {
+    const block = Array.from(document.querySelectorAll<HTMLElement>('#ex-editor [data-anchor][contenteditable="true"]'))
+      .find((b) => (b.textContent ?? '').trim() === text)!;
+    const node = document.createTreeWalker(block, NodeFilter.SHOW_TEXT).nextNode() as Text;
+    const range = document.createRange();
+    range.setStart(node, index);
+    range.setEnd(node, index + 1);
+    const r = range.getBoundingClientRect();
+    return { x: r.left + 0.5, y: r.top + r.height / 2 };
+  }, { text, index });
+  async function shiftSelect(page: Page, from: [string, number], to: [string, number]) {
+    const a = await charPoint(page, ...from), b = await charPoint(page, ...to);
+    await page.mouse.click(a.x, a.y);
+    await page.keyboard.down('Shift');
+    await page.mouse.click(b.x, b.y);
+    await page.keyboard.up('Shift');
+  }
+  const paragraphs = (page: Page) => page.evaluate(() =>
+    Array.from(document.querySelectorAll<HTMLElement>('#ex-editor [data-anchor][contenteditable="true"]'))
+      .filter((b) => !b.closest('table')).map((b) => (b.textContent ?? '').trim()));
+
+  test('mixed: from a paragraph over a whole table into the next, Delete takes it all as one undo step', async ({ page }) => {
+    await openTable(page);
+    await shiftSelect(page, ['Before', 3], ['After', 2]);
+    // (the rows that will go are shaded)
+    await expect.poll(() => shaded(page)).toEqual(['A1', 'B1', 'C1', 'A2', 'B2', 'C2', 'B3', 'C3', 'A4', 'C4']);
+    await page.keyboard.press('Delete');
+    await expect.poll(() => page.evaluate(() => document.querySelectorAll('#ex-editor table').length)).toBe(0);
+    expect(await paragraphs(page)).toEqual(['Befter']);
+    expect(await shaded(page)).toEqual([]);
+    await page.keyboard.press('Control+z');
+    await expect.poll(() => grid(page)).toEqual(FULL);
+    expect(await paragraphs(page)).toEqual(['Before', 'After']);
+  });
+
+  test('mixed: an end in the table takes the rows from its row to the table\'s edge', async ({ page }) => {
+    await openTable(page);
+    await shiftSelect(page, ['Before', 3], ['B3', 1]);
+    await expect.poll(() => shaded(page)).toEqual(['A1', 'B1', 'C1', 'A2', 'B2', 'C2', 'B3', 'C3']);
+    await page.keyboard.press('Backspace');
+    await expect.poll(() => grid(page)).toEqual([['A4', 'C4']]);
+    expect(await paragraphs(page)).toEqual(['Bef', 'After']);
+    await page.keyboard.press('Control+z');
+    await expect.poll(() => grid(page)).toEqual(FULL);
+    // from the table's last row into the paragraph after it
+    await shiftSelect(page, ['C4', 1], ['After', 2]);
+    await page.keyboard.press('Delete');
+    await expect.poll(() => grid(page)).toEqual(FULL.slice(0, 3));
+    expect(await paragraphs(page)).toEqual(['Before', 'ter']);
+  });
+
+  test('mixed: typing over it and pasting over it replace it (one undo step each)', async ({ page }) => {
+    await openTable(page);
+    await shiftSelect(page, ['Before', 3], ['After', 2]);
+    await page.keyboard.type('Z');
+    await expect.poll(() => paragraphs(page)).toEqual(['BefZter']);
+    expect(await page.evaluate(() => document.querySelectorAll('#ex-editor table').length)).toBe(0);
+    await page.keyboard.press('Control+z');
+    await expect.poll(() => grid(page)).toEqual(FULL);
+    await shiftSelect(page, ['Before', 3], ['After', 2]);
+    await page.evaluate(() => (window as any).__ed.exec('pasteText', { text: 'Q' }));
+    await expect.poll(() => paragraphs(page)).toEqual(['BefQter']);
+    await page.keyboard.press('Control+z');
+    await expect.poll(() => grid(page)).toEqual(FULL);
+    expect(await paragraphs(page)).toEqual(['Before', 'After']);
+  });
+
   test('the table handle shows at the table under the mouse (the innermost) and selects it', async ({ page }) => {
     await openTable(page);
     const handle = () => page.evaluate(() => {

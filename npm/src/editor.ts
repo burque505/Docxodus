@@ -2434,6 +2434,7 @@ export class DocxEditor {
   private readonly onSelectionChange = (): void => {
     if (this.closed) return;
     this.scheduleTableHandle();
+    this.shadeMixedSelection();
     const sel = typeof window !== "undefined" ? window.getSelection() : null;
     if (!sel || sel.rangeCount === 0) return; // no selection info — keep the cache as-is
     const range = sel.getRangeAt(0);
@@ -5838,6 +5839,7 @@ export class DocxEditor {
   private replaceCrossBlockSelection(text: string): boolean {
     let blocks = this.crossBlockSelection();
     if (!blocks || !this.crossBlockEditable(blocks)) return false;
+    if (blocks.some((b) => this.topTable(b))) return this.replaceMixedSelection(blocks, text);
     // (Word's selection over a field: reaching into one from outside takes the whole field)
     const grew = this.growSelectionToFields();
     if (grew) {
@@ -5958,13 +5960,175 @@ export class DocxEditor {
   }
 
   /**
-   * Whether {@link replaceCrossBlockSelection} edits this selection. Not one reaching into a table
-   * (cells are not merged into paragraphs) nor one in a header or footer (a band repaints on its
-   * own, not through the body's remount): over those the browser's own editing runs, so a key is
-   * never dropped.
+   * Whether {@link replaceCrossBlockSelection} edits this selection. Not one in a header or footer
+   * (a band repaints on its own, not through the body's remount): over that the browser's own
+   * editing runs, so a key is never dropped. One reaching into a body table takes whole rows
+   * ({@link replaceMixedSelection}).
    */
   private crossBlockEditable(blocks: HTMLElement[]): boolean {
-    return !blocks.some((b) => b.closest("table") || this.isBandBlock(b));
+    return !blocks.some((b) => this.isBandBlock(b));
+  }
+
+  /** The outermost table `el` is in (a table of the body, not one nested in a cell), or null. */
+  private topTable(el: Element): HTMLTableElement | null {
+    let table = el.closest<HTMLTableElement>("table");
+    for (let up = table?.parentElement?.closest<HTMLTableElement>("table"); up && this.container.contains(up); up = up.parentElement?.closest<HTMLTableElement>("table"))
+      table = up;
+    return table && this.container.contains(table) ? table : null;
+  }
+
+  /**
+   * What a selection spanning blocks takes of the tables it reaches into, as Word does: a table it
+   * covers goes whole; one an end of it is in loses the rows from that end's row to the table's
+   * edge the selection runs over (all of it when that is every row). Null when it reaches into
+   * no table.
+   */
+  private mixedSelectionPlan(blocks: HTMLElement[]): Array<{ table: HTMLTableElement; whole: boolean; r0: number; r1: number }> | null {
+    const tables: HTMLTableElement[] = [];
+    for (const b of blocks) {
+      const t = this.topTable(b);
+      if (t && !tables.includes(t)) tables.push(t);
+    }
+    if (tables.length === 0) return null;
+    const first = blocks[0], last = blocks[blocks.length - 1];
+    const firstTable = this.topTable(first), lastTable = this.topTable(last);
+    return tables.map((table) => {
+      const grid = new TableGrid(table);
+      let r0 = 0, r1 = grid.rows - 1;
+      if (table === firstTable) {
+        const g = grid.of(ownCell(first, table)!);
+        if (g) r0 = g.row;
+      }
+      if (table === lastTable) {
+        const g = grid.of(ownCell(last, table)!);
+        if (g) r1 = g.row + g.rowSpan - 1;
+      }
+      return { table, whole: r0 === 0 && r1 === grid.rows - 1, r0, r1 };
+    });
+  }
+
+  /** Rows a mixed selection will take, shaded as a cell selection's cells are (Word shows them so). */
+  private mixedShaded: HTMLTableCellElement[] = [];
+  private shadeMixedSelection(): void {
+    for (const cell of this.mixedShaded) cell.classList.remove(CELL_SELECTED_CLASS);
+    this.mixedShaded = [];
+    if (this.cellSel || !this.options.editable) return;
+    const blocks = this.crossBlockSelection();
+    const plan = blocks && this.crossBlockEditable(blocks) ? this.mixedSelectionPlan(blocks) : null;
+    if (!plan) return;
+    ensureCellSelectionStyles(this.container.ownerDocument);
+    for (const { table, r0, r1 } of plan) {
+      const grid = new TableGrid(table);
+      for (const g of grid.cellsOf({ r0, c0: 0, r1, c1: Math.max(0, grid.columns - 1) })) {
+        g.cell.classList.add(CELL_SELECTED_CLASS);
+        this.mixedShaded.push(g.cell);
+      }
+    }
+  }
+
+  /**
+   * {@link replaceCrossBlockSelection} for a selection reaching into body tables (Word's): the
+   * text selected in the paragraphs at its ends goes, the paragraphs between go, and the tables
+   * go as {@link mixedSelectionPlan} says; the two end paragraphs join, and `text` takes the
+   * selection's place (a paragraph for each line). One undo step; the document is left as it was
+   * when the engine refuses a part.
+   */
+  private replaceMixedSelection(blocks: HTMLElement[], text: string): boolean {
+    const plan = this.mixedSelectionPlan(blocks)!;
+    const bridge = this.exports.DocxSessionBridge;
+    const targets = this.multiBlockTargets(blocks);
+    const first = targets[0], last = targets[targets.length - 1];
+    const firstPara = !this.topTable(first.block), lastPara = !this.topTable(last.block);
+    const list = this.editableList();
+    // What goes: the blocks of the rows (or tables) taken, and the paragraphs between the ends.
+    const gone = new Set<HTMLElement>();
+    for (const { table, whole, r0, r1 } of plan) {
+      const rows = whole ? Array.from(table.rows) : Array.from(table.rows).slice(r0, r1 + 1);
+      if (whole) table.querySelectorAll<HTMLElement>('[data-anchor][contenteditable="true"]').forEach((b) => gone.add(b));
+      else for (const tr of rows) tr.querySelectorAll<HTMLElement>('[data-anchor][contenteditable="true"]').forEach((b) => gone.add(b));
+    }
+    const between = targets.slice(firstPara ? 1 : 0, lastPara ? -1 : undefined).filter((t) => !this.topTable(t.block));
+    for (const t of between) gone.add(t.block);
+    // The paragraph the text goes in: the first end's, else the last's, else none (both ends in
+    // tables with nothing between kept: the text has nowhere to go).
+    const kept = firstPara ? first : lastPara ? last : null;
+    const keptIndex = kept ? list.indexOf(kept.block) : -1;
+    const lines = text.split(/\r\n|\r|\n/);
+    // (the caret: where the kept paragraph lands, counting the blocks before it that stay)
+    const before = (el: HTMLElement | null) => {
+      const at = el ? list.indexOf(el) : list.length;
+      return list.slice(0, at).filter((b) => !gone.has(b)).length;
+    };
+    let caretIndex = kept ? before(kept.block) : before(list.find((b, i) => i > list.indexOf(last.block)) ?? null);
+    let caretOffset = 0;
+    const ok = this.cellEdit((step) => {
+      const ids = targets.map((t) => (t.fullId ? this.syncBlock(t.block, t.fullId) : undefined));
+      if (ids.some((id) => !id)) throw new Error("a block could not be committed");
+      const idOf = (t: typeof first) => ids[targets.indexOf(t)]!;
+      const spanOf = (t: typeof first) => t.span ?? { start: 0, length: blockContentText(t.block).length };
+      let firstId = firstPara ? idOf(first) : "", lastId = lastPara ? idOf(last) : "";
+      if (firstPara) {
+        const span = spanOf(first);
+        firstId = step(bridge.ReplaceTextAtSpan(this.handle, firstId, span.start, span.length, lines[0], "")).modified?.[0]?.id ?? firstId;
+        caretOffset = span.start + lines[0].length;
+      }
+      if (lastPara) {
+        const span = spanOf(last);
+        const typed = firstPara ? "" : lines[0];
+        if (span.length > 0 || typed)
+          lastId = step(bridge.ReplaceTextAtSpan(this.handle, lastId, 0, span.length, typed, "")).modified?.[0]?.id ?? lastId;
+        if (!firstPara) caretOffset = typed.length;
+      }
+      for (const t of between) step(bridge.DeleteBlock(this.handle, idOf(t)));
+      for (const { table, whole, r0, r1 } of plan) {
+        if (whole) {
+          const id = this.anchorIdOf(table);
+          if (!id) throw new Error("the table has no anchor");
+          step(bridge.DeleteBlock(this.handle, id));
+          continue;
+        }
+        const rowIds: string[] = [];
+        for (let r = r1; r >= r0; r--) {
+          const cell = table.rows[r]?.cells[0] as HTMLElement | undefined;
+          const id = cell ? this.anchorIdOf(cell) : undefined;
+          if (!id) throw new Error("a row has no cell of its own");
+          rowIds.push(id);
+        }
+        for (const id of rowIds) step(bridge.DeleteTableRow(this.handle, id));
+      }
+      let current = firstPara ? firstId : lastId;
+      if (firstPara && lastPara)
+        current = step(bridge.MergeParagraphs(this.handle, firstId, lastId)).modified?.[0]?.id ?? firstId;
+      // (MergeParagraphs puts a space between two ends that have none: a selection's ends join as they are)
+      const tracked = this.options.trackedChanges === TrackedChangeMode.RenderInline;
+      if (firstPara && lastPara && !tracked) {
+        const keptText = blockContentText(first.block).slice(0, spanOf(first).start) + lines[0];
+        const lastSpan = spanOf(last);
+        const rest = blockContentText(last.block).slice(lastSpan.start + lastSpan.length);
+        if (keptText && rest && !/\s$/.test(keptText) && !/^\s/.test(rest) && this.sessionTextOf(current)?.[keptText.length] === " ")
+          current = step(bridge.ReplaceTextAtSpan(this.handle, current, keptText.length, 1, "", "")).modified?.[0]?.id ?? current;
+      }
+      if (!current) return;
+      for (const line of lines.slice(1)) {
+        const split = step(bridge.SplitParagraph(this.handle, current, caretOffset));
+        const second = split.created?.[0]?.id;
+        if (!second) throw new Error("the engine made no new paragraph");
+        current = line ? step(bridge.ReplaceTextAtSpan(this.handle, second, 0, 0, line, "")).modified?.[0]?.id ?? second : second;
+        caretIndex++;
+        caretOffset = line.length;
+      }
+      if (typeof bridge.RepairFields === "function") step(bridge.RepairFields(this.handle, current));
+    });
+    this.extendedSelection = null;
+    this.lastCrossBlockSelection = null;
+    for (const cell of this.mixedShaded) cell.classList.remove(CELL_SELECTED_CLASS);
+    this.mixedShaded = [];
+    this.remount(ok ? caretIndex : Math.max(0, keptIndex));
+    const fresh = this.editableList();
+    const target = fresh[Math.min(ok ? caretIndex : Math.max(0, keptIndex), fresh.length - 1)];
+    if (target) placeCaretAtOffset(target, ok ? caretOffset : 0);
+    if (ok && target) this.options.onEdit?.({ anchorId: this.anchorIdOf(target) ?? "", unid: target.getAttribute("data-anchor") ?? "" });
+    return true;
   }
 
   /** The session's text of block `fullId` (`GetAnchorInfo`'s visibleText without the list number
