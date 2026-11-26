@@ -142,6 +142,29 @@ test.describe('Paste', () => {
     expect(await text(page)).toContain('alpha\nbeta');
   });
 
+  test('pasteHtml over a selection across paragraphs replaces it, as Ctrl+V does', async ({ page }) => {
+    await openHello(page);
+    await page.evaluate(() => {
+      const ed = (window as any).__ed;
+      ed.exec('moveCaret', { to: 'documentEnd' });
+      ed.exec('newParagraph');
+      ed.exec('insertText', { text: 'Second line' });
+    });
+    // Select from "world" in the first paragraph to "Second" in the second.
+    await page.evaluate(() => {
+      const blocks = Array.from(document.querySelectorAll<HTMLElement>('#ex-editor [data-anchor][contenteditable="true"]'));
+      const textIn = (b: HTMLElement) => { const w = document.createTreeWalker(b, NodeFilter.SHOW_TEXT); return w.nextNode() as Text; };
+      const range = document.createRange();
+      range.setStart(textIn(blocks[0]), 6);
+      range.setEnd(textIn(blocks[1]), 6);
+      const sel = window.getSelection()!;
+      sel.removeAllRanges();
+      sel.addRange(range);
+    });
+    await page.evaluate(async () => { await (window as any).__ed.exec('pasteHtml', { html: '<b>there</b>', formatting: 'keep' }); });
+    await expect.poll(() => text(page)).toBe('Hello there line');
+  });
+
   test('selectedHtml keeps the selection with its formatting, and pasteHtml takes it back', async ({ page }) => {
     await openHello(page);
     expect(await page.evaluate(() => (window as any).__ed.exec('selectedHtml'))).toBe('');
