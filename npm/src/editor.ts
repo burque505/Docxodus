@@ -99,6 +99,10 @@ import { compileFind, expandReplacement, type FindOptions } from "./find-query.j
 import { changeCase, DEFAULT_HEADLINE_CASE_LISTS, nextCycleCase, type CaseMode, type HeadlineCaseLists } from "./change-case.js";
 import type { RenderPlan, RenderUnit, UnitDiff } from "./editor-reconcile.js";
 import { OutlineLayer, isOutlineHidden, type OutlineBlock } from "./editor-outline.js";
+import {
+  CELL_SELECTED_CLASS, CELL_SELECTING_ATTR, TableGrid, TableHandle, commonTableCells, ensureCellSelectionStyles, ownCell,
+  type CellRect,
+} from "./cell-selection.js";
 
 /** The subset of WASM bridge exports the editor needs (as exposed on `window.Docxodus`). */
 export interface DocxEditorExports {
@@ -2193,6 +2197,22 @@ export class DocxEditor {
   private dragSelection: CrossBlockDragSelection | null = null;
 
   /**
+   * Word's cell selection (cell-selection.ts): a rectangle of one table's cells, shaded, while the
+   * browser's own selection sits collapsed in the anchor cell (hidden). The anchor cell is where it
+   * began, the focus cell where Shift+click, Shift+arrows or the drag took it.
+   */
+  private cellSel: {
+    grid: TableGrid; anchor: HTMLTableCellElement; focus: HTMLTableCellElement; rect: CellRect;
+    cells: HTMLTableCellElement[];
+  } | null = null;
+
+  /** Word's ⊞ at the top-left of the table under the mouse, or the caret's (made when first needed). */
+  private tableHandle: TableHandle | null = null;
+  /** The innermost table under the mouse, if any. */
+  private hoverTable: HTMLTableElement | null = null;
+  private tableHandleFrame = 0;
+
+  /**
    * Which end of a selection the editor made across blocks (drag, Shift+click, Shift+arrows,
    * Ctrl+A) is fixed and which moves. Such a selection is set with addRange, which forgets its
    * direction, so Shift+arrow keys would otherwise always move its end. Valid only while the live
@@ -2242,6 +2262,7 @@ export class DocxEditor {
       document.addEventListener("focusout", this.onFocusLeaving, true);
       document.addEventListener("mousedown", this.onMouseDown, true);
       document.addEventListener("mousemove", this.onMouseMove, true);
+      document.addEventListener("mousemove", this.onTableHover, true);
       document.addEventListener("mouseup", this.onMouseUp, true);
       document.addEventListener("keydown", this.onPictureKey, true);
     }
@@ -2251,6 +2272,13 @@ export class DocxEditor {
    *  Normalize only the clipboard clone; retain inline formatting in the rich representation. */
   private readonly onCopy = (ev: ClipboardEvent): void => {
     if (this.closed || ev.defaultPrevented || !ev.clipboardData) return;
+    const cells = this.serializeCellSelection();
+    if (cells) {
+      ev.clipboardData.setData("text/plain", cells.text);
+      ev.clipboardData.setData("text/html", cells.html);
+      ev.preventDefault();
+      return;
+    }
     const range = this.selectedRange();
     if (!range) return;
     const probe = this.container.ownerDocument.createElement("div");
@@ -2280,8 +2308,49 @@ export class DocxEditor {
    */
   selectionHtml(): { html: string; text: string } | null {
     if (this.closed) return null;
+    const cells = this.serializeCellSelection();
+    if (cells) return cells;
     const range = this.selectedRange();
     return range ? this.serializeRange(range) : null;
+  }
+
+  /**
+   * The cell selection as copy puts it on the clipboard (Word's): a table of the selected cells
+   * alone, merged cells kept, each cell's borders, shading, padding and width inline and its
+   * contents as a copy of them gives them; the text a line for each row, a tab between cells.
+   * Null when no cells are selected.
+   */
+  private serializeCellSelection(): { html: string; text: string } | null {
+    const sel = this.cellSel;
+    if (!sel || !sel.anchor.isConnected) return null;
+    const doc = this.container.ownerDocument, view = doc.defaultView!;
+    const table = doc.createElement("table");
+    const tableStyle = view.getComputedStyle(sel.grid.table);
+    table.style.borderCollapse = tableStyle.borderCollapse;
+    table.style.borderSpacing = tableStyle.borderSpacing;
+    const body = doc.createElement("tbody");
+    table.append(body);
+    const rows: HTMLTableRowElement[] = [];
+    const lines: string[][] = [];
+    for (let r = sel.rect.r0; r <= sel.rect.r1; r++) { rows.push(body.insertRow()); lines.push([]); }
+    for (const g of sel.grid.cellsOf(sel.rect)) {
+      const at = g.row - sel.rect.r0;
+      const td = doc.createElement(g.cell.tagName === "TH" ? "th" : "td");
+      if (g.rowSpan > 1) td.rowSpan = g.rowSpan;
+      if (g.colSpan > 1) td.colSpan = g.colSpan;
+      const style = view.getComputedStyle(g.cell);
+      for (const key of ["border-top", "border-right", "border-bottom", "border-left", "background-color",
+        "vertical-align", "padding-top", "padding-right", "padding-bottom", "padding-left", "text-align"])
+        td.style.setProperty(key, style.getPropertyValue(key));
+      td.style.width = `${Math.round(g.cell.getBoundingClientRect().width)}px`;
+      const range = doc.createRange();
+      range.selectNodeContents(g.cell);
+      const copied = this.serializeRange(range);
+      td.innerHTML = copied.html;
+      rows[at].append(td);
+      lines[at].push(copied.text.replace(/\n+$/, ""));
+    }
+    return { html: table.outerHTML, text: lines.map((cells) => cells.join("\t")).join("\n") };
   }
 
   private serializeRange(range: Range): { html: string; text: string } {
@@ -2364,6 +2433,8 @@ export class DocxEditor {
   /** Track the last meaningful selection so focus-stealing toolbar controls can still target it. */
   private readonly onSelectionChange = (): void => {
     if (this.closed) return;
+    this.scheduleTableHandle();
+    this.shadeMixedSelection();
     const sel = typeof window !== "undefined" ? window.getSelection() : null;
     if (!sel || sel.rangeCount === 0) return; // no selection info — keep the cache as-is
     const range = sel.getRangeAt(0);
@@ -2444,6 +2515,20 @@ export class DocxEditor {
     if (this.closed || !this.options.editable) return;
     if (this.pictureMouseDown(event)) return;
     if (event.button !== 0) return;
+    // (a click ends a cell selection; Shift+click in the same table takes it to that cell)
+    if (this.cellSel && !event.shiftKey) this.clearCellSelection();
+    if (this.cellSel && event.shiftKey) {
+      const point = caretPointFromClient(document, event.clientX, event.clientY);
+      const block = point ? this.editableBlockOf(point.node) : null;
+      const cell = block ? ownCell(block, this.cellSel.grid.table) : null;
+      if (cell) {
+        event.preventDefault();
+        this.setCellSelection(this.cellSel.grid.table, this.cellSel.anchor, cell);
+        this.clearDragSelection();
+        return;
+      }
+      this.clearCellSelection();
+    }
     if (this.followReferenceField(event)) return;
     if (this.extendSelectionByClick(event)) { this.clearDragSelection(); return; }
     const target = event.target instanceof Node ? event.target : null;
@@ -2512,6 +2597,13 @@ export class DocxEditor {
     if (focusBlock !== drag.origin) drag.crossedBlockBoundary = true;
     if (!drag.crossedBlockBoundary) return;
     event.preventDefault();
+    // From one cell into another of the same table: whole cells from then on.
+    const common = commonTableCells(drag.origin, focusBlock);
+    if (common) {
+      if (this.cellSel?.anchor !== common.a || this.cellSel.focus !== common.b) this.setCellSelection(common.table, common.a, common.b, drag.anchor);
+      return;
+    }
+    if (this.cellSel) this.clearCellSelection();
     this.queueDragSelection(drag, focus);
   };
 
@@ -2524,7 +2616,11 @@ export class DocxEditor {
     }
     const drag = this.dragSelection;
     if (!drag) return;
-    if (drag.crossedBlockBoundary) {
+    if (drag.crossedBlockBoundary && this.cellSel) {
+      event.preventDefault();    // (the cell selection stays as the drag left it, the caret where it began)
+      const sel = this.container.ownerDocument.defaultView?.getSelection();
+      if (sel && drag.anchor.node.isConnected) sel.collapse(drag.anchor.node, drag.anchor.offset);
+    } else if (drag.crossedBlockBoundary) {
       const focus = caretPointFromClient(document, event.clientX, event.clientY);
       const focusBlock = focus ? this.editableBlockOf(focus.node) : null;
       if (focus && focusBlock && this.ownerRoot(focusBlock) === this.ownerRoot(drag.origin)) {
@@ -2899,11 +2995,15 @@ export class DocxEditor {
       document.removeEventListener("focusout", this.onFocusLeaving, true);
       document.removeEventListener("mousedown", this.onMouseDown, true);
       document.removeEventListener("mousemove", this.onMouseMove, true);
+      document.removeEventListener("mousemove", this.onTableHover, true);
       document.removeEventListener("mouseup", this.onMouseUp, true);
       document.removeEventListener("keydown", this.onPictureKey, true);
     }
     this.pictureOverlay?.destroy();
     this.pictureOverlay = null;
+    clearTimeout(this.hoverTimer);
+    this.tableHandle?.destroy();
+    this.tableHandle = null;
     this.selectedPictureId = null;
     this.clearDragSelection();
     this.clearFindMatches();
@@ -4254,6 +4354,7 @@ export class DocxEditor {
 
   private onKeydown(el: HTMLElement, ev: KeyboardEvent): void {
     if (this.closed) return;
+    if (this.cellSel && this.cellSelectionKey(ev)) return;
     if (this.crossBlockKey(el, ev)) return;
     moveAcrossTab(el, ev);
     // Common formatting / history shortcuts.
@@ -4995,6 +5096,13 @@ export class DocxEditor {
   private selectBetween(anchor: DomSelectionPoint, focus: DomSelectionPoint): void {
     const aBlock = this.editableBlockOf(anchor.node);
     const fBlock = this.editableBlockOf(focus.node);
+    // Ends in two cells of one table: whole cells, as Word selects them.
+    const common = aBlock && fBlock ? commonTableCells(aBlock, fBlock) : null;
+    if (common) {
+      this.setCellSelection(common.table, common.a, common.b, anchor);
+      return;
+    }
+    this.clearCellSelection();
     if (aBlock && fBlock && aBlock !== fBlock && typeof document !== "undefined") {
       const story = this.storyBlocks(aBlock);
       const mark = (p: DomSelectionPoint, b: HTMLElement) => ({ index: story.indexOf(b), offset: contentOffsetOf(b, p.node, p.offset) });
@@ -5010,6 +5118,312 @@ export class DocxEditor {
       }
     }
     if (setSelectionBetween(anchor, focus)) this.extendedSelection = { anchor, focus };
+  }
+
+  // ─── Cell selection (cell-selection.ts) ────────────────────────────────
+
+  /** Select the cells from `anchor` to `focus` (two cells of `table`), as a rectangle. The browser's
+   *  selection is left collapsed in the anchor cell (at `at` when it is there), hidden. */
+  private setCellSelection(table: HTMLTableElement, anchor: HTMLTableCellElement, focus: HTMLTableCellElement,
+    at?: DomSelectionPoint): boolean {
+    const grid = new TableGrid(table);
+    const rect = grid.rectFor(anchor, focus);
+    if (!rect) return false;
+    ensureCellSelectionStyles(this.container.ownerDocument);
+    for (const cell of this.cellSel?.cells ?? []) cell.classList.remove(CELL_SELECTED_CLASS);
+    const cells = grid.cellsOf(rect).map((g) => g.cell);
+    for (const cell of cells) cell.classList.add(CELL_SELECTED_CLASS);
+    this.cellSel = { grid, anchor, focus, rect, cells };
+    this.container.setAttribute(CELL_SELECTING_ATTR, "");
+    this.extendedSelection = null;
+    this.lastCrossBlockSelection = null;
+    // (the caret, hidden, stays in the anchor cell: keys still reach the editor through its block)
+    const sel = this.container.ownerDocument.defaultView?.getSelection();
+    if (sel) {
+      if (at && anchor.contains(at.node) && this.editableBlockOf(at.node)) {
+        if (!sel.isCollapsed || sel.anchorNode !== at.node || sel.anchorOffset !== at.offset) {
+          this.editableBlockOf(at.node)!.focus({ preventScroll: true });
+          sel.collapse(at.node, at.offset);
+        }
+      } else if (!sel.anchorNode || !anchor.contains(sel.anchorNode) || !sel.isCollapsed) {
+        const block = this.editableInCell(anchor)
+          ?? anchor.querySelector<HTMLElement>('[data-anchor][contenteditable="true"]');
+        if (block) placeCaretAtOffset(block, 0);
+      }
+      const block = sel.anchorNode ? this.editableBlockOf(sel.anchorNode) : null;
+      if (block) this.activeBlock = block;
+    }
+    return true;
+  }
+
+  /** End the cell selection, if there is one (the caret shows again in the anchor cell). */
+  private clearCellSelection(): void {
+    if (!this.cellSel) return;
+    for (const cell of this.cellSel.cells) cell.classList.remove(CELL_SELECTED_CLASS);
+    this.cellSel = null;
+    this.container.removeAttribute(CELL_SELECTING_ATTR);
+  }
+
+  /**
+   * Keys while cells are selected: Shift+arrows move its focus cell on the grid; Escape ends it.
+   * Shift, Ctrl and Alt alone keep it (they start a chord). Anything else ends it for now and goes
+   * on to the editor at the (anchor cell's) caret.
+   */
+  private cellSelectionKey(ev: KeyboardEvent): boolean {
+    const sel = this.cellSel!;
+    if (!sel.anchor.isConnected || !sel.focus.isConnected) { this.clearCellSelection(); return false; }
+    if (ev.key === "Shift" || ev.key === "Control" || ev.key === "Alt" || ev.key === "Meta") return true;
+    const arrows: Record<string, [number, number]> = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
+    const step = arrows[ev.key];
+    if (step && ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
+      ev.preventDefault();
+      const to = sel.grid.step(sel.focus, step[0], step[1]);
+      if (to) this.setCellSelection(sel.grid.table, sel.anchor, to.cell);
+      return true;
+    }
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      this.clearCellSelection();
+      return true;
+    }
+    // Copy (Ctrl+C, Ctrl+Insert) and Cut (Ctrl+X, Shift+Delete) keep it: the browser's copy and
+    // cut events, which onCopy and onCut fill with the cells.
+    const ctrl = (ev.ctrlKey || ev.metaKey) && !ev.altKey && !ev.shiftKey;
+    const key = (ev.key ?? "").toLowerCase();
+    if (ctrl && (key === "c" || key === "x" || ev.key === "Insert")) return true;
+    if (ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey && ev.key === "Delete") return true;
+    const plain = !ev.ctrlKey && !ev.altKey && !ev.metaKey && !ev.isComposing;
+    // Delete: the cells' contents go. Backspace: whole rows (or the whole table) go, else as Delete.
+    if (plain && !ev.shiftKey && (ev.key === "Delete" || ev.key === "Backspace")) {
+      ev.preventDefault();
+      if (ev.key === "Backspace") this.deleteSelectedCells();
+      else this.clearSelectedCells();
+      return true;
+    }
+    // Typing: the cells' contents go and the character goes in the first cell (one undo step).
+    if (plain && ev.key.length === 1) {
+      ev.preventDefault();
+      this.clearSelectedCells(ev.key);
+      return true;
+    }
+    this.clearCellSelection();
+    return false;
+  }
+
+  /** A transaction around `run` (its edits one undo step): committed when it returns, rolled back
+   *  when it throws. True when it was committed. */
+  private cellEdit(run: (step: (json: string) => EditResultLite) => void): boolean {
+    const bridge = this.exports.DocxSessionBridge;
+    const tx = typeof bridge.BeginTransaction === "function" ? bridge.BeginTransaction(this.handle) : 0;
+    let ok = true;
+    try {
+      run((json) => {
+        const res = this.parseEdit(json);
+        if (!res.success) throw new Error("the engine refused the edit");
+        return res;
+      });
+    } catch {
+      ok = false;
+    } finally {
+      if (tx) {
+        if (ok) bridge.CommitTransaction!(tx);
+        else bridge.RollbackTransaction?.(tx);
+      }
+    }
+    return ok;
+  }
+
+  /** After a cell edit: render afresh, the caret in the block at `index` (at `offset`). */
+  private afterCellEdit(ok: boolean, index: number, offset: number): void {
+    this.clearCellSelection();
+    this.remount(Math.max(0, index));
+    const list = this.editableList();
+    const target = list[Math.max(0, Math.min(index, list.length - 1))];
+    if (target) placeCaretAtOffset(target, ok ? offset : 0);
+    if (ok && target) this.options.onEdit?.({ anchorId: this.anchorIdOf(target) ?? "", unid: target.getAttribute("data-anchor") ?? "" });
+  }
+
+  /**
+   * Clear the selected cells' contents (Word's Delete over cells): each cell keeps one empty
+   * paragraph, the first cell's taking `text`, with the caret after it. One undo step. False when
+   * no cells are selected or the engine refused (the document then as it was).
+   */
+  clearSelectedCells(text = ""): boolean {
+    const sel = this.cellSel;
+    if (this.closed || !this.options.editable || !sel || !sel.anchor.isConnected) return false;
+    const bridge = this.exports.DocxSessionBridge;
+    const ownBlocks = (cell: HTMLTableCellElement) => Array.from(cell.querySelectorAll<HTMLElement>('[data-anchor][contenteditable="true"]'))
+      .filter((b) => b.closest("td, th") === cell);
+    const firstBlock = ownBlocks(sel.cells[0])[0];
+    const firstIndex = firstBlock ? this.editableList().indexOf(firstBlock) : -1;
+    const ok = this.cellEdit((step) => {
+      sel.cells.forEach((cell, n) => {
+        // (the cell's own paragraphs and tables: a nested table's paragraphs go with it)
+        const blocks = ownBlocks(cell);
+        const tables = Array.from(cell.querySelectorAll<HTMLElement>("table"))
+          .filter((t) => t.parentElement?.closest("td, th") === cell);
+        const typed = n === 0 ? text : "";
+        for (const table of tables) {
+          const id = this.anchorIdOf(table);
+          if (id) step(bridge.DeleteBlock(this.handle, id));
+        }
+        for (const block of blocks.slice(1)) {
+          const id = this.anchorIdOf(block);
+          const synced = id ? this.syncBlock(block, id) : undefined;
+          if (!synced) throw new Error("a block could not be committed");
+          step(bridge.DeleteBlock(this.handle, synced));
+        }
+        const keep = blocks[0];
+        if (keep) {
+          const fullId = this.anchorIdOf(keep);
+          const id = fullId ? this.syncBlock(keep, fullId) : undefined;
+          if (!id) throw new Error("a block could not be committed");
+          const length = blockContentText(keep).length;
+          if (length > 0 || typed) step(bridge.ReplaceTextAtSpan(this.handle, id, 0, length, typed, ""));
+        }
+      });
+    });
+    this.afterCellEdit(ok, firstIndex, text.length);
+    return ok;
+  }
+
+  /**
+   * Word's Backspace (and Cut) over cells: when the selection takes whole rows they go, and the
+   * whole table when it takes all of it; otherwise the cells' contents go ({@link clearSelectedCells}).
+   * One undo step. False when no cells are selected or the engine refused.
+   */
+  deleteSelectedCells(): boolean {
+    const sel = this.cellSel;
+    if (this.closed || !this.options.editable || !sel || !sel.anchor.isConnected) return false;
+    const { rect, grid } = sel;
+    if (rect.c0 !== 0 || rect.c1 !== grid.columns - 1) return this.clearSelectedCells();
+    const bridge = this.exports.DocxSessionBridge;
+    const table = grid.table;
+    const firstBlock = Array.from(sel.cells[0].querySelectorAll<HTMLElement>('[data-anchor][contenteditable="true"]'))[0];
+    let index = firstBlock ? this.editableList().indexOf(firstBlock) : -1;
+    const whole = rect.r0 === 0 && rect.r1 === grid.rows - 1;
+    // (typing not yet committed goes in first)
+    const active = this.activeBlock;
+    const activeId = active?.isConnected ? this.anchorIdOf(active) : undefined;
+    if (active && activeId && !this.syncBlock(active, activeId)) return false;
+    const ok = this.cellEdit((step) => {
+      if (whole) {
+        const id = this.anchorIdOf(table);
+        if (!id) throw new Error("the table has no anchor");
+        step(bridge.DeleteBlock(this.handle, id));
+        return;
+      }
+      // (each row by a cell of its own, the last first)
+      const ids: string[] = [];
+      for (let r = rect.r1; r >= rect.r0; r--) {
+        const cell = table.rows[r]?.cells[0] as HTMLElement | undefined;
+        const id = cell ? this.anchorIdOf(cell) : undefined;
+        if (!id) throw new Error("a row has no cell of its own");
+        ids.push(id);
+      }
+      for (const id of ids) step(bridge.DeleteTableRow(this.handle, id));
+    });
+    if (ok && whole) index = Math.max(0, index - 1);
+    this.afterCellEdit(ok, index, 0);
+    return ok;
+  }
+
+  /**
+   * The cell selection, when cells are selected (Word's: dragged across, Shift+click, Shift+arrows):
+   * its rows and columns on the table's grid (from 0, inclusive), how many cells, and the table's
+   * size; null when none is.
+   */
+  cellSelection(): { rows: [number, number]; columns: [number, number]; cells: number; tableRows: number; tableColumns: number } | null {
+    const sel = this.cellSel;
+    if (!sel || !sel.anchor.isConnected) return null;
+    return {
+      rows: [sel.rect.r0, sel.rect.r1], columns: [sel.rect.c0, sel.rect.c1], cells: sel.cells.length,
+      tableRows: sel.grid.rows, tableColumns: sel.grid.columns,
+    };
+  }
+
+  /**
+   * Word's Select menu (Table Layout > Select): the cell, row, column or whole table at the caret,
+   * or around the cells selected (Row: their rows, Column: their columns), as a cell selection.
+   * False when the caret is not in a table.
+   */
+  selectTablePart(part: "cell" | "row" | "column" | "table"): boolean {
+    if (this.closed) return false;
+    let grid: TableGrid, rect: CellRect;
+    if (this.cellSel?.anchor.isConnected) {
+      grid = this.cellSel.grid;
+      rect = { ...this.cellSel.rect };
+    } else {
+      const block = this.activeBlock;
+      const cell = block?.isConnected ? block.closest<HTMLTableCellElement>("td, th") : null;
+      const table = cell?.closest<HTMLTableElement>("table");
+      if (!cell || !table) return false;
+      grid = new TableGrid(table);
+      const g = grid.of(cell);
+      if (!g) return false;
+      rect = { r0: g.row, c0: g.col, r1: g.row + g.rowSpan - 1, c1: g.col + g.colSpan - 1 };
+    }
+    if (part === "row" || part === "table") { rect.c0 = 0; rect.c1 = grid.columns - 1; }
+    if (part === "column" || part === "table") { rect.r0 = 0; rect.r1 = grid.rows - 1; }
+    return this.selectCellRect(grid, rect);
+  }
+
+  /** A rectangle of `grid` as the cell selection (a ragged row: its nearest cells). */
+  private selectCellRect(grid: TableGrid, rect: CellRect): boolean {
+    const near = (r: number, c: number, step: 1 | -1) => {
+      const row = grid.slots[r] ?? [];
+      for (let x = c; x >= 0 && x < Math.max(row.length, c + 1); x += step) if (row[x]) return row[x]!;
+      for (let x = c; x >= 0 && x < row.length; x -= step) if (row[x]) return row[x]!;
+      return undefined;
+    };
+    const a = near(rect.r0, rect.c0, 1), b = near(rect.r1, rect.c1, -1);
+    if (!a || !b) return false;
+    return this.setCellSelection(grid.table, a.cell, b.cell);
+  }
+
+  /** The ⊞ handle's click: the whole table. */
+  private selectWholeTable(table: HTMLTableElement): void {
+    const grid = new TableGrid(table);
+    this.selectCellRect(grid, grid.all());
+  }
+
+  /** The innermost table under the mouse (the ⊞ handle follows it). */
+  private readonly onTableHover = (event: MouseEvent): void => {
+    if (this.closed || !this.options.editable) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (target && this.tableHandle?.el === target) { clearTimeout(this.hoverTimer); return; }    // (on the handle: it stays)
+    const table = target?.closest<HTMLTableElement>("table") ?? null;
+    const inside = table && this.container.contains(table) && this.editableBlockOf(table.querySelector('[data-anchor][contenteditable="true"]'))
+      ? table : null;
+    clearTimeout(this.hoverTimer);
+    if (inside === this.hoverTable) return;
+    const apply = () => { this.hoverTable = inside; this.scheduleTableHandle(); };
+    // Out of a nested table into the one around it (or off the tables): after a moment, as the
+    // mouse may be on its way to the nested table's handle.
+    if (this.hoverTable?.isConnected && (!inside || inside.contains(this.hoverTable))) this.hoverTimer = setTimeout(apply, 400);
+    else apply();
+  };
+  private hoverTimer: ReturnType<typeof setTimeout> | undefined;
+
+  private scheduleTableHandle(): void {
+    const view = this.container.ownerDocument.defaultView;
+    if (!view || this.tableHandleFrame) return;
+    this.tableHandleFrame = view.requestAnimationFrame(() => {
+      this.tableHandleFrame = 0;
+      this.updateTableHandle();
+    });
+  }
+
+  /** Show the ⊞ handle on the table under the mouse, else the caret's; else hide it. */
+  private updateTableHandle(): void {
+    if (this.closed || !this.options.editable) return;
+    const caret = this.activeBlock?.isConnected && this.container.contains(this.activeBlock)
+      ? this.activeBlock.closest<HTMLTableElement>("table") : null;
+    const table = this.hoverTable?.isConnected ? this.hoverTable : caret;
+    if (!table) { this.tableHandle?.hideSoon(); return; }
+    this.tableHandle ??= new TableHandle(this.container.ownerDocument, (t) => this.selectWholeTable(t),
+      () => this.scroller()?.getBoundingClientRect() ?? null);
+    this.tableHandle.show(table);
   }
 
   /** Select the whole of the document's body (Ctrl+A when the focus is not in the document); false
@@ -5180,6 +5594,25 @@ export class DocxEditor {
     if (!across && !stayed) return false;
 
     let next: DomSelectionPoint | null = stayed ? null : moved;
+    // Shift+arrows at a cell's edge: on into the cell beside or below it on the grid, as whole
+    // cells (Word's), when the selection began in that table.
+    if (stayed && !ctrl && (granularity === "line" || granularity === "character")) {
+      const cell = focusBlock.closest<HTMLTableCellElement>("td, th");
+      const table = cell?.closest<HTMLTableElement>("table");
+      const i = story.indexOf(focusBlock);
+      const beyond = story[i + (forward ? 1 : -1)];
+      const anchorCell = table ? ownCell(anchorBlock, table) : null;
+      if (cell && table && anchorCell && (!beyond || ownCell(beyond, table) !== cell)) {
+        const grid = new TableGrid(table);
+        const line = granularity === "line";
+        const to = grid.step(cell, line ? (forward ? 1 : -1) : 0, line ? 0 : (forward ? 1 : -1));
+        if (to) {
+          ev.preventDefault();
+          this.setCellSelection(table, anchorCell, to.cell, ends.anchor);
+          return true;
+        }
+      }
+    }
     // Word's Ctrl+Shift+Down/Up at a paragraph's edge goes on to the next one's end/start.
     if (stayed && granularity !== "lineboundary") {
       const i = story.indexOf(focusBlock);
@@ -5406,6 +5839,7 @@ export class DocxEditor {
   private replaceCrossBlockSelection(text: string): boolean {
     let blocks = this.crossBlockSelection();
     if (!blocks || !this.crossBlockEditable(blocks)) return false;
+    if (blocks.some((b) => this.topTable(b))) return this.replaceMixedSelection(blocks, text);
     // (Word's selection over a field: reaching into one from outside takes the whole field)
     const grew = this.growSelectionToFields();
     if (grew) {
@@ -5526,13 +5960,175 @@ export class DocxEditor {
   }
 
   /**
-   * Whether {@link replaceCrossBlockSelection} edits this selection. Not one reaching into a table
-   * (cells are not merged into paragraphs) nor one in a header or footer (a band repaints on its
-   * own, not through the body's remount): over those the browser's own editing runs, so a key is
-   * never dropped.
+   * Whether {@link replaceCrossBlockSelection} edits this selection. Not one in a header or footer
+   * (a band repaints on its own, not through the body's remount): over that the browser's own
+   * editing runs, so a key is never dropped. One reaching into a body table takes whole rows
+   * ({@link replaceMixedSelection}).
    */
   private crossBlockEditable(blocks: HTMLElement[]): boolean {
-    return !blocks.some((b) => b.closest("table") || this.isBandBlock(b));
+    return !blocks.some((b) => this.isBandBlock(b));
+  }
+
+  /** The outermost table `el` is in (a table of the body, not one nested in a cell), or null. */
+  private topTable(el: Element): HTMLTableElement | null {
+    let table = el.closest<HTMLTableElement>("table");
+    for (let up = table?.parentElement?.closest<HTMLTableElement>("table"); up && this.container.contains(up); up = up.parentElement?.closest<HTMLTableElement>("table"))
+      table = up;
+    return table && this.container.contains(table) ? table : null;
+  }
+
+  /**
+   * What a selection spanning blocks takes of the tables it reaches into, as Word does: a table it
+   * covers goes whole; one an end of it is in loses the rows from that end's row to the table's
+   * edge the selection runs over (all of it when that is every row). Null when it reaches into
+   * no table.
+   */
+  private mixedSelectionPlan(blocks: HTMLElement[]): Array<{ table: HTMLTableElement; whole: boolean; r0: number; r1: number }> | null {
+    const tables: HTMLTableElement[] = [];
+    for (const b of blocks) {
+      const t = this.topTable(b);
+      if (t && !tables.includes(t)) tables.push(t);
+    }
+    if (tables.length === 0) return null;
+    const first = blocks[0], last = blocks[blocks.length - 1];
+    const firstTable = this.topTable(first), lastTable = this.topTable(last);
+    return tables.map((table) => {
+      const grid = new TableGrid(table);
+      let r0 = 0, r1 = grid.rows - 1;
+      if (table === firstTable) {
+        const g = grid.of(ownCell(first, table)!);
+        if (g) r0 = g.row;
+      }
+      if (table === lastTable) {
+        const g = grid.of(ownCell(last, table)!);
+        if (g) r1 = g.row + g.rowSpan - 1;
+      }
+      return { table, whole: r0 === 0 && r1 === grid.rows - 1, r0, r1 };
+    });
+  }
+
+  /** Rows a mixed selection will take, shaded as a cell selection's cells are (Word shows them so). */
+  private mixedShaded: HTMLTableCellElement[] = [];
+  private shadeMixedSelection(): void {
+    for (const cell of this.mixedShaded) cell.classList.remove(CELL_SELECTED_CLASS);
+    this.mixedShaded = [];
+    if (this.cellSel || !this.options.editable) return;
+    const blocks = this.crossBlockSelection();
+    const plan = blocks && this.crossBlockEditable(blocks) ? this.mixedSelectionPlan(blocks) : null;
+    if (!plan) return;
+    ensureCellSelectionStyles(this.container.ownerDocument);
+    for (const { table, r0, r1 } of plan) {
+      const grid = new TableGrid(table);
+      for (const g of grid.cellsOf({ r0, c0: 0, r1, c1: Math.max(0, grid.columns - 1) })) {
+        g.cell.classList.add(CELL_SELECTED_CLASS);
+        this.mixedShaded.push(g.cell);
+      }
+    }
+  }
+
+  /**
+   * {@link replaceCrossBlockSelection} for a selection reaching into body tables (Word's): the
+   * text selected in the paragraphs at its ends goes, the paragraphs between go, and the tables
+   * go as {@link mixedSelectionPlan} says; the two end paragraphs join, and `text` takes the
+   * selection's place (a paragraph for each line). One undo step; the document is left as it was
+   * when the engine refuses a part.
+   */
+  private replaceMixedSelection(blocks: HTMLElement[], text: string): boolean {
+    const plan = this.mixedSelectionPlan(blocks)!;
+    const bridge = this.exports.DocxSessionBridge;
+    const targets = this.multiBlockTargets(blocks);
+    const first = targets[0], last = targets[targets.length - 1];
+    const firstPara = !this.topTable(first.block), lastPara = !this.topTable(last.block);
+    const list = this.editableList();
+    // What goes: the blocks of the rows (or tables) taken, and the paragraphs between the ends.
+    const gone = new Set<HTMLElement>();
+    for (const { table, whole, r0, r1 } of plan) {
+      const rows = whole ? Array.from(table.rows) : Array.from(table.rows).slice(r0, r1 + 1);
+      if (whole) table.querySelectorAll<HTMLElement>('[data-anchor][contenteditable="true"]').forEach((b) => gone.add(b));
+      else for (const tr of rows) tr.querySelectorAll<HTMLElement>('[data-anchor][contenteditable="true"]').forEach((b) => gone.add(b));
+    }
+    const between = targets.slice(firstPara ? 1 : 0, lastPara ? -1 : undefined).filter((t) => !this.topTable(t.block));
+    for (const t of between) gone.add(t.block);
+    // The paragraph the text goes in: the first end's, else the last's, else none (both ends in
+    // tables with nothing between kept: the text has nowhere to go).
+    const kept = firstPara ? first : lastPara ? last : null;
+    const keptIndex = kept ? list.indexOf(kept.block) : -1;
+    const lines = text.split(/\r\n|\r|\n/);
+    // (the caret: where the kept paragraph lands, counting the blocks before it that stay)
+    const before = (el: HTMLElement | null) => {
+      const at = el ? list.indexOf(el) : list.length;
+      return list.slice(0, at).filter((b) => !gone.has(b)).length;
+    };
+    let caretIndex = kept ? before(kept.block) : before(list.find((b, i) => i > list.indexOf(last.block)) ?? null);
+    let caretOffset = 0;
+    const ok = this.cellEdit((step) => {
+      const ids = targets.map((t) => (t.fullId ? this.syncBlock(t.block, t.fullId) : undefined));
+      if (ids.some((id) => !id)) throw new Error("a block could not be committed");
+      const idOf = (t: typeof first) => ids[targets.indexOf(t)]!;
+      const spanOf = (t: typeof first) => t.span ?? { start: 0, length: blockContentText(t.block).length };
+      let firstId = firstPara ? idOf(first) : "", lastId = lastPara ? idOf(last) : "";
+      if (firstPara) {
+        const span = spanOf(first);
+        firstId = step(bridge.ReplaceTextAtSpan(this.handle, firstId, span.start, span.length, lines[0], "")).modified?.[0]?.id ?? firstId;
+        caretOffset = span.start + lines[0].length;
+      }
+      if (lastPara) {
+        const span = spanOf(last);
+        const typed = firstPara ? "" : lines[0];
+        if (span.length > 0 || typed)
+          lastId = step(bridge.ReplaceTextAtSpan(this.handle, lastId, 0, span.length, typed, "")).modified?.[0]?.id ?? lastId;
+        if (!firstPara) caretOffset = typed.length;
+      }
+      for (const t of between) step(bridge.DeleteBlock(this.handle, idOf(t)));
+      for (const { table, whole, r0, r1 } of plan) {
+        if (whole) {
+          const id = this.anchorIdOf(table);
+          if (!id) throw new Error("the table has no anchor");
+          step(bridge.DeleteBlock(this.handle, id));
+          continue;
+        }
+        const rowIds: string[] = [];
+        for (let r = r1; r >= r0; r--) {
+          const cell = table.rows[r]?.cells[0] as HTMLElement | undefined;
+          const id = cell ? this.anchorIdOf(cell) : undefined;
+          if (!id) throw new Error("a row has no cell of its own");
+          rowIds.push(id);
+        }
+        for (const id of rowIds) step(bridge.DeleteTableRow(this.handle, id));
+      }
+      let current = firstPara ? firstId : lastId;
+      if (firstPara && lastPara)
+        current = step(bridge.MergeParagraphs(this.handle, firstId, lastId)).modified?.[0]?.id ?? firstId;
+      // (MergeParagraphs puts a space between two ends that have none: a selection's ends join as they are)
+      const tracked = this.options.trackedChanges === TrackedChangeMode.RenderInline;
+      if (firstPara && lastPara && !tracked) {
+        const keptText = blockContentText(first.block).slice(0, spanOf(first).start) + lines[0];
+        const lastSpan = spanOf(last);
+        const rest = blockContentText(last.block).slice(lastSpan.start + lastSpan.length);
+        if (keptText && rest && !/\s$/.test(keptText) && !/^\s/.test(rest) && this.sessionTextOf(current)?.[keptText.length] === " ")
+          current = step(bridge.ReplaceTextAtSpan(this.handle, current, keptText.length, 1, "", "")).modified?.[0]?.id ?? current;
+      }
+      if (!current) return;
+      for (const line of lines.slice(1)) {
+        const split = step(bridge.SplitParagraph(this.handle, current, caretOffset));
+        const second = split.created?.[0]?.id;
+        if (!second) throw new Error("the engine made no new paragraph");
+        current = line ? step(bridge.ReplaceTextAtSpan(this.handle, second, 0, 0, line, "")).modified?.[0]?.id ?? second : second;
+        caretIndex++;
+        caretOffset = line.length;
+      }
+      if (typeof bridge.RepairFields === "function") step(bridge.RepairFields(this.handle, current));
+    });
+    this.extendedSelection = null;
+    this.lastCrossBlockSelection = null;
+    for (const cell of this.mixedShaded) cell.classList.remove(CELL_SELECTED_CLASS);
+    this.mixedShaded = [];
+    this.remount(ok ? caretIndex : Math.max(0, keptIndex));
+    const fresh = this.editableList();
+    const target = fresh[Math.min(ok ? caretIndex : Math.max(0, keptIndex), fresh.length - 1)];
+    if (target) placeCaretAtOffset(target, ok ? caretOffset : 0);
+    if (ok && target) this.options.onEdit?.({ anchorId: this.anchorIdOf(target) ?? "", unid: target.getAttribute("data-anchor") ?? "" });
+    return true;
   }
 
   /** The session's text of block `fullId` (`GetAnchorInfo`'s visibleText without the list number
@@ -5565,6 +6161,17 @@ export class DocxEditor {
    *  only. The clipboard gets the selection (as copy gives it), then the selection goes. */
   private readonly onCut = (ev: ClipboardEvent): void => {
     if (this.closed || ev.defaultPrevented || !ev.clipboardData) return;
+    // Cells: copied as copy gives them, then taken as Backspace takes them (whole rows, the
+    // table, or the cells' contents).
+    const cells = this.serializeCellSelection();
+    if (cells) {
+      ev.preventDefault();
+      if (!this.options.editable) return;
+      ev.clipboardData.setData("text/plain", cells.text);
+      ev.clipboardData.setData("text/html", cells.html);
+      this.deleteSelectedCells();
+      return;
+    }
     const blocks = this.crossBlockSelection();
     if (!blocks || !this.crossBlockEditable(blocks)) return;
     ev.preventDefault();
@@ -10820,6 +11427,8 @@ export class DocxEditor {
    *  document. */
   selectedText(): string {
     if (this.closed) return "";
+    const cells = this.serializeCellSelection();
+    if (cells) return cells.text;
     const sel = typeof window !== "undefined" ? window.getSelection() : null;
     if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return "";
     const range = sel.getRangeAt(0);
@@ -11106,6 +11715,7 @@ export class DocxEditor {
    * as remount.
    */
   private reconcile(focusIndex = -1, caretAtEnd = false): void {
+    this.clearCellSelection();
     const inPlace = !this.canReconcile();
     if (inPlace && !this.canReconcileInPlace()) {
       this.remount(focusIndex, caretAtEnd);
@@ -11654,6 +12264,7 @@ export class DocxEditor {
    * block's content-hashed unid changes across the save/reproject a remount performs.
    */
   private remount(focusIndex = -1, caretAtEnd = false): void {
+    this.clearCellSelection();
     this.container.classList.toggle("docx-paginated", !!this.options.paginated);
     this.teardownBlockDrag();
     this.refreshAnchorMap();

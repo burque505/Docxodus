@@ -707,6 +707,11 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   },
   repeatHeaderRow: { group: "table", description: "Repeat the first row on every page (or not).", args: { on: "boolean" }, run: (e, a) => e.setRepeatHeaderRow(a.bool("on")) },
   deleteTable: { group: "table", description: "Delete the table at the caret.", args: {}, run: (e) => e.deleteTable() },
+  selectCells: {
+    group: "table", description: "Select the cell, row, column or whole table at the caret (or around the cells selected), as whole cells: Word's Table Layout > Select.",
+    args: { part: "cell|row|column|table" },
+    run: (e, a) => must(e.selectTablePart(a.oneOf("part", ["cell", "row", "column", "table"] as const)), "selectCells", "the caret is not in a table"),
+  },
   tableProperties: {
     group: "table", description: "Word's Table Properties for the table at the caret (a TablePropertiesOp: widthType auto|twips|percent, width, alignment left|center|right, indentTwips, cellMargins, altTitle, altDescription).",
     args: { op: "object" }, run: (e, a) => e.setTableProperties(a.object("op") as TablePropertiesOp),
@@ -878,6 +883,10 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   // ── query ──
   text: { group: "query", description: "The document's text, a line for each paragraph (and table cell).", args: {}, returns: "string", run: (e) => e.documentText() },
   selectedText: { group: "query", description: "The selected text (lines between paragraphs); \"\" with no selection.", args: {}, returns: "string", run: (e) => e.selectedText() },
+  cellSelection: {
+    group: "query", description: "The cells selected as whole cells: {rows: [first, last], columns: [first, last], cells, tableRows, tableColumns} (from 0, on the table's grid); null when no cells are.",
+    args: {}, returns: "object, or null", run: (e) => e.cellSelection(),
+  },
   selectedHtml: {
     group: "query", description: "The selection as copy puts it on the clipboard (HTML with its formatting inline; pasteHtml takes it back), without touching the clipboard; \"\" with no selection.",
     args: {}, returns: "string", run: (e) => e.selectionHtml()?.html ?? "",
