@@ -10561,10 +10561,14 @@ export class DocxEditor {
    * step: its HTML through the engine (paragraphs, headings, lists, tables, links and pictures, as
    * Word pastes them), else its text, else its picture. `formatting` defaults to
    * `options.pasteFormatting` ("merge"); "text" pastes the text only. A selection across
-   * paragraphs is refused. Resolves false when nothing was pasted.
+   * paragraphs is deleted first (its own undo step, as Ctrl+V does), unless typing could not
+   * replace it either (into a table or a band): that one is refused. Resolves false when nothing
+   * was pasted.
    */
   async pasteContent(content: PasteContent, formatting?: PasteFormatting): Promise<boolean> {
     if (this.closed) return false;
+    const cross = this.crossBlockSelection();
+    if (cross && this.crossBlockEditable(cross)) this.replaceCrossBlockSelection("");
     const mode = formatting ?? this.options.pasteFormatting ?? "merge";
     const bridge = this.exports.DocxSessionBridge;
     const at = this.pasteTarget();
