@@ -99,6 +99,10 @@ import { compileFind, expandReplacement, type FindOptions } from "./find-query.j
 import { changeCase, DEFAULT_HEADLINE_CASE_LISTS, nextCycleCase, type CaseMode, type HeadlineCaseLists } from "./change-case.js";
 import type { RenderPlan, RenderUnit, UnitDiff } from "./editor-reconcile.js";
 import { OutlineLayer, isOutlineHidden, type OutlineBlock } from "./editor-outline.js";
+import {
+  CELL_SELECTED_CLASS, CELL_SELECTING_ATTR, TableGrid, commonTableCells, ensureCellSelectionStyles, ownCell,
+  type CellRect,
+} from "./cell-selection.js";
 
 /** The subset of WASM bridge exports the editor needs (as exposed on `window.Docxodus`). */
 export interface DocxEditorExports {
@@ -2193,6 +2197,16 @@ export class DocxEditor {
   private dragSelection: CrossBlockDragSelection | null = null;
 
   /**
+   * Word's cell selection (cell-selection.ts): a rectangle of one table's cells, shaded, while the
+   * browser's own selection sits collapsed in the anchor cell (hidden). The anchor cell is where it
+   * began, the focus cell where Shift+click, Shift+arrows or the drag took it.
+   */
+  private cellSel: {
+    grid: TableGrid; anchor: HTMLTableCellElement; focus: HTMLTableCellElement; rect: CellRect;
+    cells: HTMLTableCellElement[];
+  } | null = null;
+
+  /**
    * Which end of a selection the editor made across blocks (drag, Shift+click, Shift+arrows,
    * Ctrl+A) is fixed and which moves. Such a selection is set with addRange, which forgets its
    * direction, so Shift+arrow keys would otherwise always move its end. Valid only while the live
@@ -2444,6 +2458,20 @@ export class DocxEditor {
     if (this.closed || !this.options.editable) return;
     if (this.pictureMouseDown(event)) return;
     if (event.button !== 0) return;
+    // (a click ends a cell selection; Shift+click in the same table takes it to that cell)
+    if (this.cellSel && !event.shiftKey) this.clearCellSelection();
+    if (this.cellSel && event.shiftKey) {
+      const point = caretPointFromClient(document, event.clientX, event.clientY);
+      const block = point ? this.editableBlockOf(point.node) : null;
+      const cell = block ? ownCell(block, this.cellSel.grid.table) : null;
+      if (cell) {
+        event.preventDefault();
+        this.setCellSelection(this.cellSel.grid.table, this.cellSel.anchor, cell);
+        this.clearDragSelection();
+        return;
+      }
+      this.clearCellSelection();
+    }
     if (this.followReferenceField(event)) return;
     if (this.extendSelectionByClick(event)) { this.clearDragSelection(); return; }
     const target = event.target instanceof Node ? event.target : null;
@@ -2512,6 +2540,13 @@ export class DocxEditor {
     if (focusBlock !== drag.origin) drag.crossedBlockBoundary = true;
     if (!drag.crossedBlockBoundary) return;
     event.preventDefault();
+    // From one cell into another of the same table: whole cells from then on.
+    const common = commonTableCells(drag.origin, focusBlock);
+    if (common) {
+      if (this.cellSel?.anchor !== common.a || this.cellSel.focus !== common.b) this.setCellSelection(common.table, common.a, common.b, drag.anchor);
+      return;
+    }
+    if (this.cellSel) this.clearCellSelection();
     this.queueDragSelection(drag, focus);
   };
 
@@ -2524,7 +2559,11 @@ export class DocxEditor {
     }
     const drag = this.dragSelection;
     if (!drag) return;
-    if (drag.crossedBlockBoundary) {
+    if (drag.crossedBlockBoundary && this.cellSel) {
+      event.preventDefault();    // (the cell selection stays as the drag left it, the caret where it began)
+      const sel = this.container.ownerDocument.defaultView?.getSelection();
+      if (sel && drag.anchor.node.isConnected) sel.collapse(drag.anchor.node, drag.anchor.offset);
+    } else if (drag.crossedBlockBoundary) {
       const focus = caretPointFromClient(document, event.clientX, event.clientY);
       const focusBlock = focus ? this.editableBlockOf(focus.node) : null;
       if (focus && focusBlock && this.ownerRoot(focusBlock) === this.ownerRoot(drag.origin)) {
@@ -4254,6 +4293,7 @@ export class DocxEditor {
 
   private onKeydown(el: HTMLElement, ev: KeyboardEvent): void {
     if (this.closed) return;
+    if (this.cellSel && this.cellSelectionKey(ev)) return;
     if (this.crossBlockKey(el, ev)) return;
     moveAcrossTab(el, ev);
     // Common formatting / history shortcuts.
@@ -4995,6 +5035,13 @@ export class DocxEditor {
   private selectBetween(anchor: DomSelectionPoint, focus: DomSelectionPoint): void {
     const aBlock = this.editableBlockOf(anchor.node);
     const fBlock = this.editableBlockOf(focus.node);
+    // Ends in two cells of one table: whole cells, as Word selects them.
+    const common = aBlock && fBlock ? commonTableCells(aBlock, fBlock) : null;
+    if (common) {
+      this.setCellSelection(common.table, common.a, common.b, anchor);
+      return;
+    }
+    this.clearCellSelection();
     if (aBlock && fBlock && aBlock !== fBlock && typeof document !== "undefined") {
       const story = this.storyBlocks(aBlock);
       const mark = (p: DomSelectionPoint, b: HTMLElement) => ({ index: story.indexOf(b), offset: contentOffsetOf(b, p.node, p.offset) });
@@ -5010,6 +5057,90 @@ export class DocxEditor {
       }
     }
     if (setSelectionBetween(anchor, focus)) this.extendedSelection = { anchor, focus };
+  }
+
+  // ─── Cell selection (cell-selection.ts) ────────────────────────────────
+
+  /** Select the cells from `anchor` to `focus` (two cells of `table`), as a rectangle. The browser's
+   *  selection is left collapsed in the anchor cell (at `at` when it is there), hidden. */
+  private setCellSelection(table: HTMLTableElement, anchor: HTMLTableCellElement, focus: HTMLTableCellElement,
+    at?: DomSelectionPoint): boolean {
+    const grid = new TableGrid(table);
+    const rect = grid.rectFor(anchor, focus);
+    if (!rect) return false;
+    ensureCellSelectionStyles(this.container.ownerDocument);
+    for (const cell of this.cellSel?.cells ?? []) cell.classList.remove(CELL_SELECTED_CLASS);
+    const cells = grid.cellsOf(rect).map((g) => g.cell);
+    for (const cell of cells) cell.classList.add(CELL_SELECTED_CLASS);
+    this.cellSel = { grid, anchor, focus, rect, cells };
+    this.container.setAttribute(CELL_SELECTING_ATTR, "");
+    this.extendedSelection = null;
+    this.lastCrossBlockSelection = null;
+    // (the caret, hidden, stays in the anchor cell: keys still reach the editor through its block)
+    const sel = this.container.ownerDocument.defaultView?.getSelection();
+    if (sel) {
+      if (at && anchor.contains(at.node) && this.editableBlockOf(at.node)) {
+        if (!sel.isCollapsed || sel.anchorNode !== at.node || sel.anchorOffset !== at.offset) {
+          this.editableBlockOf(at.node)!.focus({ preventScroll: true });
+          sel.collapse(at.node, at.offset);
+        }
+      } else if (!sel.anchorNode || !anchor.contains(sel.anchorNode) || !sel.isCollapsed) {
+        const block = this.editableInCell(anchor)
+          ?? anchor.querySelector<HTMLElement>('[data-anchor][contenteditable="true"]');
+        if (block) placeCaretAtOffset(block, 0);
+      }
+      const block = sel.anchorNode ? this.editableBlockOf(sel.anchorNode) : null;
+      if (block) this.activeBlock = block;
+    }
+    return true;
+  }
+
+  /** End the cell selection, if there is one (the caret shows again in the anchor cell). */
+  private clearCellSelection(): void {
+    if (!this.cellSel) return;
+    for (const cell of this.cellSel.cells) cell.classList.remove(CELL_SELECTED_CLASS);
+    this.cellSel = null;
+    this.container.removeAttribute(CELL_SELECTING_ATTR);
+  }
+
+  /**
+   * Keys while cells are selected: Shift+arrows move its focus cell on the grid; Escape ends it.
+   * Shift, Ctrl and Alt alone keep it (they start a chord). Anything else ends it for now and goes
+   * on to the editor at the (anchor cell's) caret.
+   */
+  private cellSelectionKey(ev: KeyboardEvent): boolean {
+    const sel = this.cellSel!;
+    if (!sel.anchor.isConnected || !sel.focus.isConnected) { this.clearCellSelection(); return false; }
+    if (ev.key === "Shift" || ev.key === "Control" || ev.key === "Alt" || ev.key === "Meta") return true;
+    const arrows: Record<string, [number, number]> = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
+    const step = arrows[ev.key];
+    if (step && ev.shiftKey && !ev.ctrlKey && !ev.altKey && !ev.metaKey) {
+      ev.preventDefault();
+      const to = sel.grid.step(sel.focus, step[0], step[1]);
+      if (to) this.setCellSelection(sel.grid.table, sel.anchor, to.cell);
+      return true;
+    }
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      this.clearCellSelection();
+      return true;
+    }
+    this.clearCellSelection();
+    return false;
+  }
+
+  /**
+   * The cell selection, when cells are selected (Word's: dragged across, Shift+click, Shift+arrows):
+   * its rows and columns on the table's grid (from 0, inclusive), how many cells, and the table's
+   * size; null when none is.
+   */
+  cellSelection(): { rows: [number, number]; columns: [number, number]; cells: number; tableRows: number; tableColumns: number } | null {
+    const sel = this.cellSel;
+    if (!sel || !sel.anchor.isConnected) return null;
+    return {
+      rows: [sel.rect.r0, sel.rect.r1], columns: [sel.rect.c0, sel.rect.c1], cells: sel.cells.length,
+      tableRows: sel.grid.rows, tableColumns: sel.grid.columns,
+    };
   }
 
   /** Select the whole of the document's body (Ctrl+A when the focus is not in the document); false
@@ -5180,6 +5311,25 @@ export class DocxEditor {
     if (!across && !stayed) return false;
 
     let next: DomSelectionPoint | null = stayed ? null : moved;
+    // Shift+arrows at a cell's edge: on into the cell beside or below it on the grid, as whole
+    // cells (Word's), when the selection began in that table.
+    if (stayed && !ctrl && (granularity === "line" || granularity === "character")) {
+      const cell = focusBlock.closest<HTMLTableCellElement>("td, th");
+      const table = cell?.closest<HTMLTableElement>("table");
+      const i = story.indexOf(focusBlock);
+      const beyond = story[i + (forward ? 1 : -1)];
+      const anchorCell = table ? ownCell(anchorBlock, table) : null;
+      if (cell && table && anchorCell && (!beyond || ownCell(beyond, table) !== cell)) {
+        const grid = new TableGrid(table);
+        const line = granularity === "line";
+        const to = grid.step(cell, line ? (forward ? 1 : -1) : 0, line ? 0 : (forward ? 1 : -1));
+        if (to) {
+          ev.preventDefault();
+          this.setCellSelection(table, anchorCell, to.cell, ends.anchor);
+          return true;
+        }
+      }
+    }
     // Word's Ctrl+Shift+Down/Up at a paragraph's edge goes on to the next one's end/start.
     if (stayed && granularity !== "lineboundary") {
       const i = story.indexOf(focusBlock);
@@ -11106,6 +11256,7 @@ export class DocxEditor {
    * as remount.
    */
   private reconcile(focusIndex = -1, caretAtEnd = false): void {
+    this.clearCellSelection();
     const inPlace = !this.canReconcile();
     if (inPlace && !this.canReconcileInPlace()) {
       this.remount(focusIndex, caretAtEnd);
@@ -11654,6 +11805,7 @@ export class DocxEditor {
    * block's content-hashed unid changes across the save/reproject a remount performs.
    */
   private remount(focusIndex = -1, caretAtEnd = false): void {
+    this.clearCellSelection();
     this.container.classList.toggle("docx-paginated", !!this.options.paginated);
     this.teardownBlockDrag();
     this.refreshAnchorMap();
