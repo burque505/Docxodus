@@ -166,6 +166,16 @@ test.describe('Paste', () => {
     // One undo takes back the whole replacement: the selection's text is back, the paste gone.
     await page.evaluate(() => (window as any).__ed.exec('undo'));
     await expect.poll(() => text(page)).toBe('Hello world\nSecond line');
+    // The caret is where the undone change was: in the first paragraph, after "Hello ".
+    expect(await page.evaluate(() => {
+      const sel = window.getSelection()!;
+      const block = (sel.anchorNode as Node).parentElement!.closest('[data-anchor]')!;
+      const blocks = Array.from(document.querySelectorAll('#ex-editor [data-anchor][contenteditable="true"]'));
+      const range = document.createRange();
+      range.setStart(block, 0);
+      range.setEnd(sel.anchorNode!, sel.anchorOffset);
+      return [blocks.indexOf(block), range.toString().length];
+    })).toEqual([0, 6]);
   });
 
   test('selectedHtml keeps the selection with its formatting, and pasteHtml takes it back', async ({ page }) => {
