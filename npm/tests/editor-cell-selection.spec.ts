@@ -162,6 +162,40 @@ test.describe('Cell selection', () => {
     expect(refused).toBe('refused');
   });
 
+  test('selectedHtml and selectedText of a cell selection: a table of those cells alone, merges kept', async ({ page }) => {
+    await openTable(page);
+    await drag(page, 'A1', 'B2');
+    const out = await page.evaluate(() => {
+      const ed = (window as any).__ed;
+      const doc = new DOMParser().parseFromString(ed.exec('selectedHtml'), 'text/html');
+      const rows = Array.from(doc.querySelectorAll('table > tbody > tr')).map((tr) =>
+        Array.from((tr as HTMLTableRowElement).cells).map((c) => `${(c.textContent ?? '').trim()}${c.rowSpan > 1 ? `/r${c.rowSpan}` : ''}`));
+      return { tables: doc.querySelectorAll('table').length, rows, text: ed.exec('selectedText') };
+    });
+    expect(out).toEqual({ tables: 1, rows: [['A1', 'B1'], ['A2/r2', 'B2'], ['B3']], text: 'A1\tB1\nA2\tB2\nB3' });
+  });
+
+  test('Ctrl+C copies the cells (the selection stays); pasted, they make a table of their own', async ({ page, context }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    await openTable(page);
+    await drag(page, 'B3', 'A4');
+    await page.keyboard.press('Control+c');
+    expect(await selection(page)).toMatchObject({ rows: [1, 3], columns: [0, 1] });
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('A2\tB2\nB3\nA4');
+    const after = await pointOf(page, 'After');
+    await page.mouse.click(after.x, after.y);
+    await page.keyboard.press('End');
+    await page.keyboard.press('Control+v');
+    await expect.poll(() => page.evaluate(() => document.querySelectorAll('#ex-editor table').length)).toBe(3);
+    const pasted = await page.evaluate(() => {
+      const tables = Array.from(document.querySelectorAll<HTMLTableElement>('#ex-editor table')).filter((t) => !t.parentElement!.closest('table'));
+      const t = tables[tables.length - 1];
+      return Array.from(t.rows).map((tr) => Array.from(tr.cells).map((c) =>
+        `${Array.from(c.querySelectorAll('[data-anchor]')).map((b) => (b.textContent ?? '').trim()).filter(Boolean).join('|')}${c.colSpan > 1 ? `/c${c.colSpan}` : ''}${c.rowSpan > 1 ? `/r${c.rowSpan}` : ''}`));
+    });
+    expect(pasted).toEqual([['A2/r2', 'B2'], ['B3'], ['A4/c2']]);
+  });
+
   test('the table handle shows at the table under the mouse (the innermost) and selects it', async ({ page }) => {
     await openTable(page);
     const handle = () => page.evaluate(() => {

@@ -2272,6 +2272,13 @@ export class DocxEditor {
    *  Normalize only the clipboard clone; retain inline formatting in the rich representation. */
   private readonly onCopy = (ev: ClipboardEvent): void => {
     if (this.closed || ev.defaultPrevented || !ev.clipboardData) return;
+    const cells = this.serializeCellSelection();
+    if (cells) {
+      ev.clipboardData.setData("text/plain", cells.text);
+      ev.clipboardData.setData("text/html", cells.html);
+      ev.preventDefault();
+      return;
+    }
     const range = this.selectedRange();
     if (!range) return;
     const probe = this.container.ownerDocument.createElement("div");
@@ -2301,8 +2308,49 @@ export class DocxEditor {
    */
   selectionHtml(): { html: string; text: string } | null {
     if (this.closed) return null;
+    const cells = this.serializeCellSelection();
+    if (cells) return cells;
     const range = this.selectedRange();
     return range ? this.serializeRange(range) : null;
+  }
+
+  /**
+   * The cell selection as copy puts it on the clipboard (Word's): a table of the selected cells
+   * alone, merged cells kept, each cell's borders, shading, padding and width inline and its
+   * contents as a copy of them gives them; the text a line for each row, a tab between cells.
+   * Null when no cells are selected.
+   */
+  private serializeCellSelection(): { html: string; text: string } | null {
+    const sel = this.cellSel;
+    if (!sel || !sel.anchor.isConnected) return null;
+    const doc = this.container.ownerDocument, view = doc.defaultView!;
+    const table = doc.createElement("table");
+    const tableStyle = view.getComputedStyle(sel.grid.table);
+    table.style.borderCollapse = tableStyle.borderCollapse;
+    table.style.borderSpacing = tableStyle.borderSpacing;
+    const body = doc.createElement("tbody");
+    table.append(body);
+    const rows: HTMLTableRowElement[] = [];
+    const lines: string[][] = [];
+    for (let r = sel.rect.r0; r <= sel.rect.r1; r++) { rows.push(body.insertRow()); lines.push([]); }
+    for (const g of sel.grid.cellsOf(sel.rect)) {
+      const at = g.row - sel.rect.r0;
+      const td = doc.createElement(g.cell.tagName === "TH" ? "th" : "td");
+      if (g.rowSpan > 1) td.rowSpan = g.rowSpan;
+      if (g.colSpan > 1) td.colSpan = g.colSpan;
+      const style = view.getComputedStyle(g.cell);
+      for (const key of ["border-top", "border-right", "border-bottom", "border-left", "background-color",
+        "vertical-align", "padding-top", "padding-right", "padding-bottom", "padding-left", "text-align"])
+        td.style.setProperty(key, style.getPropertyValue(key));
+      td.style.width = `${Math.round(g.cell.getBoundingClientRect().width)}px`;
+      const range = doc.createRange();
+      range.selectNodeContents(g.cell);
+      const copied = this.serializeRange(range);
+      td.innerHTML = copied.html;
+      rows[at].append(td);
+      lines[at].push(copied.text.replace(/\n+$/, ""));
+    }
+    return { html: table.outerHTML, text: lines.map((cells) => cells.join("\t")).join("\n") };
   }
 
   private serializeRange(range: Range): { html: string; text: string } {
@@ -5137,6 +5185,9 @@ export class DocxEditor {
       this.clearCellSelection();
       return true;
     }
+    // Copy (Ctrl+C, Ctrl+Insert) keeps it: the browser's copy event, which onCopy fills with the cells.
+    const ctrl = (ev.ctrlKey || ev.metaKey) && !ev.altKey && !ev.shiftKey;
+    if (ctrl && ((ev.key ?? "").toLowerCase() === "c" || ev.key === "Insert")) return true;
     this.clearCellSelection();
     return false;
   }
@@ -11066,6 +11117,8 @@ export class DocxEditor {
    *  document. */
   selectedText(): string {
     if (this.closed) return "";
+    const cells = this.serializeCellSelection();
+    if (cells) return cells.text;
     const sel = typeof window !== "undefined" ? window.getSelection() : null;
     if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return "";
     const range = sel.getRangeAt(0);
