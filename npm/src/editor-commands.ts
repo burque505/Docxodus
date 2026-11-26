@@ -482,6 +482,19 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
       must(e.insertCaption(options), "insertCaption", "there is nothing to caption at the caret, or the engine refused it (changes are tracked?)");
     },
   },
+  insertField: {
+    group: "insert", description: "Insert a field from its code, as Word shows it with field codes on: `MERGEFIELD Name`, `IF { MERGEFIELD X } = True \"a\" \"b\"` ({ } around each nested field). Replaces a selection in one paragraph.",
+    args: { code: "string", "cachedResult?": "string" },
+    run: (e, a) => {
+      const r = e.insertField(a.string("code"), null, a.optString("cachedResult"));
+      must(r.ok, "insertField", r.code ? `the engine refused it (${r.code})` : "there is no caret in the document");
+    },
+  },
+  highlightMergeFields: {
+    group: "view", description: "Shade merge fields grey (Word's Highlight Merge Fields); without `on`, toggle.",
+    args: { "on?": "boolean" },
+    run: (e, a) => { e.setHighlightMergeFields(a.optBool("on") ?? !e.highlightMergeFields); },
+  },
   hyperlink: {
     group: "insert", description: "Link the selection to a web address, or to a bookmark (kind \"internal\").",
     args: { target: "string", "kind?": "external|internal" },

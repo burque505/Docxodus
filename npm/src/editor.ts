@@ -280,6 +280,7 @@ export interface DocxEditorExports {
     ExpandRangeToFields?: (handle: number, startAnchor: string, startOffset: number, endAnchor: string, endOffset: number) => string;
     RepairFields?: (handle: number, anchorId: string) => string;
     InsertCrossReference?: (handle: number, anchor: string, characterOffset: number, bookmarkName: string, optionsJson: string) => string;
+    InsertField?: (handle: number, anchor: string, characterOffset: number, code: string, cachedResult: string) => string;
     InsertImage?: (
       handle: number,
       anchor: string,
@@ -1844,6 +1845,7 @@ const SECTION_BREAK_CSS = `
 }
 .page-box [data-section-index]::before, .docx-paginated [data-section-index]::before { content: none !important; }
 [data-field-target][data-field-shaded] { background: #d9d9d9; }
+[data-highlight-merge-fields] :is([data-field="MERGEFIELD"], [data-field="IF"], [data-field="="], [data-field="FILLIN"], [data-field="ASK"], [data-field="NEXT"], [data-field="NEXTIF"], [data-field="SKIPIF"], [data-field="MERGEREC"], [data-field="MERGESEQ"]) { background: #d9d9d9; }
 [data-field-hyperlink]:hover { text-decoration: underline dotted; }
 `;
 const sectionBreakStyledDocuments = new WeakSet<Document>();
@@ -8785,6 +8787,69 @@ export class DocxEditor {
     this.remount();
     if (after) this.placeCaretAt(after);
     return { ok: true, after };
+  }
+
+  /**
+   * A field from its code, as Word shows it with field codes on (`MERGEFIELD Name \* Upper`,
+   * `IF { MERGEFIELD X } = True "a" "b"`): each `{ }` pair a nested field. At `at` (else the
+   * selection; a selection in one paragraph is replaced). One undo step. Returns the caret place
+   * after the field, for the next insert.
+   */
+  insertField(code: string, at?: DocumentRange | null, cachedResult?: string): { ok: boolean; code?: string; after?: DocumentRange } {
+    const bridge = this.exports.DocxSessionBridge;
+    if (this.closed || typeof bridge.InsertField !== "function") return { ok: false };
+    const where = at ?? this.selectionDocumentRange();
+    if (!where) return { ok: false, code: "no_selection" };
+    const tx = typeof bridge.BeginTransaction === "function" ? bridge.BeginTransaction(this.handle) : 0;
+    let ok = true;
+    let error: string | undefined;
+    let id = where.startAnchorId;
+    const offset = where.startOffset;
+    let after: DocumentRange | undefined;
+    try {
+      const step = (json: string) => {
+        const r = this.parseEdit(json, { expectRejection: true });
+        if (!r.success) { error = r.error?.code; throw new Error("refused"); }
+        return r;
+      };
+      if (where.endAnchorId === id && where.endOffset > offset)
+        id = step(bridge.ReplaceTextAtSpan(this.handle, id, offset, where.endOffset - offset, "", "")).modified?.[0]?.id ?? id;
+      const before = this.sessionTextOf(id)?.length ?? null;
+      id = step(bridge.InsertField(this.handle, id, offset, code, cachedResult ?? "")).modified?.[0]?.id ?? id;
+      const length = this.sessionTextOf(id)?.length ?? null;
+      const end = before !== null && length !== null ? offset + (length - before) : offset;
+      after = { startAnchorId: id, startOffset: end, endAnchorId: id, endOffset: end };
+    } catch {
+      ok = false;
+    } finally {
+      if (tx) {
+        if (ok) bridge.CommitTransaction!(tx);
+        else bridge.RollbackTransaction?.(tx);
+      }
+    }
+    if (!ok) return { ok: false, code: error };
+    this.remount();
+    if (after) this.placeCaretAt(after);
+    return { ok: true, after };
+  }
+
+  /** Word's Mailings > Highlight Merge Fields: merge fields shaded grey while on. */
+  setHighlightMergeFields(on: boolean): void {
+    this.container.toggleAttribute("data-highlight-merge-fields", on);
+  }
+
+  get highlightMergeFields(): boolean {
+    return this.container.hasAttribute("data-highlight-merge-fields");
+  }
+
+  /** The names of the MERGEFIELDs in the shown document, in order, once each. */
+  mergeFieldNames(): string[] {
+    const names: string[] = [];
+    for (const el of Array.from(this.container.querySelectorAll<HTMLElement>('[data-field="MERGEFIELD"][data-field-target]'))) {
+      const name = el.dataset.fieldTarget ?? "";
+      if (name && !names.some((n) => n.toLowerCase() === name.toLowerCase())) names.push(name);
+    }
+    return names;
   }
 
   /** Put the caret (or the selection) on document range `range`, when it is in one shown block. */
