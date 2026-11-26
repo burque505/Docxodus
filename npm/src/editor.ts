@@ -2236,13 +2236,43 @@ export class DocxEditor {
   /** Native copy treats flex tab-layout wrappers as line boundaries and omits their empty tab.
    *  Normalize only the clipboard clone; retain inline formatting in the rich representation. */
   private readonly onCopy = (ev: ClipboardEvent): void => {
+    if (this.closed || ev.defaultPrevented || !ev.clipboardData) return;
+    const range = this.selectedRange();
+    if (!range) return;
+    const probe = this.container.ownerDocument.createElement("div");
+    probe.append(range.cloneContents());
+    if (!probe.querySelector("[data-docx-tab]")) return;
+    const copied = this.serializeRange(range);
+    ev.clipboardData.setData("text/plain", copied.text);
+    ev.clipboardData.setData("text/html", copied.html);
+    ev.preventDefault();
+  };
+
+  /** The window's selection when it is a non-empty range inside this editor, else null. */
+  private selectedRange(): Range | null {
     const selection = this.container.ownerDocument.defaultView?.getSelection();
-    if (this.closed || ev.defaultPrevented || !ev.clipboardData || !selection?.rangeCount || selection.isCollapsed) return;
+    if (!selection?.rangeCount || selection.isCollapsed) return null;
     const range = selection.getRangeAt(0);
-    if (!this.container.contains(range.startContainer) || !this.container.contains(range.endContainer)) return;
+    if (!this.container.contains(range.startContainer) || !this.container.contains(range.endContainer)) return null;
+    return range;
+  }
+
+  /**
+   * The selection as copy puts it on the clipboard: its HTML, each element carrying its text
+   * styles inline (so it keeps its look away from the document's stylesheet), and its text.
+   * Null when nothing is selected in the document. Unlike a native copy it leaves the system
+   * clipboard alone, so a host can keep a selection for later (as a snippet) and paste it back
+   * with `pasteHtml`.
+   */
+  selectionHtml(): { html: string; text: string } | null {
+    if (this.closed) return null;
+    const range = this.selectedRange();
+    return range ? this.serializeRange(range) : null;
+  }
+
+  private serializeRange(range: Range): { html: string; text: string } {
     const clone = this.container.ownerDocument.createElement("div");
     clone.append(range.cloneContents());
-    if (!clone.querySelector("[data-docx-tab]")) return;
     // Range.cloneContents keeps selected descendants in document order, including partial
     // ancestors. Read styles and placeholder status from their live counterparts before the
     // clone loses its editing host and the document's class-based stylesheet.
@@ -2287,11 +2317,9 @@ export class DocxEditor {
     clone.setAttribute("aria-hidden", "true");
     this.container.ownerDocument.body.append(clone);
     try {
-      ev.clipboardData.setData("text/plain", stripBidi(clone.innerText));
-      ev.clipboardData.setData("text/html", richHtml);
-      ev.preventDefault();
+      return { html: richHtml, text: stripBidi(clone.innerText) };
     } finally { clone.remove(); }
-  };
+  }
 
   /** Ctrl+V and Shift+Insert in a block: the editor pastes through the engine (`pasteContent`),
    *  never the browser's own insertion into the block. (Ctrl+Shift+V is Paste Formatting, and

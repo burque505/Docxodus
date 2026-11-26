@@ -878,6 +878,10 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   // ── query ──
   text: { group: "query", description: "The document's text, a line for each paragraph (and table cell).", args: {}, returns: "string", run: (e) => e.documentText() },
   selectedText: { group: "query", description: "The selected text (lines between paragraphs); \"\" with no selection.", args: {}, returns: "string", run: (e) => e.selectedText() },
+  selectedHtml: {
+    group: "query", description: "The selection as copy puts it on the clipboard (HTML with its formatting inline; pasteHtml takes it back), without touching the clipboard; \"\" with no selection.",
+    args: {}, returns: "string", run: (e) => e.selectionHtml()?.html ?? "",
+  },
   paragraphText: { group: "query", description: "The text of the paragraph at the caret.", args: {}, returns: "string", run: (e) => e.paragraphText() },
   wordCount: { group: "query", description: "How many words the body has.", args: {}, returns: "number", run: (e) => e.wordCount() },
   paragraphFormats: {
