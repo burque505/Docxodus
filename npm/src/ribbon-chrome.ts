@@ -1470,6 +1470,13 @@ export const RIBBON_HTML = `
          contextual tab cannot overlap the cell you are editing. -->
     <div class="dxr-panel" data-panel="table">
       <div class="dxr-group">
+        <span class="dxr-glabel">Table</span>
+        <div class="dxr-row">
+          <button type="button" data-dxr="tblselect" aria-haspopup="menu" aria-expanded="false"
+                  title="Select the cell, row, column or whole table at the caret">Select &#9662;</button>
+        </div>
+      </div>
+      <div class="dxr-group">
         <span class="dxr-glabel">Rows</span>
         <div class="dxr-row">
           <button type="button" data-tt="rowAbove" title="Insert a row above this one">Insert above</button>
@@ -1753,6 +1760,13 @@ ${STYLES_PANE_HTML}
   <button type="button" role="menuitem" data-paste="keep" title="The source's fonts, sizes and colors come along"><span>Keep Source Formatting</span><kbd aria-hidden="true"></kbd></button>
   <button type="button" role="menuitem" data-paste="merge" title="Paragraphs, headings, lists, tables, links and emphasis come along; fonts, sizes and colors are the document's" aria-keyshortcuts="Control+V"><span>Merge Formatting</span><kbd aria-hidden="true">Ctrl+V</kbd></button>
   <button type="button" role="menuitem" data-paste="text" title="The text only, taking the formatting where it lands" aria-keyshortcuts="Control+Alt+Shift+V"><span>Keep Text Only</span><kbd aria-hidden="true">Ctrl+Alt+Shift+V</kbd></button>
+</div>
+
+<div class="dxr-pop dxr-filemenu" data-dxr="tblselectmenu" role="menu" aria-label="Select">
+  <button type="button" role="menuitem" data-select="cell" title="Select the cell the caret is in"><span>Select Cell</span><kbd aria-hidden="true"></kbd></button>
+  <button type="button" role="menuitem" data-select="column" title="Select the column the caret is in"><span>Select Column</span><kbd aria-hidden="true"></kbd></button>
+  <button type="button" role="menuitem" data-select="row" title="Select the row the caret is in"><span>Select Row</span><kbd aria-hidden="true"></kbd></button>
+  <button type="button" role="menuitem" data-select="table" title="Select the whole table"><span>Select Table</span><kbd aria-hidden="true"></kbd></button>
 </div>
 
 <div class="dxr-pop dxr-filemenu" data-dxr="stylemenu" role="menu" aria-label="Styles">

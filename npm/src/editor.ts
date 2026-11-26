@@ -100,7 +100,7 @@ import { changeCase, DEFAULT_HEADLINE_CASE_LISTS, nextCycleCase, type CaseMode, 
 import type { RenderPlan, RenderUnit, UnitDiff } from "./editor-reconcile.js";
 import { OutlineLayer, isOutlineHidden, type OutlineBlock } from "./editor-outline.js";
 import {
-  CELL_SELECTED_CLASS, CELL_SELECTING_ATTR, TableGrid, commonTableCells, ensureCellSelectionStyles, ownCell,
+  CELL_SELECTED_CLASS, CELL_SELECTING_ATTR, TableGrid, TableHandle, commonTableCells, ensureCellSelectionStyles, ownCell,
   type CellRect,
 } from "./cell-selection.js";
 
@@ -2206,6 +2206,12 @@ export class DocxEditor {
     cells: HTMLTableCellElement[];
   } | null = null;
 
+  /** Word's ⊞ at the top-left of the table under the mouse, or the caret's (made when first needed). */
+  private tableHandle: TableHandle | null = null;
+  /** The innermost table under the mouse, if any. */
+  private hoverTable: HTMLTableElement | null = null;
+  private tableHandleFrame = 0;
+
   /**
    * Which end of a selection the editor made across blocks (drag, Shift+click, Shift+arrows,
    * Ctrl+A) is fixed and which moves. Such a selection is set with addRange, which forgets its
@@ -2256,6 +2262,7 @@ export class DocxEditor {
       document.addEventListener("focusout", this.onFocusLeaving, true);
       document.addEventListener("mousedown", this.onMouseDown, true);
       document.addEventListener("mousemove", this.onMouseMove, true);
+      document.addEventListener("mousemove", this.onTableHover, true);
       document.addEventListener("mouseup", this.onMouseUp, true);
       document.addEventListener("keydown", this.onPictureKey, true);
     }
@@ -2378,6 +2385,7 @@ export class DocxEditor {
   /** Track the last meaningful selection so focus-stealing toolbar controls can still target it. */
   private readonly onSelectionChange = (): void => {
     if (this.closed) return;
+    this.scheduleTableHandle();
     const sel = typeof window !== "undefined" ? window.getSelection() : null;
     if (!sel || sel.rangeCount === 0) return; // no selection info — keep the cache as-is
     const range = sel.getRangeAt(0);
@@ -2938,11 +2946,15 @@ export class DocxEditor {
       document.removeEventListener("focusout", this.onFocusLeaving, true);
       document.removeEventListener("mousedown", this.onMouseDown, true);
       document.removeEventListener("mousemove", this.onMouseMove, true);
+      document.removeEventListener("mousemove", this.onTableHover, true);
       document.removeEventListener("mouseup", this.onMouseUp, true);
       document.removeEventListener("keydown", this.onPictureKey, true);
     }
     this.pictureOverlay?.destroy();
     this.pictureOverlay = null;
+    clearTimeout(this.hoverTimer);
+    this.tableHandle?.destroy();
+    this.tableHandle = null;
     this.selectedPictureId = null;
     this.clearDragSelection();
     this.clearFindMatches();
@@ -5141,6 +5153,90 @@ export class DocxEditor {
       rows: [sel.rect.r0, sel.rect.r1], columns: [sel.rect.c0, sel.rect.c1], cells: sel.cells.length,
       tableRows: sel.grid.rows, tableColumns: sel.grid.columns,
     };
+  }
+
+  /**
+   * Word's Select menu (Table Layout > Select): the cell, row, column or whole table at the caret,
+   * or around the cells selected (Row: their rows, Column: their columns), as a cell selection.
+   * False when the caret is not in a table.
+   */
+  selectTablePart(part: "cell" | "row" | "column" | "table"): boolean {
+    if (this.closed) return false;
+    let grid: TableGrid, rect: CellRect;
+    if (this.cellSel?.anchor.isConnected) {
+      grid = this.cellSel.grid;
+      rect = { ...this.cellSel.rect };
+    } else {
+      const block = this.activeBlock;
+      const cell = block?.isConnected ? block.closest<HTMLTableCellElement>("td, th") : null;
+      const table = cell?.closest<HTMLTableElement>("table");
+      if (!cell || !table) return false;
+      grid = new TableGrid(table);
+      const g = grid.of(cell);
+      if (!g) return false;
+      rect = { r0: g.row, c0: g.col, r1: g.row + g.rowSpan - 1, c1: g.col + g.colSpan - 1 };
+    }
+    if (part === "row" || part === "table") { rect.c0 = 0; rect.c1 = grid.columns - 1; }
+    if (part === "column" || part === "table") { rect.r0 = 0; rect.r1 = grid.rows - 1; }
+    return this.selectCellRect(grid, rect);
+  }
+
+  /** A rectangle of `grid` as the cell selection (a ragged row: its nearest cells). */
+  private selectCellRect(grid: TableGrid, rect: CellRect): boolean {
+    const near = (r: number, c: number, step: 1 | -1) => {
+      const row = grid.slots[r] ?? [];
+      for (let x = c; x >= 0 && x < Math.max(row.length, c + 1); x += step) if (row[x]) return row[x]!;
+      for (let x = c; x >= 0 && x < row.length; x -= step) if (row[x]) return row[x]!;
+      return undefined;
+    };
+    const a = near(rect.r0, rect.c0, 1), b = near(rect.r1, rect.c1, -1);
+    if (!a || !b) return false;
+    return this.setCellSelection(grid.table, a.cell, b.cell);
+  }
+
+  /** The ⊞ handle's click: the whole table. */
+  private selectWholeTable(table: HTMLTableElement): void {
+    const grid = new TableGrid(table);
+    this.selectCellRect(grid, grid.all());
+  }
+
+  /** The innermost table under the mouse (the ⊞ handle follows it). */
+  private readonly onTableHover = (event: MouseEvent): void => {
+    if (this.closed || !this.options.editable) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (target && this.tableHandle?.el === target) { clearTimeout(this.hoverTimer); return; }    // (on the handle: it stays)
+    const table = target?.closest<HTMLTableElement>("table") ?? null;
+    const inside = table && this.container.contains(table) && this.editableBlockOf(table.querySelector('[data-anchor][contenteditable="true"]'))
+      ? table : null;
+    clearTimeout(this.hoverTimer);
+    if (inside === this.hoverTable) return;
+    const apply = () => { this.hoverTable = inside; this.scheduleTableHandle(); };
+    // Out of a nested table into the one around it (or off the tables): after a moment, as the
+    // mouse may be on its way to the nested table's handle.
+    if (this.hoverTable?.isConnected && (!inside || inside.contains(this.hoverTable))) this.hoverTimer = setTimeout(apply, 400);
+    else apply();
+  };
+  private hoverTimer: ReturnType<typeof setTimeout> | undefined;
+
+  private scheduleTableHandle(): void {
+    const view = this.container.ownerDocument.defaultView;
+    if (!view || this.tableHandleFrame) return;
+    this.tableHandleFrame = view.requestAnimationFrame(() => {
+      this.tableHandleFrame = 0;
+      this.updateTableHandle();
+    });
+  }
+
+  /** Show the ⊞ handle on the table under the mouse, else the caret's; else hide it. */
+  private updateTableHandle(): void {
+    if (this.closed || !this.options.editable) return;
+    const caret = this.activeBlock?.isConnected && this.container.contains(this.activeBlock)
+      ? this.activeBlock.closest<HTMLTableElement>("table") : null;
+    const table = this.hoverTable?.isConnected ? this.hoverTable : caret;
+    if (!table) { this.tableHandle?.hideSoon(); return; }
+    this.tableHandle ??= new TableHandle(this.container.ownerDocument, (t) => this.selectWholeTable(t),
+      () => this.scroller()?.getBoundingClientRect() ?? null);
+    this.tableHandle.show(table);
   }
 
   /** Select the whole of the document's body (Ctrl+A when the focus is not in the document); false

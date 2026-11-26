@@ -142,7 +142,89 @@ export const CELL_SELECTION_CSS = `
 .${CELL_SELECTED_CLASS} { background-image: linear-gradient(rgba(37, 99, 235, 0.28), rgba(37, 99, 235, 0.28)) !important; }
 [${CELL_SELECTING_ATTR}] ::selection { background: transparent; }
 [${CELL_SELECTING_ATTR}] [contenteditable="true"] { caret-color: transparent; }
+.docx-table-handle { position: fixed; z-index: 40; box-sizing: border-box; width: 16px; height: 16px; padding: 0;
+  margin: 0; border: 1px solid #6b7280; border-radius: 2px; background: #fff; color: #374151;
+  font: 13px/13px system-ui, sans-serif; text-align: center; cursor: pointer; }
+.docx-table-handle:hover { background: #e5e7eb; border-color: #374151; }
+.docx-table-handle[hidden] { display: none; }
 `;
+
+/**
+ * Word's table handle: a small ⊞ at a table's top-left corner, shown while the mouse is over the
+ * table or the caret is in it (the innermost table); a click selects the whole table. It is
+ * fixed-position in the page and follows the table through scrolling, hidden when the table's
+ * corner is outside the editor's view (under a toolbar).
+ */
+export class TableHandle {
+  readonly el: HTMLButtonElement;
+  private table: HTMLTableElement | null = null;
+  private hideTimer: ReturnType<typeof setTimeout> | undefined;
+
+  constructor(private readonly doc: Document, onPick: (table: HTMLTableElement) => void,
+    private readonly view: () => DOMRect | null) {
+    ensureCellSelectionStyles(doc);
+    const el = this.el = doc.createElement("button");
+    el.type = "button";
+    el.className = "docx-table-handle";
+    el.textContent = "⊞";
+    el.title = "Select the table";
+    el.setAttribute("aria-label", "Select the table");
+    el.hidden = true;
+    // (the document keeps its focus and selection)
+    el.addEventListener("mousedown", (e) => { e.preventDefault(); e.stopPropagation(); });
+    el.addEventListener("click", (e) => {
+      e.preventDefault();
+      if (this.table?.isConnected) onPick(this.table);
+    });
+    el.addEventListener("mouseenter", () => clearTimeout(this.hideTimer));
+    (doc.body ?? doc.documentElement).appendChild(el);
+    doc.addEventListener("scroll", this.place, true);
+    doc.defaultView?.addEventListener("resize", this.place);
+  }
+
+  /** The table it is shown for, if any. */
+  get shownFor(): HTMLTableElement | null {
+    return this.el.hidden ? null : this.table;
+  }
+
+  show(table: HTMLTableElement): void {
+    clearTimeout(this.hideTimer);
+    this.table = table;
+    this.place();
+  }
+
+  /** Hide after a moment (the mouse may be on its way to the handle, outside the table). */
+  hideSoon(ms = 400): void {
+    clearTimeout(this.hideTimer);
+    this.hideTimer = setTimeout(() => this.hide(), ms);
+  }
+
+  hide(): void {
+    clearTimeout(this.hideTimer);
+    this.table = null;
+    this.el.hidden = true;
+  }
+
+  readonly place = (): void => {
+    const table = this.table;
+    if (!table) return;
+    if (!table.isConnected) { this.hide(); return; }
+    const r = table.getBoundingClientRect();
+    const left = r.left - 18, top = r.top - 18;
+    const view = this.view();
+    const inView = !view || (top >= view.top && top + 16 <= view.bottom && left + 16 >= view.left && left <= view.right);
+    this.el.hidden = !inView;
+    this.el.style.left = `${Math.round(left)}px`;
+    this.el.style.top = `${Math.round(top)}px`;
+  };
+
+  destroy(): void {
+    clearTimeout(this.hideTimer);
+    this.doc.removeEventListener("scroll", this.place, true);
+    this.doc.defaultView?.removeEventListener("resize", this.place);
+    this.el.remove();
+  }
+}
 
 const styled = new WeakSet<Document>();
 export function ensureCellSelectionStyles(doc: Document): void {

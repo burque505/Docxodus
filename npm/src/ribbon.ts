@@ -1488,6 +1488,38 @@ class RibbonSurface implements RibbonEditor {
     });
   }
 
+  /** Table Layout > Select: Word's menu of the cell, column, row or whole table, as a cell selection. */
+  private wireTableSelect(): void {
+    const button = this.control("tblselect"), menu = this.control("tblselectmenu");
+    if (!button || !menu) return;
+    this.keepSelection(button);
+    button.addEventListener("click", () => {
+      if (menu.hasAttribute("data-open")) { this.closePopovers(); return; }
+      this.closePopovers();
+      menu.setAttribute("data-open", "");
+      button.setAttribute("aria-expanded", "true");
+      this.positionPopover(menu, button);
+    });
+    menu.addEventListener("mousedown", (event) => event.preventDefault());
+    menu.addEventListener("click", (event) => {
+      const chosen = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-select]");
+      if (!chosen) return;
+      this.closePopovers();
+      const part = chosen.dataset.select as "cell" | "row" | "column" | "table";
+      let ok = false;
+      this.run(`select ${part}`, () => { ok = this.live!.selectTablePart(part); }, () => ok ? cmd("selectCells", { part }) : undefined);
+    });
+    menu.addEventListener("keydown", (event) => {
+      const items = Array.from(menu.querySelectorAll<HTMLButtonElement>("button"));
+      const at = items.indexOf(event.target as HTMLButtonElement);
+      let next = -1;
+      if (event.key === "ArrowDown") next = (at + 1) % items.length;
+      else if (event.key === "ArrowUp") next = (at - 1 + items.length) % items.length;
+      else if (event.key === "Escape") { event.preventDefault(); this.closePopovers(); button.focus(); return; }
+      if (next >= 0) { event.preventDefault(); items[next].focus(); }
+    });
+  }
+
   /** Home > Clipboard: Paste (as Ctrl+V) and its menu of Word's three ways. */
   private wirePaste(): void {
     const button = this.control("paste"), more = this.control("pastemore"), menu = this.control("pastemenu");
@@ -3136,6 +3168,7 @@ class RibbonSurface implements RibbonEditor {
     this.wirePicker();
     this.wireFileMenu();
     this.wirePaste();
+    this.wireTableSelect();
     this.wireFormatPainter();
     this.wireChangeCase();
     this.wireShowMarks();
@@ -4190,6 +4223,8 @@ class RibbonSurface implements RibbonEditor {
     this.control("fieldmenu")?.removeAttribute("data-open");
     this.control("pastemenu")?.removeAttribute("data-open");
     this.control("pastemore")?.setAttribute("aria-expanded", "false");
+    this.control("tblselectmenu")?.removeAttribute("data-open");
+    this.control("tblselect")?.setAttribute("aria-expanded", "false");
     this.control("casemenu")?.removeAttribute("data-open");
     this.control("changecase")?.setAttribute("aria-expanded", "false");
     this.control("stylemenu")?.removeAttribute("data-open");
@@ -4208,13 +4243,14 @@ class RibbonSurface implements RibbonEditor {
     const target = event.target as Node;
     const picMenu = this.control("picturemenu");
     if (picMenu?.hasAttribute("data-open") && !picMenu.contains(target)) picMenu.removeAttribute("data-open");
-    for (const [popName, buttonName] of [["gridpicker", "table"], ["linkpop", "link"], ["filemenu", "filebutton"], ["pastemenu", "pastemore"], ["casemenu", "changecase"], ["stylemenu", "stylemenubtn"], ["findoptmenu", "findoptions"], ["findspecialmenu", "findspecial"]] as const) {
+    for (const [popName, buttonName] of [["gridpicker", "table"], ["linkpop", "link"], ["filemenu", "filebutton"], ["pastemenu", "pastemore"], ["tblselectmenu", "tblselect"], ["casemenu", "changecase"], ["stylemenu", "stylemenubtn"], ["findoptmenu", "findoptions"], ["findspecialmenu", "findspecial"]] as const) {
       const pop = this.control(popName);
       if (!pop?.hasAttribute("data-open")) continue;
       if (pop.contains(target) || this.control(buttonName)?.contains(target)) continue;
       pop.removeAttribute("data-open");
       if (popName === "filemenu") this.control("filebutton")?.setAttribute("aria-expanded", "false");
       if (popName === "pastemenu") this.control("pastemore")?.setAttribute("aria-expanded", "false");
+      if (popName === "tblselectmenu") this.control("tblselect")?.setAttribute("aria-expanded", "false");
       if (popName === "casemenu") this.control("changecase")?.setAttribute("aria-expanded", "false");
       if (popName === "stylemenu") this.control("stylemenubtn")?.setAttribute("aria-expanded", "false");
       if (popName === "findoptmenu") this.control("findoptions")?.setAttribute("aria-expanded", "false");

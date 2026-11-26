@@ -136,4 +136,61 @@ test.describe('Cell selection', () => {
     await page.mouse.up();
     expect(await selection(page)).toBeNull();
   });
+
+  test('exec selectCells: the cell, row, column or table at the caret, grown over merged cells', async ({ page }) => {
+    await openTable(page);
+    const b2 = await pointOf(page, 'B2');
+    const exec = (part: string) => page.evaluate((part) => { (window as any).__ed.exec('selectCells', { part }); return (window as any).__ed.exec('cellSelection'); }, part);
+    await page.mouse.click(b2.x, b2.y);
+    expect(await exec('cell')).toMatchObject({ rows: [1, 1], columns: [1, 1], cells: 1 });
+    await page.mouse.click(b2.x, b2.y);
+    // (A2 spans rows 2-3: the row grows to both)
+    expect(await exec('row')).toMatchObject({ rows: [1, 2], columns: [0, 2] });
+    await page.mouse.click(b2.x, b2.y);
+    // (A4 spans columns 1-2: the column grows to both)
+    expect(await exec('column')).toMatchObject({ rows: [0, 3], columns: [0, 1] });
+    await page.mouse.click(b2.x, b2.y);
+    expect(await exec('table')).toMatchObject({ rows: [0, 3], columns: [0, 2], cells: 10 });
+    // Around cells already selected: their rows.
+    await page.mouse.click(10, 10);
+    await drag(page, 'B1', 'C1');
+    expect(await exec('row')).toMatchObject({ rows: [0, 0], columns: [0, 2], cells: 3 });
+    // Outside a table: refused.
+    const before = await pointOf(page, 'Before');
+    await page.mouse.click(before.x, before.y);
+    const refused = await page.evaluate(() => { try { (window as any).__ed.exec('selectCells', { part: 'table' }); return 'ran'; } catch (e) { return (e as any).code; } });
+    expect(refused).toBe('refused');
+  });
+
+  test('the table handle shows at the table under the mouse (the innermost) and selects it', async ({ page }) => {
+    await openTable(page);
+    const handle = () => page.evaluate(() => {
+      const h = document.querySelector<HTMLElement>('.docx-table-handle');
+      if (!h || h.hidden) return null;
+      const r = h.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    });
+    const b1 = await pointOf(page, 'B1');
+    await page.mouse.move(b1.x, b1.y);
+    await expect.poll(handle).not.toBeNull();
+    const h = (await handle())!;
+    // (on the way to the handle, outside the table, it stays)
+    await page.mouse.move(h.x, h.y, { steps: 5 });
+    await page.mouse.click(h.x, h.y);
+    expect(await selection(page)).toMatchObject({ rows: [0, 3], columns: [0, 2], cells: 10, tableRows: 4 });
+    // The nested table has a handle of its own.
+    await page.mouse.click(10, 10);
+    const n1 = await pointOf(page, 'N1');
+    await page.mouse.move(n1.x, n1.y);
+    await expect.poll(async () => (await handle())?.y).toBeGreaterThan(h.y + 20);
+    const nh = (await handle())!;
+    await page.mouse.move(nh.x, nh.y, { steps: 5 });
+    await page.mouse.click(nh.x, nh.y);
+    expect(await selection(page)).toEqual({ rows: [0, 0], columns: [0, 1], cells: 2, tableRows: 1, tableColumns: 2 });
+    // Away from tables, with the caret outside them, it goes.
+    const before = await pointOf(page, 'Before');
+    await page.mouse.click(before.x, before.y);
+    await page.mouse.move(before.x, before.y - 2);
+    await expect.poll(handle, { timeout: 3000 }).toBeNull();
+  });
 });
