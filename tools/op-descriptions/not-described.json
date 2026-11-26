@@ -6,6 +6,7 @@
     "Save": "Session lifecycle: returns package bytes, each transport framing them its own way (base64, Uint8Array, file write).",
     "SaveWithAnchorIds": "Session lifecycle: Save with anchor ids persisted, framed per transport like Save.",
     "DeleteStyle": "Fork-only until upstream parity (Python/stdio/MCP): Styles pane delete.",
+    "InsertField": "Fork-only until Python/stdio/MCP parity: a field from its code, nested fields in braces (wasm InsertField, npm insertField).",
     "CreateBlankDocx": "Sessionless bytes factory, not an op on a session.",
     "BeginTransaction": "Transactions: returns a .NET transaction object, never crosses a transport.",
     "BeginMutationTransaction": "Transactions: stateful multi-call protocol around a batch.",

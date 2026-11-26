@@ -1034,6 +1034,13 @@ internal static class DocxSessionOps
         Mutate(handle, preconditions, anchorId,
             s => s.InsertCrossReference(anchorId, characterOffset, bookmarkName, options));
 
+    /// <summary>Insert a field from its code, nested fields in braces; see
+    /// <see cref="DocxSession.InsertField"/>.</summary>
+    public static string InsertField(int handle, string anchorId, int characterOffset, string code,
+        string? cachedResult = null, MutationPreconditions? preconditions = null) =>
+        Mutate(handle, preconditions, anchorId,
+            s => s.InsertField(anchorId, characterOffset, code, cachedResult));
+
     public static string AddHyperlink(int handle, string anchorId, int start, int length,
         string kind, string target)
     {

@@ -1957,6 +1957,8 @@ export interface DocxodusWasmExports {
     /** `optionsJson`: "" or a serialized {@link CaptionOptions}. */
     InsertCaption?: (handle: number, anchor: string, optionsJson: string) => string;
     ListCaptions?: (handle: number) => string;
+    /** Optional: absent on older WASM bundles. `cachedResult` "" = default. */
+    InsertField?: (handle: number, anchor: string, characterOffset: number, code: string, cachedResult: string) => string;
     /** `optionsJson`: "" or a serialized {@link UpdateFieldsOptions}. */
     UpdateFields: (handle: number, optionsJson: string) => string;
     InsertEndnote: (handle: number, anchor: string, characterOffset: number, markdown: string) => string;
@@ -2170,6 +2172,7 @@ export type EditErrorCode =
   | "invalid_page_numbering"
   | "invalid_page_setup"
   | "invalid_reference_field"
+  | "invalid_field_code"
   | "invalid_paragraph_format"
   | "invalid_table_styling"
   | "invalid_table_merge"

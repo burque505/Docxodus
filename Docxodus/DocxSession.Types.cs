@@ -2247,6 +2247,10 @@ public enum EditErrorCode
     /// <summary>A reference-field option is out of range or malformed (issue #607).</summary>
     InvalidReferenceField,
 
+    /// <summary>A field code passed to <see cref="DocxSession.InsertField"/> is empty, starts with
+    /// no field name, has unbalanced braces or nests too deep.</summary>
+    InvalidFieldCode,
+
     /// <summary>A <see cref="ParagraphFormatOp"/> that OOXML cannot express: both
     /// <c>FirstLineIndent</c> and <c>HangingIndent</c> in one op (<c>w:ind</c> holds one or the
     /// other), a negative indent/spacing value (the attributes are unsigned), or a

@@ -735,6 +735,13 @@ public static partial class DocxSessionBridge
         return DocxSessionOps.InsertCrossReference(h, anchor, characterOffset, bookmarkName, options);
     }
 
+    /// <summary>Insert a field from its code (<c>{ }</c> around nested fields) at a character
+    /// offset; <paramref name="cachedResult"/> <c>""</c> = the default shown text.</summary>
+    [JSExport]
+    public static string InsertField(int h, string anchor, int characterOffset, string code, string cachedResult) =>
+        DocxSessionOps.InsertField(h, anchor, characterOffset, code,
+            string.IsNullOrEmpty(cachedResult) ? null : cachedResult);
+
     /// <summary>The hidden <c>_Ref</c> bookmark over a whole paragraph, for a cross-reference to
     /// a heading or numbered item; reused when one already spans it.</summary>
     [JSExport]

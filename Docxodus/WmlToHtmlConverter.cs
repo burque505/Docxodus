@@ -3972,7 +3972,8 @@ namespace Docxodus
 
             // A simple cross-reference field, for an editor that keeps it whole.
             if (element.Name == W.fldSimple && settings.StampReferenceFields
-                && Internal.ReferenceFieldInstr.TryParse((string?)element.Attribute(W.instr)) is { } simpleReference)
+                && (Internal.ReferenceFieldInstr.TryParse((string?)element.Attribute(W.instr))
+                    ?? Internal.MergeFieldInstr.TryParse((string?)element.Attribute(W.instr))) is { } simpleReference)
             {
                 return ReferenceFieldSpan(simpleReference, element.Elements(), CreateBorderDivs(wordDoc, settings, element.Elements()));
             }
@@ -12735,7 +12736,10 @@ namespace Docxodus
                     }
 
                     // A cross-reference field, for an editor that keeps it whole (StampReferenceFields).
-                    if (settings.StampReferenceFields && Internal.ReferenceFieldInstr.TryParse(instrText) is { } reference)
+                    if (settings.StampReferenceFields
+                        && (Internal.ReferenceFieldInstr.TryParse(instrText)
+                            // (a merge field nested in another's code shows nothing: not marked)
+                            ?? (g.Any(e => e.DescendantsAndSelf(W.t).Any()) ? Internal.MergeFieldInstr.TryParse(instrText) : null)) is { } reference)
                     {
                         // (a reference inside the result is marked in its turn)
                         var referenceContent = ConvertContentThatCanContainFields(wordDoc, settings, g, key);

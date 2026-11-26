@@ -1417,6 +1417,19 @@ export class DocxSession {
   }
 
   /**
+   * Insert a field from its code, as Word shows it with field codes on: `MERGEFIELD Name`,
+   * `IF { MERGEFIELD Guaranty } = True "Yes" "No"`, `= { MERGEFIELD Rate } * 100 \# "0.00%"`.
+   * Each `{ }` pair is a nested field. A MERGEFIELD shows `«Name»`; others `cachedResult`, else a
+   * short `«…»` summary of the code. One undo step. Bad code fails with `invalid_field_code`.
+   */
+  insertField(anchorId: string, characterOffset: number, code: string, cachedResult?: string): EditResult {
+    if (!this.wasm.InsertField) throw new Error("InsertField is not available in this WASM build");
+    return JSON.parse(
+      this.wasm.InsertField(this.handle, anchorId, characterOffset, code, cachedResult ?? ""),
+    ) as EditResult;
+  }
+
+  /**
    * The document's footnotes (`endnotes` false) or endnotes (`endnotes` true) in citation order.
    * Each entry is the note's `w:id`, its definition anchor (kind `fn`/`en`, the anchor
    * {@link replaceText} and {@link deleteBlock} take) and its 1-based `ordinal`, which is the
