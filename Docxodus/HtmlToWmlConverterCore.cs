@@ -4221,14 +4221,44 @@ namespace Docxodus.HtmlToWml
             return null;
         }
 
+        private static readonly HashSet<string> GenericFontKeywords = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui", "ui-serif", "ui-sans-serif",
+            "ui-monospace", "ui-rounded", "math", "emoji", "fangsong", "inherit", "initial", "unset", "revert",
+        };
+
         private static string? GetUsedFontFromFontFamilyProperty(CssExpression? fontFamily)
         {
             if (fontFamily == null)
                 return null;
-            string fullFontFamily = fontFamily.Terms.Select(t => t + " ").StringConcatenate().Trim();
-            string lcfont = fullFontFamily.ToLower();
-            if (InstalledFonts.ContainsKey(lcfont))
-                return InstalledFonts[lcfont];
+            // A font-family is a list ("Times New Roman", serif): each comma starts the next family, and
+            // an unquoted family's words are terms of their own. The first family is used, as Word does
+            // (a generic one mapped to its font); one this converter doesn't know keeps its name.
+            var families = new List<string>();
+            var current = new StringBuilder();
+            foreach (var term in fontFamily.Terms)
+            {
+                if (term.Separator == ',' && current.Length > 0)
+                {
+                    families.Add(current.ToString());
+                    current.Clear();
+                }
+                if (current.Length > 0)
+                    current.Append(' ');
+                current.Append(term.ToString().Trim().Trim('"', '\'').Trim());
+            }
+            if (current.Length > 0)
+                families.Add(current.ToString());
+            if (families.Count == 0)
+                return null;
+            foreach (var family in families)
+            {
+                if (InstalledFonts.TryGetValue(family.ToLowerInvariant(), out var font))
+                    return font;
+                // (a browser's own keywords, -apple-system and the like: the next family)
+                if (family.Length > 0 && !family.StartsWith("-") && !GenericFontKeywords.Contains(family))
+                    return family;
+            }
             return null;
         }
 
