@@ -254,6 +254,21 @@ public sealed partial class DocxSession
         return copy;
     }
 
+    /// <summary>Keep Source Formatting: the converter leaves a font out of w:ascii / w:hAnsi when it is
+    /// the converter's own theme font (Times New Roman), counting on the theme, but that theme is the
+    /// scratch package's, not this document's; the font it always writes in w:cs fills them, so text
+    /// in that font keeps it here too.</summary>
+    private static void KeepSourceFonts(List<XElement> blocks)
+    {
+        foreach (var fonts in blocks.SelectMany(b => b.Descendants(W.rFonts)))
+        {
+            var cs = (string?)fonts.Attribute(W.cs);
+            if (string.IsNullOrEmpty(cs) || fonts.Attribute(W.asciiTheme) is not null || fonts.Attribute(W.hAnsiTheme) is not null) continue;
+            if (fonts.Attribute(W.ascii) is null) fonts.SetAttributeValue(W.ascii, cs);
+            if (fonts.Attribute(W.hAnsi) is null) fonts.SetAttributeValue(W.hAnsi, cs);
+        }
+    }
+
     private static readonly HashSet<XName> MergeKeptRunProperties = new()
     {
         W.rStyle, W.b, W.bCs, W.i, W.iCs, W.u, W.strike, W.dstrike, W.vertAlign, W.caps, W.smallCaps,
@@ -342,6 +357,7 @@ public sealed partial class DocxSession
 
         var blocks = pasted.Blocks;
         if (formatting == HtmlPasteFormatting.Merge) ApplyMergeFormatting(blocks, paragraph, offset);
+        else KeepSourceFonts(blocks);
 
         static bool IsPlain(XElement block) => block.Name == W.p
             && block.Element(W.pPr)?.Element(W.pStyle) is null && block.Element(W.pPr)?.Element(W.numPr) is null;

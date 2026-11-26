@@ -140,6 +140,8 @@ public class DocxSessionPasteHtmlTests
     [Theory]
     // A font list keeps its first family, as Word's and a browser's clipboard write it.
     [InlineData("&quot;Book Antiqua&quot;, serif", "Book Antiqua")]
+    // (the converter's own theme font: written all the same, the document's theme is not its)
+    [InlineData("&quot;Times New Roman&quot;, serif", "Times New Roman")]
     [InlineData("\"Calibri\",sans-serif", "Calibri")]
     [InlineData("Garamond Premier Pro, serif", "Garamond Premier Pro")]
     [InlineData("-apple-system, Georgia, serif", "Georgia")]
