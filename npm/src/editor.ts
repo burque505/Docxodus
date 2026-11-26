@@ -1654,6 +1654,20 @@ function sameLine(a: DomSelectionPoint, b: DomSelectionPoint): boolean {
 }
 
 /** Place the caret at content offset `offset` within `el`, skipping marker text. */
+/** The first place two lists of paragraph texts differ: the paragraph (in `after`) and the
+ *  character offset in it; null when they are the same. */
+function firstTextChange(before: string[], after: string[]): { index: number; offset: number } | null {
+  const n = Math.min(before.length, after.length);
+  let i = 0;
+  while (i < n && before[i] === after[i]) i++;
+  if (i === before.length && i === after.length) return null;
+  if (i >= after.length) return after.length ? { index: after.length - 1, offset: after[after.length - 1].length } : null;
+  const a = before[i] ?? "", b = after[i];
+  let k = 0;
+  while (k < a.length && k < b.length && a[k] === b[k]) k++;
+  return { index: i, offset: k };
+}
+
 function placeCaretAtOffset(el: HTMLElement, offset: number): void {
   const sel = typeof window !== "undefined" ? window.getSelection() : null;
   // A remount can detach the block between a caller's lookup and this call; addRange on a
@@ -6802,6 +6816,8 @@ export class DocxEditor {
     }
     const sectionsBefore = this.sectionSignature();
     const stylesBefore = this.stylesEdited ? this.stylesSignature() : null;
+    // (the paragraphs' text, to find where the step changed it: the caret goes there, as Word's does)
+    const textsBefore = story ? null : this.editableList().map((b) => blockContentText(b));
     if (!step(this.handle)) return;
     this.invalidateBlockMoveTargets();
     this.reconcile();
@@ -6826,9 +6842,21 @@ export class DocxEditor {
       if (!this.region?.focusStory(story.which, null)) return;
       const active = el?.ownerDocument.activeElement;
       target = active instanceof HTMLElement && active.isContentEditable ? active : undefined;
-    } else if (caret) {
+    } else {
+      // Where the text changed: the first paragraph that differs, at the first character that
+      // differs (an undone paste over three paragraphs: where the selection began). A step that
+      // changed no text (formatting, a style) keeps the caret where it was.
       const blocks = this.editableList();
-      target = blocks[Math.min(caret.index, blocks.length - 1)];
+      const changed = textsBefore ? firstTextChange(textsBefore, blocks.map((b) => blockContentText(b))) : null;
+      if (changed) {
+        const at = blocks[changed.index];
+        this.activeBlock = at;
+        placeCaretAtOffset(at, changed.offset);
+        const sel = at.ownerDocument.defaultView?.getSelection();
+        if (sel?.focusNode) this.revealPoint({ node: sel.focusNode, offset: sel.focusOffset } as DomSelectionPoint);
+        return;
+      }
+      if (caret) target = blocks[Math.min(caret.index, blocks.length - 1)];
     }
     if (!target) return;
     this.activeBlock = target;
