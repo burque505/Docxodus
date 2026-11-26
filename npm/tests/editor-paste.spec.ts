@@ -163,6 +163,9 @@ test.describe('Paste', () => {
     });
     await page.evaluate(async () => { await (window as any).__ed.exec('pasteHtml', { html: '<b>there</b>', formatting: 'keep' }); });
     await expect.poll(() => text(page)).toBe('Hello there line');
+    // One undo takes back the whole replacement: the selection's text is back, the paste gone.
+    await page.evaluate(() => (window as any).__ed.exec('undo'));
+    await expect.poll(() => text(page)).toBe('Hello world\nSecond line');
   });
 
   test('selectedHtml keeps the selection with its formatting, and pasteHtml takes it back', async ({ page }) => {

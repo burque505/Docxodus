@@ -2341,15 +2341,9 @@ export class DocxEditor {
     if (cross && !this.crossBlockEditable(cross)) return;
     ev.preventDefault();
     const data = ev.clipboardData;
-    // A selection across paragraphs goes first (one edit), then the paste lands at the caret it leaves.
-    let target: HTMLElement | null = block;
-    if (this.crossBlockSelection()) {
-      this.replaceCrossBlockSelection("");
-      target = this.activeBlock;
-      if (!target) return;
-    }
+    // A selection across paragraphs: pasteContent replaces it (the deletion and the paste one undo step).
+    if (!this.crossBlockSelection()) this.activeBlock = block;
     const image = Array.from(data.files).find((f) => f.type.startsWith("image/"));
-    this.activeBlock = target;
     void this.pasteContent({ html: data.getData("text/html"), text: data.getData("text/plain"), image });
   };
 
@@ -10561,14 +10555,24 @@ export class DocxEditor {
    * step: its HTML through the engine (paragraphs, headings, lists, tables, links and pictures, as
    * Word pastes them), else its text, else its picture. `formatting` defaults to
    * `options.pasteFormatting` ("merge"); "text" pastes the text only. A selection across
-   * paragraphs is deleted first (its own undo step, as Ctrl+V does), unless typing could not
-   * replace it either (into a table or a band): that one is refused. Resolves false when nothing
-   * was pasted.
+   * paragraphs is replaced too: deleted, then pasted over, the two one undo step (as Word does),
+   * unless typing could not replace it either (into a table or a band): that one is refused.
+   * Resolves false when nothing was pasted.
    */
   async pasteContent(content: PasteContent, formatting?: PasteFormatting): Promise<boolean> {
     if (this.closed) return false;
     const cross = this.crossBlockSelection();
-    if (cross && this.crossBlockEditable(cross)) this.replaceCrossBlockSelection("");
+    if (cross && this.crossBlockEditable(cross)) {
+      const bridge = this.exports.DocxSessionBridge;
+      const tx = typeof bridge.BeginTransaction === "function" ? bridge.BeginTransaction(this.handle) : 0;
+      try {
+        if (!this.replaceCrossBlockSelection("")) return false;
+        return await this.pasteContent(content, formatting);
+      } finally {
+        // (committed even when the paste is refused: the deletion shows, and one undo restores all)
+        if (tx) bridge.CommitTransaction!(tx);
+      }
+    }
     const mode = formatting ?? this.options.pasteFormatting ?? "merge";
     const bridge = this.exports.DocxSessionBridge;
     const at = this.pasteTarget();
