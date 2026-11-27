@@ -324,3 +324,61 @@ test('Rules: Ask with its answer shown (ASK, then REF); a bookmark name is check
   expect(await fieldCodes(page)).toEqual(['ASK Closing "Closing date?" \\d "soon" \\o']);
   await expect(page.locator(`${HOST} [data-field="REF"]`)).toHaveCount(1);
 });
+
+// ─── Envelopes ────────────────────────────────────────────────────────────────
+
+const envDialog = (page: Page) => page.locator(`${HOST} [data-dxr="envelopedialog"]`);
+/** The section of paragraph `index` (its size in twips). */
+const sectionOf = (page: Page, index: number) => page.evaluate(async (index) => {
+  const r = (window as any).__ribbon;
+  const block = document.querySelectorAll<HTMLElement>('#mm-host [data-anchor][contenteditable="true"]')[index];
+  block.focus();
+  getSelection()!.collapse(block, 0);
+  await new Promise((done) => setTimeout(done, 50));
+  const info = r.editor.sectionInfo();
+  return { width: info.pageWidthTwips, height: info.pageHeightTwips, landscape: info.landscape, left: info.marginLeftTwips };
+}, index);
+
+test('Envelopes: an empty document becomes the envelope, the delivery address merge fields', async ({ page }) => {
+  await mountParties(page);
+  await page.evaluate(() => {
+    const r = (window as any).__ribbon;
+    r.setReturnAddress('Burque Law\n1 Plaza');
+    (window as any).__kept = [];
+  });
+  await page.locator(`${HOST} [data-dxr="envelopes"]`).click();
+  const d = envDialog(page);
+  await expect(d).toBeVisible();
+  await expect(d.locator('textarea[data-ev="delivery"]')).toHaveValue('«LeFull»\n«LeStreet»\n«LeCity», «LeState» «LeZip»');
+  await expect(d.locator('textarea[data-ev="return"]')).toHaveValue('Burque Law\n1 Plaza');
+  await expect(d.locator('[data-ev="where"]')).toHaveText('This document becomes the envelope.');
+  await d.locator('select[data-ev="size"]').selectOption('dl');
+  // (text typed in the delivery address stays text; «Name» is a field)
+  await d.locator('textarea[data-ev="delivery"]').fill('Attn: «LeFull»\n«LeStreet»\n«LeCity», «LeState» «LeZip»');
+  await d.locator('[data-ev="ok"]').click();
+  await expect(d).toBeHidden();
+  expect(await fieldCodes(page)).toEqual(['MERGEFIELD LeFull', 'MERGEFIELD LeStreet', 'MERGEFIELD LeCity', 'MERGEFIELD LeState', 'MERGEFIELD LeZip']);
+  expect((await texts(page)).slice(0, 5)).toEqual(['Burque Law', '1 Plaza', 'Attn: «LeFull»', '«LeStreet»', '«LeCity», «LeState» «LeZip»']);
+  const section = await sectionOf(page, 0);
+  expect(section.width).toBe(Math.round(220 * 1440 / 25.4));
+  expect(section.height).toBe(Math.round(110 * 1440 / 25.4));
+  expect(section.landscape).toBe(true);
+});
+
+test('Envelopes: a document with text gets the envelope in front, as a section of its own', async ({ page }) => {
+  await mountParties(page);
+  await page.evaluate(() => (window as any).__ribbon.editor.exec('pasteText', { text: 'Dear Sir,\nThe letter.' }));
+  await page.locator(`${HOST} [data-dxr="envelopes"]`).click();
+  const d = envDialog(page);
+  await expect(d.locator('[data-ev="where"]')).toHaveText('The envelope goes in front of the document, as a section of its own.');
+  await d.locator('input[data-ev="omit"]').check();
+  await d.locator('[data-ev="ok"]').click();
+  await expect(d).toBeHidden();
+  const all = await texts(page);
+  expect(all.slice(0, 3)).toEqual(['«LeFull»', '«LeStreet»', '«LeCity», «LeState» «LeZip»']);
+  expect(all.slice(-2)).toEqual(['Dear Sir,', 'The letter.']);
+  const envelope = await sectionOf(page, 0);
+  const letter = await sectionOf(page, all.length - 1);
+  expect(envelope.width).toBe(Math.round(9.5 * 1440));
+  expect(letter.width).not.toBe(envelope.width);
+});

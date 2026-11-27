@@ -69,6 +69,7 @@ import { BOOKMARK_DIALOG_CSS, BOOKMARK_DIALOG_HTML, BookmarkDialog } from "./rib
 import { MERGE_FIELDS_PANE_CSS, MergeFieldsPane } from "./ribbon-mergefields-pane.js";
 import { ADDRESS_DIALOG_CSS, ADDRESS_DIALOG_HTML, AddressDialog } from "./ribbon-address-dialog.js";
 import { RULE_DIALOG_CSS, RULE_DIALOG_HTML, RuleDialog, ruleCode, type RuleKind } from "./ribbon-rules-dialog.js";
+import { ENVELOPE_DIALOG_CSS, ENVELOPE_DIALOG_HTML, EnvelopeDialog } from "./ribbon-envelope-dialog.js";
 import { CROSSREF_DIALOG_CSS, CROSSREF_DIALOG_HTML, CrossReferenceDialog } from "./ribbon-crossref-dialog.js";
 import { CAPTION_DIALOG_CSS, CAPTION_DIALOG_HTML, CaptionDialog, TableOfFiguresDialog } from "./ribbon-caption-dialog.js";
 import { crossReferenceOptionsFor, crossReferencePart } from "./cross-reference.js";
@@ -269,6 +270,10 @@ export interface RibbonOptions extends DocxEditorOptions {
   mergeSource?: string;
   /** The data source's first rows (cells in the columns' order), for Address Block's and Greeting Line's preview. */
   mergeRows?: string[][];
+  /** Envelopes' return address at the start (lines in one text); `setReturnAddress` changes it. */
+  returnAddress?: string;
+  /** The return address was changed in the Envelopes dialog, for a host to keep. */
+  onReturnAddressChange?: (text: string) => void;
   /** Called after any document opens, with the live editor. */
   onOpen?: (editor: DocxEditor) => void;
   /** Called whenever the status line changes. */
@@ -432,6 +437,10 @@ export interface RibbonEditor {
   openBookmarkDialog(): boolean;
   /** The data source's columns (Select Recipients), its name ("" none) and its first rows (for previews). */
   setMergeColumns(columns: string[], source?: string, rows?: string[][]): void;
+  /** Envelopes' return address (a host's kept one). */
+  setReturnAddress(text: string): void;
+  /** Open Mailings > Envelopes…; false when no document is open. */
+  openEnvelopeDialog(): boolean;
   /** Open Mailings > Address Block… or Greeting Line…; false when no document is open. */
   openAddressDialog(mode: "address" | "greeting"): boolean;
   /** Show or hide the Merge Fields pane (Mailings > Insert Merge Field). */
@@ -572,7 +581,7 @@ function ensureStyles(doc: Document): void {
   existing?.remove();
   const style = doc.createElement("style");
   style.setAttribute(RIBBON_STYLE_ATTR, RIBBON_STYLE_VERSION);
-  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + FONT_DIALOG_CSS + STYLE_DIALOG_CSS + COPY_STYLES_DIALOG_CSS + BOOKMARK_DIALOG_CSS + MERGE_FIELDS_PANE_CSS + ADDRESS_DIALOG_CSS + RULE_DIALOG_CSS + CROSSREF_DIALOG_CSS + CAPTION_DIALOG_CSS + NAV_PANE_CSS + STYLES_PANE_CSS + RULER_CSS;
+  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + FONT_DIALOG_CSS + STYLE_DIALOG_CSS + COPY_STYLES_DIALOG_CSS + BOOKMARK_DIALOG_CSS + MERGE_FIELDS_PANE_CSS + ADDRESS_DIALOG_CSS + RULE_DIALOG_CSS + ENVELOPE_DIALOG_CSS + CROSSREF_DIALOG_CSS + CAPTION_DIALOG_CSS + NAV_PANE_CSS + STYLES_PANE_CSS + RULER_CSS;
   (doc.head ?? doc.documentElement).appendChild(style);
 }
 
@@ -692,6 +701,8 @@ class RibbonSurface implements RibbonEditor {
   private mergeRows: string[][] = [];
   private addressDialog!: AddressDialog;
   private ruleDialog!: RuleDialog;
+  private envelopeDialog!: EnvelopeDialog;
+  private returnAddress = "";
   private highlightMerge = false;
   private crossRefDialog!: CrossReferenceDialog;
   private captionDialog!: CaptionDialog;
@@ -750,7 +761,7 @@ class RibbonSurface implements RibbonEditor {
     root.className = "dxr";
     root.dataset.state = "idle";
     root.dataset.frame = this.options.frame ?? "flush";
-    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML + TABLE_DIALOG_HTML + LINE_NUMBERS_DIALOG_HTML + TABS_DIALOG_HTML + FONT_DIALOG_HTML + STYLE_DIALOG_HTML + COPY_STYLES_DIALOG_HTML + BOOKMARK_DIALOG_HTML + ADDRESS_DIALOG_HTML + RULE_DIALOG_HTML + CROSSREF_DIALOG_HTML + CAPTION_DIALOG_HTML;
+    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML + TABLE_DIALOG_HTML + LINE_NUMBERS_DIALOG_HTML + TABS_DIALOG_HTML + FONT_DIALOG_HTML + STYLE_DIALOG_HTML + COPY_STYLES_DIALOG_HTML + BOOKMARK_DIALOG_HTML + ADDRESS_DIALOG_HTML + RULE_DIALOG_HTML + ENVELOPE_DIALOG_HTML + CROSSREF_DIALOG_HTML + CAPTION_DIALOG_HTML;
     for (const el of Array.from(root.querySelectorAll<HTMLElement>("[data-dxr]"))) {
       el.id = this.idPrefix + el.dataset.dxr;
     }
@@ -2227,6 +2238,77 @@ class RibbonSurface implements RibbonEditor {
     return true;
   }
 
+  setReturnAddress(text: string): void {
+    this.returnAddress = text;
+  }
+
+  openEnvelopeDialog(): boolean {
+    if (!this.live) return false;
+    this.closePopovers();
+    this.envelopeDialog.show();
+    return true;
+  }
+
+  /** The document's shown paragraphs, the first one first. */
+  private bodyBlocks(): HTMLElement[] {
+    return Array.from(this.require("editor").querySelectorAll<HTMLElement>('[data-anchor][contenteditable="true"]'))
+      .filter((b) => !b.closest("[data-docx-header], [data-docx-footer], .dxr-hf, [data-hf-story]"));
+  }
+
+  /**
+   * Envelopes' OK: the document becomes the envelope (page size, landscape, margins, then its
+   * content at the start), or, when it has text already, the envelope goes in front of it as a
+   * section of its own (a section break at the start, the first section made the envelope).
+   */
+  private async makeEnvelope(size: { widthTwips: number; heightTwips: number; margin: number }, html: string,
+    place: { returnLines: number; deliveryLines: number; indentTwips: number; beforeTwips: number }): Promise<boolean> {
+    const live = this.live;
+    if (!live) return false;
+    const caretAtStart = () => {
+      const first = this.bodyBlocks()[0];
+      if (!first) return false;
+      first.focus();
+      const sel = first.ownerDocument.getSelection();
+      sel?.collapse(first, 0);
+      return true;
+    };
+    const started = performance.now();
+    const filled = this.bodyBlocks().some((b) => (b.textContent ?? "").replace(/[\s\u00a0\u200b]/g, "") !== "");
+    if (!caretAtStart()) return false;
+    if (filled) {
+      if (!live.insertSectionBreak("nextPage")) return false;
+      if (!caretAtStart()) return false;
+    }
+    const setup = {
+      pageWidthTwips: size.widthTwips, pageHeightTwips: size.heightTwips, landscape: true,
+      marginTopTwips: size.margin, marginBottomTwips: size.margin, marginLeftTwips: size.margin, marginRightTwips: size.margin,
+    };
+    if (!live.setPageSetup(setup)) return false;
+    if (!caretAtStart()) return false;
+    const ok = await live.pasteHtml(html);
+    if (ok) {
+      this.options.onCommand?.("envelope", performance.now() - started, cmd("pasteHtml", { html }));
+      // The lines as an envelope sets them (a paste takes the paragraph formatting where it lands): no space
+      // between them, the delivery address indented and lower down.
+      const format = (index: number, op: Parameters<typeof live.setParagraphFormat>[0]) => {
+        const block = this.bodyBlocks()[index];
+        if (!block) return;
+        block.focus();
+        block.ownerDocument.getSelection()?.collapse(block, 0);
+        live.setParagraphFormat(op);
+      };
+      for (let i = 0; i < place.returnLines; i++) format(i, { spacingBefore: 0, spacingAfter: 0, leftIndent: 0, firstLineIndent: 0 });
+      for (let i = 0; i < place.deliveryLines; i++)
+        format(place.returnLines + i, { spacingBefore: i === 0 ? place.beforeTwips : 0, spacingAfter: 0, leftIndent: place.indentTwips, firstLineIndent: 0 });
+      // (the caret after the delivery address)
+      const last = this.bodyBlocks()[place.returnLines + place.deliveryLines - 1];
+      if (last) { last.focus(); last.ownerDocument.getSelection()?.collapse(last, last.childNodes.length); }
+    }
+    this.syncLayoutState();
+    this.mergeFieldsPane?.refresh();
+    return ok;
+  }
+
   /** Mailings > Rules: a rule with no choices goes in at once; the others open the Rules dialog. */
   openRule(kind: RuleKind): boolean {
     if (!this.live) return false;
@@ -2295,6 +2377,25 @@ class RibbonSurface implements RibbonEditor {
         if (live && at) live.placeCaretAt(at);
       },
     });
+    this.returnAddress = this.options.returnAddress ?? "";
+    this.envelopeDialog = new EnvelopeDialog(this.require<HTMLDialogElement>("envelopedialog"), {
+      columns: () => this.mergeColumns,
+      returnAddress: () => this.returnAddress,
+      keepReturnAddress: (text) => {
+        if (text === this.returnAddress) return;
+        this.returnAddress = text;
+        this.options.onReturnAddressChange?.(text);
+      },
+      hasContent: () => this.bodyBlocks().some((b) => (b.textContent ?? "").replace(/[\s\u00a0\u200b]/g, "") !== ""),
+      make: (size, html, place) => this.makeEnvelope(size, html, place),
+      translate: (text) => this.translateText(text),
+      closed: () => this.refocusDocument(),
+    });
+    const envelopes = this.control("envelopes");
+    if (envelopes) {
+      this.keepSelection(envelopes);
+      envelopes.addEventListener("click", () => { this.openEnvelopeDialog(); });
+    }
     const rules = this.control("mergerules"), rulesMenu = this.control("mergerulesmenu");
     if (rules && rulesMenu) {
       this.keepSelection(rules);

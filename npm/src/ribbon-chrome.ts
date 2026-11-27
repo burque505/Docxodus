@@ -1387,6 +1387,12 @@ export const RIBBON_HTML = `
 
     <!-- MAILINGS ──────────────────────────────────────────────────────────── -->
     <div class="dxr-panel" data-panel="mailings">
+      <div class="dxr-group">
+        <span class="dxr-glabel">Create</span>
+        <div class="dxr-row">
+          <button type="button" data-dxr="envelopes" title="Make an envelope: its size, the delivery address (merge fields or text) and the return address">&#9993; Envelopes&#8230;</button>
+        </div>
+      </div>
       <div class="dxr-group" data-dxr="mailstart" hidden>
         <span class="dxr-glabel">Start Mail Merge</span>
         <div class="dxr-row">
