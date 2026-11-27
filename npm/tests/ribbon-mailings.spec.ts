@@ -113,3 +113,29 @@ test('the host buttons call onMailings, and are hidden without it', async ({ pag
   await page.locator(`${HOST} [data-dxr="mergefieldbtn"]`).click();
   await expect(page.locator(`${HOST} [data-dxr="mergefieldmenu"] button:disabled`)).toHaveText('(no fields yet)');
 });
+
+test('a field goes in right after text typed into a new document', async ({ page }) => {
+  await page.goto('/test-harness.html');
+  await page.waitForFunction(() => (window as any).DocxodusReady === true, { timeout: 30000 });
+  await page.evaluate(() => {
+    const host = document.createElement('div');
+    host.id = 'mm-host';
+    host.style.height = '700px';
+    document.body.appendChild(host);
+    const r = (window as any).DocxodusEditor.mountRibbon(host, { mergeColumns: ['First'] });
+    r.setExports((window as any).Docxodus);
+    r.openBlank('mm.docx');
+    r.loader.done();
+    (window as any).__ribbon = r;
+  });
+  // (typed, not pasted: the empty paragraph's placeholder NBSP must not stay in front of the text)
+  await page.locator(blocks).first().click();
+  await page.keyboard.type('Dear ');
+  await page.locator(`${HOST} .dxr-tab[data-tab="mailings"]`).click();
+  await page.locator(`${HOST} [data-dxr="mergefieldbtn"]`).click();
+  await page.locator(`${HOST} [data-mfname="First"]`).click();
+  await expect(field(page)).toHaveText('«First»');
+  await page.keyboard.type(',');
+  await expect.poll(() => page.locator(blocks).first().evaluate((b) => (b.textContent ?? '').replace(/\s+$/, '')))
+    .toBe('Dear «First»,');
+});

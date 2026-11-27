@@ -8567,6 +8567,14 @@ export class DocxEditor {
     }
     const id = this.syncBlock(block, fullId);
     if (!id) return null;
+    // The DOM can keep the placeholder space an empty paragraph rendered as in front of what was
+    // typed into it, which the session's text does not have: offsets measured in the DOM are then
+    // past the session's by that much (a paragraph that does start with spaces has them in both).
+    const lead = (blockContentText(block).match(LEADING_SPACES)?.[0] ?? "").length;
+    if (lead > 0 && !LEADING_SPACES.test(this.sessionTextOf(id) ?? " ")) {
+      const start = Math.max(0, span.start - lead);
+      span = { start, length: Math.max(0, span.start + span.length - lead) - start };
+    }
     return { startAnchorId: id, startOffset: span.start, endAnchorId: id, endOffset: span.start + span.length };
   }
 
