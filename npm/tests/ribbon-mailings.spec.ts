@@ -71,7 +71,7 @@ test('a format is chosen in the pane, shown as code and sample, and remembered p
   await p.locator('input[data-mf="filter"]').fill('Amount');
   await p.locator('select[data-mf="format"]').selectOption('currency');
   await p.locator('input[data-mf="sample"]').fill('1234.5');
-  await expect(p.locator('[data-mf="code"]')).toHaveText('{ MERGEFIELD Amount \\# $,0.00 }');
+  await expect(p.locator('[data-mf="code"]')).toHaveValue('MERGEFIELD Amount \\# $,0.00');
   await expect(p.locator('[data-mf="result"]')).toHaveText('$1,234.50');
   await p.locator('select[data-mf="format"]').selectOption('cardtext');
   await p.locator('input[data-mf="sample"]').fill('42');
@@ -80,7 +80,7 @@ test('a format is chosen in the pane, shown as code and sample, and remembered p
   await expect(p.locator('input[data-mf="before"]')).toBeHidden();
   await p.locator('select[data-mf="format"]').selectOption('upper');
   await p.locator('input[data-mf="before"]').fill('To ');
-  await expect(p.locator('[data-mf="code"]')).toHaveText('{ MERGEFIELD Amount \\* Upper \\b "To " }');
+  await expect(p.locator('[data-mf="code"]')).toHaveValue('MERGEFIELD Amount \\* Upper \\b "To "');
   await p.locator('[data-mf="insert"]').click();
   await expect(merge(page)).toHaveCount(1);
   await p.locator('input[data-mf="filter"]').fill('First');
@@ -118,8 +118,46 @@ test('a code the pane has no format for is shown as it is', async ({ page }) => 
   await openPane(page);
   const p = pane(page);
   await expect(p.locator('select[data-mf="format"]')).toHaveValue('other');
-  await expect(p.locator('[data-mf="code"]')).toHaveText('{ MERGEFIELD Amount \\# "#,##0" \\* Upper }');
-  await expect(p.locator('[data-mf="insert"]')).toBeDisabled();
+  await expect(p.locator('[data-mf="code"]')).toHaveValue('MERGEFIELD Amount \\# "#,##0" \\* Upper');
+  // (Insert takes the code as it is: a second copy of the field)
+  await expect(p.locator('[data-mf="insert"]')).toBeEnabled();
+});
+
+test('a code typed from scratch is inserted as typed', async ({ page }) => {
+  await mount(page, true);
+  await openPane(page);
+  const box = pane(page).locator('textarea[data-mf="code"]');
+  // (it holds the first name's code: select it and type over it)
+  await box.click();
+  await page.keyboard.press('Control+A');
+  await page.keyboard.type('MERGEFIELD Total \\# "#,##0.0"');
+  await expect(box).toHaveAttribute('data-edited', '');
+  await pane(page).locator('input[data-mf="sample"]').click();
+  await page.keyboard.type('1234.56');
+  await expect(pane(page).locator('[data-mf="result"]')).toHaveText('1,234.6');
+  await box.click();
+  await page.keyboard.press('Enter');
+  await expect(merge(page)).toHaveAttribute('data-field-code', 'MERGEFIELD Total \\# "#,##0.0"');
+  // a name typed in the Field box makes the code anew, in the format shown (the inserted field's, at the caret)
+  await pane(page).locator('input[data-mf="name"]').fill('');
+  await pane(page).locator('input[data-mf="name"]').click();
+  await page.keyboard.type('Nickname');
+  await expect(box).toHaveValue('MERGEFIELD Nickname \\# "#,##0.0"');
+  await expect(box).not.toHaveAttribute('data-edited', '');
+});
+
+test('the code of the field at the caret is edited in the code box and applied', async ({ page }) => {
+  await mount(page, true);
+  await page.evaluate(() => (window as any).__ribbon.editor.exec('insertField', { code: 'MERGEFIELD Amount \\# $,0.00' }));
+  await openPane(page);
+  const box = pane(page).locator('textarea[data-mf="code"]');
+  await expect(box).toHaveValue('MERGEFIELD Amount \\# $,0.00');
+  await box.click();
+  await page.keyboard.press('End');
+  await page.keyboard.type(' \\f " USD"');
+  await pane(page).locator('[data-mf="apply"]').click();
+  await expect(merge(page)).toHaveCount(1);
+  await expect(merge(page)).toHaveAttribute('data-field-code', 'MERGEFIELD Amount \\# $,0.00 \\f " USD"');
 });
 
 test('Highlight Merge Fields toggles the shading', async ({ page }) => {

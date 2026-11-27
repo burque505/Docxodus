@@ -33,6 +33,8 @@ export const MERGE_FIELDS_PANE_CSS = `
 .dxr-mfpane .dxr-mfempty { padding: 8px 10px; color: var(--dxr-muted); font-style: italic; }
 .dxr-mfpane .dxr-mfcode { font-family: Consolas, "Courier New", monospace; font-size: 11.5px; word-break: break-all;
   padding: 3px 5px; border: 1px solid var(--dxr-rule); border-radius: 4px; min-height: 1.3em; background: var(--dxr-surface, #fff); }
+.dxr-mfpane textarea.dxr-mfcode { width: 100%; box-sizing: border-box; resize: vertical; min-height: 3.2em; color: var(--dxr-ink); }
+.dxr-mfpane textarea.dxr-mfcode[data-edited] { border-color: var(--dxr-accent); }
 .dxr-mfpane .dxr-mfresult { padding: 0 2px; min-height: 1.3em; word-break: break-word; }
 .dxr-mfpane .dxr-mfat { background: var(--dxr-chrome-sunk); }
 .dxr-mfpane .dxr-mferror { color: #b42318; }
@@ -91,7 +93,9 @@ export const MERGE_FIELDS_PANE_HTML = `
     <div class="dxr-mfrow" data-mf-row="before"><span class="dxr-mflabel">Before</span><input type="text" data-mf="before" aria-label="Text before (\\b)" /></div>
     <div class="dxr-mfrow" data-mf-row="after"><span class="dxr-mflabel">After</span><input type="text" data-mf="after" aria-label="Text after (\\f)" /></div>
     <div class="dxr-mfrow"><span class="dxr-mflabel">Sample</span><input type="text" data-mf="sample" aria-label="Sample value" /></div>
-    <div class="dxr-mfcode" data-mf="code" title="The field code"></div>
+    <span class="dxr-mflabel">Field code</span>
+    <textarea class="dxr-mfcode" data-mf="code" rows="2" spellcheck="false" aria-label="Field code"
+              title="The field code: change it, or type one of your own (nested fields in { }). Insert and Apply to Field use it as it is."></textarea>
     <div class="dxr-mfresult" data-mf="result" title="What the field shows for the sample"></div>
     <div class="dxr-mfrow">
       <button type="button" class="dxr-mfprimary" data-mf="insert" title="Insert the field at the caret (Enter, or double-click a name)">Insert</button>
@@ -355,6 +359,10 @@ export class MergeFieldsPane {
   private selected = -1;
   /** The field at the caret as last shown (its code), so moving onto another loads that one. */
   private atCode: string | null = null;
+  /** The code box was typed in: it is used as it is until a name or format is chosen again. */
+  private codeEdited = false;
+  /** The code typed for a field last (by its name, any case), when it was typed rather than chosen. */
+  private readonly lastCode = new Map<string, string>();
 
   constructor(readonly element: HTMLElement, private readonly host: MergeFieldsPaneHost) {
     const list = this.part("list");
@@ -384,13 +392,19 @@ export class MergeFieldsPane {
       else if (event.key === "End") { event.preventDefault(); this.pick(this.names.length - 1); }
       else if (event.key === "Enter") { event.preventDefault(); this.insert(); }
     });
-    this.input("name").addEventListener("input", () => this.update());
+    this.input("name").addEventListener("input", () => { this.codeEdited = false; this.update(); });
     this.input("name").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); this.insert(); } });
-    this.select("format").addEventListener("change", () => this.update());
+    this.select("format").addEventListener("change", () => { this.codeEdited = false; this.update(); });
     for (const key of ["before", "after", "iftrue", "iffalse", "picture", "sample"]) {
-      this.input(key).addEventListener("input", () => this.update());
+      this.input(key).addEventListener("input", () => { if (key !== "sample") this.codeEdited = false; this.update(); });
       this.input(key).addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); this.insert(); } });
     }
+    const codeBox = this.codeBox();
+    codeBox.addEventListener("input", () => { this.codeEdited = true; this.update(); });
+    codeBox.addEventListener("keydown", (event) => {
+      // (Enter inserts, as in the other boxes; Shift+Enter is a new line in a long code)
+      if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); this.insert(); }
+    });
     this.button("insert").addEventListener("click", () => this.insert());
     this.button("apply").addEventListener("click", () => this.apply());
     // (the buttons keep the document's selection: Insert and Apply act there)
@@ -435,7 +449,7 @@ export class MergeFieldsPane {
     this.part("atcode").textContent = mergeFieldDisplay(field.code);
     if (field.code === this.atCode) return;
     this.atCode = field.code;
-    this.load(parseMergeFieldCode(field.code, field.name));
+    this.load(parseMergeFieldCode(field.code, field.name), field.code);
     const index = this.names.findIndex((n) => n.toLowerCase() === field.name.toLowerCase());
     if (index >= 0) this.mark(index);
   }
@@ -498,10 +512,11 @@ export class MergeFieldsPane {
     if (index < 0 || index >= this.names.length) { this.selected = -1; return; }
     this.mark(index);
     const name = this.names[index];
-    this.load(this.last.get(name.toLowerCase()) ?? { name, format: "text" });
+    this.load(this.last.get(name.toLowerCase()) ?? { name, format: "text" }, this.lastCode.get(name.toLowerCase()));
   }
 
-  private load(c: MergeFieldChoice): void {
+  /** Show choice `c`; with `code`, the code box holds that code as it is (a field's own, or one typed before). */
+  private load(c: MergeFieldChoice, code?: string): void {
     this.input("name").value = c.name;
     const other = this.select("format").querySelector<HTMLOptionElement>('option[value="other"]')!;
     other.hidden = c.format !== "other";
@@ -511,7 +526,27 @@ export class MergeFieldsPane {
     this.input("iftrue").value = c.ifTrue ?? "";
     this.input("iffalse").value = c.ifFalse ?? "";
     this.input("picture").value = c.picture ?? "";
+    this.codeEdited = code !== undefined;
+    if (code !== undefined) this.codeBox().value = code;
     this.update();
+  }
+
+  private codeBox(): HTMLTextAreaElement {
+    return this.element.querySelector<HTMLTextAreaElement>('textarea[data-mf="code"]')!;
+  }
+
+  /** The code box's code, without braces round the whole of it (`{ MERGEFIELD X }` is taken as typed). */
+  code(): string {
+    let code = this.codeBox().value.trim();
+    if (code.startsWith("{") && code.endsWith("}")) {
+      let depth = 0, whole = true;
+      for (let i = 0; i < code.length; i++) {
+        if (code[i] === "{") depth++;
+        else if (code[i] === "}" && --depth === 0 && i < code.length - 1) { whole = false; break; }
+      }
+      if (whole) code = code.slice(1, -1).trim();
+    }
+    return code;
   }
 
   private update(): void {
@@ -523,29 +558,43 @@ export class MergeFieldsPane {
     const plain = !["iftf", "percent", "percenttext", "other"].includes(c.format);
     row("before", plain);
     row("after", plain);
-    const code = c.name && c.format !== "other" ? mergeFieldCode(c) : c.format === "other" ? this.atCode ?? "" : "";
-    this.part("code").textContent = code ? mergeFieldDisplay(code) : "";
-    this.part("result").textContent = c.name && c.format !== "other" ? mergeFieldSample(c, this.input("sample").value) : "";
-    this.button("insert").disabled = !c.name || c.format === "other";
-    this.button("apply").disabled = !c.name || c.format === "other";
+    const box = this.codeBox();
+    if (!this.codeEdited) box.value = c.name && c.format !== "other" ? mergeFieldCode(c) : "";
+    box.toggleAttribute("data-edited", this.codeEdited);
+    // (the sample follows a typed code when it is one the Format box knows)
+    const shown = this.codeEdited ? parseMergeFieldCode(this.code(), c.name) : c;
+    this.part("result").textContent = shown.name && shown.format !== "other" ? mergeFieldSample(shown, this.input("sample").value) : "";
+    const empty = !this.code();
+    this.button("insert").disabled = empty;
+    this.button("apply").disabled = empty;
     this.showError(false);
   }
 
-  private insert(): void {
+  /** The format and code used for the field, for the next time it is chosen. */
+  private remember(code: string): void {
     const c = this.choice();
-    if (!c.name || c.format === "other") return;
-    const r = this.host.insert(mergeFieldCode(c));
+    const name = (c.name || parseMergeFieldCode(code).name).toLowerCase();
+    if (!name) return;
+    if (c.format !== "other") this.last.set(name, c);
+    if (this.codeEdited) this.lastCode.set(name, code);
+    else this.lastCode.delete(name);
+  }
+
+  private insert(): void {
+    const code = this.code();
+    if (!code) return;
+    const r = this.host.insert(code);
     if (!r.ok) { this.showError(true); return; }
-    this.last.set(c.name.toLowerCase(), c);
+    this.remember(code);
     this.host.refocus();
   }
 
   private apply(): void {
-    const c = this.choice();
-    if (!c.name || c.format === "other") return;
-    const r = this.host.replace(mergeFieldCode(c));
+    const code = this.code();
+    if (!code) return;
+    const r = this.host.replace(code);
     if (!r.ok) { this.showError(true); return; }
-    this.last.set(c.name.toLowerCase(), c);
+    this.remember(code);
     this.atCode = null;
     this.host.refocus();
     this.syncCaret();
