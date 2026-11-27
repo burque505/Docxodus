@@ -94,6 +94,7 @@ import type { EditorCommandArgs, EditorCommandInfo } from "./editor-commands.js"
 import { imageOnlyDelta, patchImageAttributes } from "./editor-image-patch.js";
 import { PictureOverlay } from "./editor-picture.js";
 import { cleanPastedHtml, pastedPlainText, serializePaste } from "./paste-html.js";
+import { extractPastedFields, FIELD_MARK_PATTERN } from "./paste-fields.js";
 import { FORMAT_PAINTER_CSS, pickRunFormat, runOpFromDirect, wordSpanAt } from "./format-painter.js";
 import { compileFind, expandReplacement, type FindOptions } from "./find-query.js";
 import { changeCase, DEFAULT_HEADLINE_CASE_LISTS, nextCycleCase, type CaseMode, type HeadlineCaseLists } from "./change-case.js";
@@ -11350,7 +11351,10 @@ export class DocxEditor {
     const bridge = this.exports.DocxSessionBridge;
     const at = this.pasteTarget();
     if (!at) return false;
-    const html = mode === "text" ? "" : content.html ?? "";
+    let html = mode === "text" ? "" : content.html ?? "";
+    // (merge fields in it, the editor's own or Word's, paste as fields: markers now, fields once it is in)
+    let fieldCodes: string[] = [];
+    if (html && typeof bridge.InsertField === "function") ({ html, codes: fieldCodes } = extractPastedFields(html));
     if (html && typeof bridge.InsertHtml === "function") {
       const cleaned = cleanPastedHtml(html, GENERATED_CHROME_SELECTOR);
       if (!cleaned.empty) {
@@ -11362,8 +11366,17 @@ export class DocxEditor {
           for (const src of cleaned.pendingImages) images.set(src, lone ?? await this.fetchPasteImage(src));
           if (!this.stillAt(at)) return false;
         }
-        const res = this.parseEdit(bridge.InsertHtml(this.handle, at.fullId, at.start, at.length, serializePaste(cleaned, images),
+        const tx = fieldCodes.length && typeof bridge.BeginTransaction === "function" ? bridge.BeginTransaction(this.handle) : 0;
+        let res = this.parseEdit(bridge.InsertHtml(this.handle, at.fullId, at.start, at.length, serializePaste(cleaned, images),
           JSON.stringify({ formatting: mode === "keep" ? "keep" : "merge", css: cleaned.css })), { expectRejection: !!content.text });
+        if (res.success && fieldCodes.length && !this.restorePastedFields(res, fieldCodes)) {
+          // (a field the engine would not take: the paste is undone, and its text pastes instead)
+          res = { success: false, error: { code: "invalid_field_code", message: "A pasted merge field could not be put back" } as EditResultLite["error"] };
+        }
+        if (tx) {
+          if (res.success) bridge.CommitTransaction!(tx);
+          else bridge.RollbackTransaction?.(tx);
+        }
         if (res.success) return this.finishPaste(at, res, cleaned.hasImages);
         // The engine could not take this HTML: its text still pastes, and the host hears why.
         if (content.text) this.reportEditFailure(res.error);
@@ -11438,6 +11451,95 @@ export class DocxEditor {
     const live = block.isConnected ? block : this.blockForAnchorId(fullId);
     if (!live) return null;
     return { block: live, unid: live.getAttribute("data-anchor") ?? unid, fullId, start: span.start, length: span.length, text: blockContentText(live) };
+  }
+
+  /**
+   * The pasted paragraphs' field markers (see paste-fields.ts) made fields again: each marker
+   * deleted and field `codes[i]` put in its place. `res` is brought up to date (the paragraphs'
+   * ids, the caret past the same text). False when the engine refused one.
+   */
+  private restorePastedFields(res: EditResultLite, codes: string[]): boolean {
+    const bridge = this.exports.DocxSessionBridge;
+    const refs = [...(res.modified ?? []), ...(res.created ?? [])];
+    for (const ref of refs) {
+      let id = ref.id;
+      for (;;) {
+        const text = this.sessionTextOf(id);
+        if (text === null) break;
+        FIELD_MARK_PATTERN.lastIndex = 0;
+        const m = FIELD_MARK_PATTERN.exec(text);
+        if (!m) break;
+        const code = codes[Number(m[1])];
+        const before = text.length;
+        const cut = this.parseEdit(bridge.ReplaceTextAtSpan(this.handle, id, m.index, m[0].length, "", ""), { expectRejection: true });
+        if (!cut.success) return false;
+        const cutId = cut.modified?.[0]?.id ?? id;
+        const put = code ? this.parseEdit(bridge.InsertField!(this.handle, cutId, m.index, code, ""), { expectRejection: true }) : cut;
+        if (!put.success) return false;
+        const nextId = put.modified?.[0]?.id ?? cutId;
+        const delta = (this.sessionTextOf(nextId)?.length ?? before) - before;
+        if (res.caret && res.caret.anchorId === id) {
+          res.caret = { anchorId: nextId, offset: res.caret.offset > m.index ? res.caret.offset + delta : res.caret.offset };
+        }
+        id = nextId;
+      }
+      ref.id = id;
+    }
+    return true;
+  }
+
+  /**
+   * Word-style «Name» text made merge fields: each «Name» in the selected paragraphs (all the
+   * document's shown paragraphs when nothing is selected) that is plain text — not a field's
+   * result — becomes `MERGEFIELD Name`. For text that was pasted before paste kept fields. One
+   * undo step; the number of fields made.
+   */
+  convertMergeText(): number {
+    if (this.closed || typeof this.exports.DocxSessionBridge.InsertField !== "function") return 0;
+    const bridge = this.exports.DocxSessionBridge;
+    const selected = this.selectedBlocks();
+    const sel = this.container.ownerDocument.defaultView?.getSelection();
+    const blocks = sel && !sel.isCollapsed && selected.length ? selected : this.editableList();
+    const tx = typeof bridge.BeginTransaction === "function" ? bridge.BeginTransaction(this.handle) : 0;
+    let made = 0, ok = true;
+    try {
+      for (const block of blocks) {
+        if (!block.isConnected || !blockContentText(block).includes("«")) continue;
+        const fullId = this.anchorIdOf(block);
+        if (!fullId) continue;
+        let id = this.syncBlock(block, fullId);
+        if (!id) continue;
+        // (the fields' own results, in the session's offsets: «Name» there is a field already)
+        const startOf = (f: HTMLElement) => contentOffsetOf(block, f.parentNode!, Array.prototype.indexOf.call(f.parentNode!.childNodes, f));
+        const taken = Array.from(block.querySelectorAll<HTMLElement>("[data-field]"))
+          .filter((f) => !f.parentElement?.closest("[data-field]"))
+          .map((f) => this.sessionSpanOf(block, id!, { start: startOf(f), length: stripBidi(atomText(f) ?? "").length }));
+        const text = this.sessionTextOf(id) ?? "";
+        const found = Array.from(text.matchAll(/\u00ab([^\u00ab\u00bb{}\\"\n\t]{1,60})\u00bb/g))
+          .filter((m) => m[1].trim() && !taken.some((t) => m.index! < t.start + t.length && m.index! + m[0].length > t.start));
+        // (last first: the earlier offsets stay as they were)
+        for (const m of found.reverse()) {
+          const name = m[1].trim();
+          const code = `MERGEFIELD ${/[\s]/.test(name) ? `"${name}"` : name}`;
+          const cut = this.parseEdit(bridge.ReplaceTextAtSpan(this.handle, id, m.index!, m[0].length, "", ""), { expectRejection: true });
+          if (!cut.success) { ok = false; break; }
+          id = cut.modified?.[0]?.id ?? id;
+          const put = this.parseEdit(bridge.InsertField!(this.handle, id, m.index!, code, ""), { expectRejection: true });
+          if (!put.success) { ok = false; break; }
+          id = put.modified?.[0]?.id ?? id;
+          made++;
+        }
+        if (!ok) break;
+      }
+    } finally {
+      if (tx) {
+        if (ok) bridge.CommitTransaction!(tx);
+        else bridge.RollbackTransaction?.(tx);
+      }
+    }
+    if (!ok) return 0;
+    if (made) this.remount();
+    return made;
   }
 
   /** True when the paste's block is as it was when the paste began (pictures took a while). */

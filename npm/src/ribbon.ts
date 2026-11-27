@@ -2264,6 +2264,17 @@ class RibbonSurface implements RibbonEditor {
       });
     }
 
+    const convert = this.control("convertmerge");
+    if (convert) {
+      this.keepSelection(convert);
+      convert.addEventListener("click", () => {
+        let made = 0;
+        this.run("text to fields", () => { made = this.live?.convertMergeText() ?? 0; }, () => made ? cmd("convertMergeText", {}) : undefined);
+        this.setStatus(made ? `${made} merge field${made === 1 ? "" : "s"} made from \u00abName\u00bb text` : "No \u00abName\u00bb text to make fields of");
+        this.mergeFieldsPane?.refresh();
+      });
+    }
+
     const button = this.control("mailrecipients"), menu = this.control("mailrecipmenu");
     if (!button || !menu) return;
     button.addEventListener("click", () => {

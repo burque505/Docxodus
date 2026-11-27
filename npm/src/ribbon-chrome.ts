@@ -1401,6 +1401,7 @@ export const RIBBON_HTML = `
           <button type="button" data-dxr="mergefieldbtn" aria-pressed="false"
                   title="Show the Merge Fields pane: the data source's fields, a filter, each field's format, and the format of the field at the caret">&#171;&#187; Insert Merge Field</button>
           <button type="button" data-dxr="highlightmerge" aria-pressed="false" title="Shade the merge fields grey, to see where they are">Highlight Merge Fields</button>
+          <button type="button" data-dxr="convertmerge" title="Make &#171;Name&#187; text merge fields: in the selected paragraphs, or the whole document with nothing selected (text pasted before paste kept fields)">&#171;&#187; Text to Fields</button>
         </div>
         <div class="dxr-row">
           <button type="button" data-dxr="addressblock" disabled title="Insert an address block (coming)">Address Block&#8230;</button>

@@ -498,6 +498,11 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
       must(r.ok, "replaceMergeField", r.code === "no_field" ? "there is no merge field at the caret" : `the engine refused it (${r.code ?? "?"})`);
     },
   },
+  convertMergeText: {
+    group: "insert", description: "Make Word-style «Name» text merge fields (MERGEFIELD Name): in the selected paragraphs, or the whole document with nothing selected. For text pasted before paste kept fields.",
+    args: {},
+    run: (e) => { e.convertMergeText(); },
+  },
   highlightMergeFields: {
     group: "view", description: "Shade merge fields grey (Word's Highlight Merge Fields); without `on`, toggle.",
     args: { "on?": "boolean" },
