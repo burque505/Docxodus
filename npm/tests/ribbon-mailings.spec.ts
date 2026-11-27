@@ -267,3 +267,51 @@ test('Greeting Line: salutation, name and punctuation in the paragraph at the ca
   expect(await fieldCodes(page)).toEqual(['MERGEFIELD LeFull']);
   expect((await texts(page))[0]).toBe('Dear «LeFull»:');
 });
+
+// ─── Rules ────────────────────────────────────────────────────────────────────
+
+const ruleDialog = (page: Page) => page.locator(`${HOST} [data-dxr="ruledialog"]`);
+async function rule(page: Page, kind: string) {
+  await page.locator(`${HOST} [data-dxr="mergerules"]`).click();
+  await page.locator(`${HOST} [data-rule="${kind}"]`).click();
+}
+
+test('Rules: If…Then…Else and Skip Record If from a comparison; Next Record at once', async ({ page }) => {
+  await mountParties(page);
+  await rule(page, 'if');
+  const d = ruleDialog(page);
+  await expect(d).toBeVisible();
+  await d.locator('select[data-rd="field"]').selectOption('LeStatus');
+  await d.locator('select[data-rd="op"]').selectOption('notblank');
+  await expect(d.locator('input[data-rd="value"]')).toBeHidden();
+  await d.locator('input[data-rd="then"]').fill(', ');
+  await d.locator('input[data-rd="else"]').fill('');
+  await expect(d.locator('[data-rd="code"]')).toHaveText('{ IF { MERGEFIELD LeStatus } <> "" ", " "" }');
+  await d.locator('[data-rd="ok"]').click();
+  await expect(d).toBeHidden();
+  await rule(page, 'skipif');
+  await d.locator('select[data-rd="field"]').selectOption('LeZip');
+  await d.locator('select[data-rd="op"]').selectOption('<');
+  await d.locator('input[data-rd="value"]').fill('80000');
+  await expect(d.locator('[data-rd="code"]')).toHaveText('{ SKIPIF { MERGEFIELD LeZip } < "80000" }');
+  await d.locator('[data-rd="ok"]').click();
+  await rule(page, 'next');
+  expect(await fieldCodes(page)).toEqual(['IF { MERGEFIELD LeStatus } <> "" ", " ""', 'SKIPIF { MERGEFIELD LeZip } < "80000"', 'NEXT']);
+});
+
+test('Rules: Ask with its answer shown (ASK, then REF); a bookmark name is checked', async ({ page }) => {
+  await mountParties(page);
+  await rule(page, 'ask');
+  const d = ruleDialog(page);
+  await d.locator('input[data-rd="bookmark"]').fill('2bad');
+  await expect(d.locator('[data-rd="ok"]')).toBeDisabled();
+  await d.locator('input[data-rd="bookmark"]').fill('Closing');
+  await d.locator('input[data-rd="prompt"]').fill('Closing date?');
+  await d.locator('input[data-rd="default"]').fill('soon');
+  await d.locator('input[data-rd="once"]').check();
+  await expect(d.locator('[data-rd="code"]')).toHaveText('{ ASK Closing "Closing date?" \\d "soon" \\o } { REF Closing }');
+  await d.locator('[data-rd="ok"]').click();
+  await expect(d).toBeHidden();
+  expect(await fieldCodes(page)).toEqual(['ASK Closing "Closing date?" \\d "soon" \\o']);
+  await expect(page.locator(`${HOST} [data-field="REF"]`)).toHaveCount(1);
+});

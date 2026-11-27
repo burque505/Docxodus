@@ -68,6 +68,7 @@ import { COPY_STYLES_DIALOG_CSS, COPY_STYLES_DIALOG_HTML, CopyStylesDialog } fro
 import { BOOKMARK_DIALOG_CSS, BOOKMARK_DIALOG_HTML, BookmarkDialog } from "./ribbon-bookmark-dialog.js";
 import { MERGE_FIELDS_PANE_CSS, MergeFieldsPane } from "./ribbon-mergefields-pane.js";
 import { ADDRESS_DIALOG_CSS, ADDRESS_DIALOG_HTML, AddressDialog } from "./ribbon-address-dialog.js";
+import { RULE_DIALOG_CSS, RULE_DIALOG_HTML, RuleDialog, ruleCode, type RuleKind } from "./ribbon-rules-dialog.js";
 import { CROSSREF_DIALOG_CSS, CROSSREF_DIALOG_HTML, CrossReferenceDialog } from "./ribbon-crossref-dialog.js";
 import { CAPTION_DIALOG_CSS, CAPTION_DIALOG_HTML, CaptionDialog, TableOfFiguresDialog } from "./ribbon-caption-dialog.js";
 import { crossReferenceOptionsFor, crossReferencePart } from "./cross-reference.js";
@@ -571,7 +572,7 @@ function ensureStyles(doc: Document): void {
   existing?.remove();
   const style = doc.createElement("style");
   style.setAttribute(RIBBON_STYLE_ATTR, RIBBON_STYLE_VERSION);
-  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + FONT_DIALOG_CSS + STYLE_DIALOG_CSS + COPY_STYLES_DIALOG_CSS + BOOKMARK_DIALOG_CSS + MERGE_FIELDS_PANE_CSS + ADDRESS_DIALOG_CSS + CROSSREF_DIALOG_CSS + CAPTION_DIALOG_CSS + NAV_PANE_CSS + STYLES_PANE_CSS + RULER_CSS;
+  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + FONT_DIALOG_CSS + STYLE_DIALOG_CSS + COPY_STYLES_DIALOG_CSS + BOOKMARK_DIALOG_CSS + MERGE_FIELDS_PANE_CSS + ADDRESS_DIALOG_CSS + RULE_DIALOG_CSS + CROSSREF_DIALOG_CSS + CAPTION_DIALOG_CSS + NAV_PANE_CSS + STYLES_PANE_CSS + RULER_CSS;
   (doc.head ?? doc.documentElement).appendChild(style);
 }
 
@@ -690,6 +691,7 @@ class RibbonSurface implements RibbonEditor {
   private mergeSource = "";
   private mergeRows: string[][] = [];
   private addressDialog!: AddressDialog;
+  private ruleDialog!: RuleDialog;
   private highlightMerge = false;
   private crossRefDialog!: CrossReferenceDialog;
   private captionDialog!: CaptionDialog;
@@ -748,7 +750,7 @@ class RibbonSurface implements RibbonEditor {
     root.className = "dxr";
     root.dataset.state = "idle";
     root.dataset.frame = this.options.frame ?? "flush";
-    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML + TABLE_DIALOG_HTML + LINE_NUMBERS_DIALOG_HTML + TABS_DIALOG_HTML + FONT_DIALOG_HTML + STYLE_DIALOG_HTML + COPY_STYLES_DIALOG_HTML + BOOKMARK_DIALOG_HTML + ADDRESS_DIALOG_HTML + CROSSREF_DIALOG_HTML + CAPTION_DIALOG_HTML;
+    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML + TABLE_DIALOG_HTML + LINE_NUMBERS_DIALOG_HTML + TABS_DIALOG_HTML + FONT_DIALOG_HTML + STYLE_DIALOG_HTML + COPY_STYLES_DIALOG_HTML + BOOKMARK_DIALOG_HTML + ADDRESS_DIALOG_HTML + RULE_DIALOG_HTML + CROSSREF_DIALOG_HTML + CAPTION_DIALOG_HTML;
     for (const el of Array.from(root.querySelectorAll<HTMLElement>("[data-dxr]"))) {
       el.id = this.idPrefix + el.dataset.dxr;
     }
@@ -2225,6 +2227,30 @@ class RibbonSurface implements RibbonEditor {
     return true;
   }
 
+  /** Mailings > Rules: a rule with no choices goes in at once; the others open the Rules dialog. */
+  openRule(kind: RuleKind): boolean {
+    if (!this.live) return false;
+    if (kind === "mergerec" || kind === "mergeseq" || kind === "next") { void this.insertRuleFields([ruleCode({ kind })]); return true; }
+    this.ruleDialog.show(kind);
+    return true;
+  }
+
+  /** Rule fields at the caret, each after the one before (Ask, then its REF). */
+  private async insertRuleFields(codes: string[]): Promise<boolean> {
+    const live = this.live;
+    if (!live) return false;
+    let at = live.selectionDocumentRange();
+    for (const code of codes) {
+      let result: { ok: boolean; after?: import("./types.js").DocumentRange } = { ok: false };
+      const where = at;
+      this.run("insert field", () => { result = live.insertField(code, where); }, () => result.ok ? cmd("insertField", { code }) : undefined);
+      if (!result.ok) return false;
+      at = result.after ?? null;
+    }
+    this.mergeFieldsPane?.refresh();
+    return true;
+  }
+
   setMergeFieldsPaneVisible(on: boolean): void {
     this.mergeFieldsPane.setVisible(on);
     this.control("mergefieldbtn")?.setAttribute("aria-pressed", String(on));
@@ -2256,6 +2282,48 @@ class RibbonSurface implements RibbonEditor {
         if (live && at) live.placeCaretAt(at);
       },
     });
+    this.ruleDialog = new RuleDialog(this.require<HTMLDialogElement>("ruledialog"), {
+      names: () => {
+        const names = [...this.mergeColumns];
+        for (const n of this.live?.mergeFieldNames() ?? []) if (!names.some((m) => m.toLowerCase() === n.toLowerCase())) names.push(n);
+        return names;
+      },
+      insert: async (codes) => this.insertRuleFields(codes),
+      closed: () => {
+        const live = this.live;
+        const at = live?.selectionDocumentRange();
+        if (live && at) live.placeCaretAt(at);
+      },
+    });
+    const rules = this.control("mergerules"), rulesMenu = this.control("mergerulesmenu");
+    if (rules && rulesMenu) {
+      this.keepSelection(rules);
+      rules.addEventListener("click", () => {
+        if (rulesMenu.hasAttribute("data-open")) { this.closePopovers(); return; }
+        if (!this.live) return;
+        this.closePopovers();
+        rulesMenu.setAttribute("data-open", "");
+        rules.setAttribute("aria-expanded", "true");
+        this.positionPopover(rulesMenu, rules);
+        rulesMenu.querySelector<HTMLButtonElement>("button")?.focus();
+      });
+      rulesMenu.addEventListener("mousedown", (event) => event.preventDefault());
+      rulesMenu.addEventListener("click", (event) => {
+        const chosen = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-rule]");
+        if (!chosen) return;
+        this.closePopovers();
+        this.openRule(chosen.dataset.rule as RuleKind);
+      });
+      rulesMenu.addEventListener("keydown", (event) => {
+        const list = Array.from(rulesMenu.querySelectorAll<HTMLButtonElement>("button"));
+        const at = list.indexOf(event.target as HTMLButtonElement);
+        let next = -1;
+        if (event.key === "ArrowDown") next = (at + 1) % list.length;
+        else if (event.key === "ArrowUp") next = (at - 1 + list.length) % list.length;
+        else if (event.key === "Escape") { event.preventDefault(); this.closePopovers(); rules.focus(); return; }
+        if (next >= 0) { event.preventDefault(); list[next].focus(); }
+      });
+    }
     for (const [name, mode] of [["addressblock", "address"], ["greetingline", "greeting"]] as const) {
       const button = this.control(name);
       if (!button) continue;
@@ -4421,6 +4489,8 @@ class RibbonSurface implements RibbonEditor {
     this.control("pastemore")?.setAttribute("aria-expanded", "false");
     this.control("tblselectmenu")?.removeAttribute("data-open");
     this.control("tblselect")?.setAttribute("aria-expanded", "false");
+    this.control("mergerulesmenu")?.removeAttribute("data-open");
+    this.control("mergerules")?.setAttribute("aria-expanded", "false");
     this.control("mailrecipmenu")?.removeAttribute("data-open");
     this.control("mailrecipients")?.setAttribute("aria-expanded", "false");
     this.control("casemenu")?.removeAttribute("data-open");
@@ -4441,7 +4511,7 @@ class RibbonSurface implements RibbonEditor {
     const target = event.target as Node;
     const picMenu = this.control("picturemenu");
     if (picMenu?.hasAttribute("data-open") && !picMenu.contains(target)) picMenu.removeAttribute("data-open");
-    for (const [popName, buttonName] of [["gridpicker", "table"], ["linkpop", "link"], ["filemenu", "filebutton"], ["pastemenu", "pastemore"], ["tblselectmenu", "tblselect"], ["mailrecipmenu", "mailrecipients"], ["casemenu", "changecase"], ["stylemenu", "stylemenubtn"], ["findoptmenu", "findoptions"], ["findspecialmenu", "findspecial"]] as const) {
+    for (const [popName, buttonName] of [["gridpicker", "table"], ["linkpop", "link"], ["filemenu", "filebutton"], ["pastemenu", "pastemore"], ["tblselectmenu", "tblselect"], ["mailrecipmenu", "mailrecipients"], ["mergerulesmenu", "mergerules"], ["casemenu", "changecase"], ["stylemenu", "stylemenubtn"], ["findoptmenu", "findoptions"], ["findspecialmenu", "findspecial"]] as const) {
       const pop = this.control(popName);
       if (!pop?.hasAttribute("data-open")) continue;
       if (pop.contains(target) || this.control(buttonName)?.contains(target)) continue;
@@ -4450,6 +4520,7 @@ class RibbonSurface implements RibbonEditor {
       if (popName === "pastemenu") this.control("pastemore")?.setAttribute("aria-expanded", "false");
       if (popName === "tblselectmenu") this.control("tblselect")?.setAttribute("aria-expanded", "false");
       if (popName === "mailrecipmenu") this.control("mailrecipients")?.setAttribute("aria-expanded", "false");
+      if (popName === "mergerulesmenu") this.control("mergerules")?.setAttribute("aria-expanded", "false");
       if (popName === "casemenu") this.control("changecase")?.setAttribute("aria-expanded", "false");
       if (popName === "stylemenu") this.control("stylemenubtn")?.setAttribute("aria-expanded", "false");
       if (popName === "findoptmenu") this.control("findoptions")?.setAttribute("aria-expanded", "false");

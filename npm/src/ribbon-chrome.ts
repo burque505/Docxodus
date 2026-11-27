@@ -30,6 +30,7 @@
 import { NAV_PANE_HTML } from "./ribbon-navpane.js";
 import { STYLES_PANE_HTML } from "./ribbon-stylespane.js";
 import { MERGE_FIELDS_PANE_HTML } from "./ribbon-mergefields-pane.js";
+import { RULES_MENU_HTML } from "./ribbon-rules-dialog.js";
 
 /** Bumped whenever RIBBON_CSS changes, so a stale injected stylesheet is replaced. */
 export const RIBBON_STYLE_VERSION = "28";
@@ -1406,7 +1407,7 @@ export const RIBBON_HTML = `
         <div class="dxr-row">
           <button type="button" data-dxr="addressblock" title="Insert the recipient's name and postal address: plain merge fields, a line each, matched to the data source's columns">Address Block&#8230;</button>
           <button type="button" data-dxr="greetingline" title="Insert a greeting such as Dear &#171;First&#187;, as plain merge fields">Greeting Line&#8230;</button>
-          <button type="button" data-dxr="mergerules" disabled title="If&#8230;Then&#8230;Else, Fill-in, Ask, Next Record, Skip Record If (coming)">Rules &#9662;</button>
+          <button type="button" data-dxr="mergerules" aria-haspopup="menu" aria-expanded="false" title="Word's merge rules: Ask, Fill-in, If&#8230;Then&#8230;Else, Merge Record #, Merge Sequence #, Next Record, Next Record If, Skip Record If">Rules &#9662;</button>
         </div>
       </div>
       <div class="dxr-group" data-dxr="mailfinish" hidden>
@@ -1799,6 +1800,7 @@ ${MERGE_FIELDS_PANE_HTML}
   <button type="button" role="menuitem" data-paste="text" title="The text only, taking the formatting where it lands" aria-keyshortcuts="Control+Alt+Shift+V"><span>Keep Text Only</span><kbd aria-hidden="true">Ctrl+Alt+Shift+V</kbd></button>
 </div>
 
+${RULES_MENU_HTML}
 <div class="dxr-pop dxr-filemenu" data-dxr="mailrecipmenu" role="menu" aria-label="Select Recipients">
   <button type="button" role="menuitem" data-recip="recipients" title="A spreadsheet, CSV, JSON or Access table: its columns are the fields, its rows the recipients"><span>Use an Existing List&#8230;</span><kbd aria-hidden="true"></kbd></button>
   <button type="button" role="menuitem" data-recip="fieldlist" title="A text file of field names, one per line (or a CSV of names): the fields to insert, without recipients"><span>Use a Field List&#8230;</span><kbd aria-hidden="true"></kbd></button>
