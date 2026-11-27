@@ -1404,8 +1404,8 @@ export const RIBBON_HTML = `
           <button type="button" data-dxr="convertmerge" title="Make &#171;Name&#187; text merge fields: in the selected paragraphs, or the whole document with nothing selected (text pasted before paste kept fields)">&#171;&#187; Text to Fields</button>
         </div>
         <div class="dxr-row">
-          <button type="button" data-dxr="addressblock" disabled title="Insert an address block (coming)">Address Block&#8230;</button>
-          <button type="button" data-dxr="greetingline" disabled title="Insert a greeting line (coming)">Greeting Line&#8230;</button>
+          <button type="button" data-dxr="addressblock" title="Insert the recipient's name and postal address: plain merge fields, a line each, matched to the data source's columns">Address Block&#8230;</button>
+          <button type="button" data-dxr="greetingline" title="Insert a greeting such as Dear &#171;First&#187;, as plain merge fields">Greeting Line&#8230;</button>
           <button type="button" data-dxr="mergerules" disabled title="If&#8230;Then&#8230;Else, Fill-in, Ask, Next Record, Skip Record If (coming)">Rules &#9662;</button>
         </div>
       </div>

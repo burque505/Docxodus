@@ -196,3 +196,74 @@ test('Select Recipients, Browse and Clear go to the host; without one they are h
   await expect(pane(page).locator('[data-mf="browse"]')).toBeHidden();
   await expect(pane(page).locator('.dxr-mfempty')).toBeVisible();
 });
+
+// ─── Address Block, Greeting Line ─────────────────────────────────────────────
+
+const PARTY_COLUMNS = ['LeFull', 'LeStatus', 'LeStreet', 'LeCity', 'LeState', 'LeZip', 'LeShort', 'BoFull', 'PropStreet', 'PropCity', 'PropState', 'PropZip', 'PropCounty'];
+const PARTY_ROWS = [
+  ['Don Dwyer', 'an unmarried man', '12 Elm St', 'Taos', 'NM', '87571', 'Don', 'Ann Lee', '9 Oak Rd', 'Santa Fe', 'NM', '87501', 'Santa Fe'],
+  ['Westgro LLC', 'a New Mexico limited liability company', '', 'Albuquerque', 'NM', '87102', 'Westgro', 'Bo Two', '1 Pine', 'Taos', 'NM', '87571', 'Taos'],
+];
+
+async function mountParties(page: Page) {
+  await page.goto('/test-harness.html');
+  await page.waitForFunction(() => (window as any).DocxodusReady === true, { timeout: 30000 });
+  await page.evaluate(({ columns, rows }) => {
+    const host = document.createElement('div');
+    host.id = 'mm-host';
+    host.style.height = '700px';
+    document.body.appendChild(host);
+    const r = (window as any).DocxodusEditor.mountRibbon(host, { onMailings: () => {}, mergeColumns: columns, mergeSource: 'loan.csv', mergeRows: rows });
+    r.setExports((window as any).Docxodus);
+    r.openBlank('mm.docx');
+    r.loader.done();
+    (window as any).__ribbon = r;
+  }, { columns: PARTY_COLUMNS, rows: PARTY_ROWS });
+  await page.locator(blocks).first().click();
+  await page.locator(`${HOST} .dxr-tab[data-tab="mailings"]`).click();
+}
+
+const dialog = (page: Page) => page.locator(`${HOST} [data-dxr="addressdialog"]`);
+const fieldCodes = (page: Page) => page.locator(`${HOST} [data-field-code]`).evaluateAll((els) => els.map((e) => e.getAttribute('data-field-code')));
+const texts = (page: Page) => page.locator(blocks).evaluateAll((bs) => bs.map((b) => (b.textContent ?? '').replace(/^[\s\u00a0]+|[\s\u00a0]+$/g, '')));
+
+test('Address Block: a party of prefixed columns, previewed with its rows, inserted as plain merge fields', async ({ page }) => {
+  await mountParties(page);
+  await page.locator(`${HOST} [data-dxr="addressblock"]`).click();
+  const d = dialog(page);
+  await expect(d).toBeVisible();
+  await expect(d.locator('select[data-ad="prefix"] option')).toHaveText(['Le…', 'Prop…']);
+  await expect(d.locator('select[data-ad="name"]')).toHaveValue('full');
+  await expect(d.locator('[data-ad="preview"]')).toHaveText('Don Dwyer\n12 Elm St\nTaos, NM 87571');
+  await expect(d.locator('[data-ad="record"]')).toHaveText('1 of 2');
+  // the second recipient has no street: its line is left out, as the merge leaves it out
+  await d.locator('[data-ad="next"]').click();
+  await expect(d.locator('[data-ad="preview"]')).toHaveText('Westgro LLC\nAlbuquerque, NM 87102');
+  // Match Fields shows the matches
+  await d.locator('summary').click();
+  await expect(d.locator('select[data-part="postal"]')).toHaveValue('LeZip');
+  await expect(d.locator('select[data-part="first"]')).toHaveValue('');
+  await d.locator('[data-ad="ok"]').click();
+  await expect(d).toBeHidden();
+  expect(await fieldCodes(page)).toEqual(['MERGEFIELD LeFull', 'MERGEFIELD LeStreet', 'MERGEFIELD LeCity', 'MERGEFIELD LeState', 'MERGEFIELD LeZip']);
+  expect((await texts(page)).slice(0, 3)).toEqual(['«LeFull»', '«LeStreet»', '«LeCity», «LeState» «LeZip»']);
+  // one undo step
+  await page.evaluate(() => (window as any).__ribbon.editor.exec('undo', {}));
+  expect(await fieldCodes(page)).toEqual([]);
+});
+
+test('Greeting Line: salutation, name and punctuation in the paragraph at the caret', async ({ page }) => {
+  await mountParties(page);
+  await page.locator(`${HOST} [data-dxr="greetingline"]`).click();
+  const d = dialog(page);
+  await expect(d.locator('[data-ad-mode="greeting"]').first()).toBeVisible();
+  await expect(d.locator('select[data-ad="name"]')).toHaveValue('short');
+  await expect(d.locator('[data-ad="preview"]')).toHaveText('Dear Don,');
+  await d.locator('select[data-ad="prefix"]').selectOption('Le');
+  await d.locator('select[data-ad="name"]').selectOption('full');
+  await d.locator('select[data-ad="punctuation"]').selectOption(':');
+  await expect(d.locator('[data-ad="preview"]')).toHaveText('Dear Don Dwyer:');
+  await d.locator('[data-ad="ok"]').click();
+  expect(await fieldCodes(page)).toEqual(['MERGEFIELD LeFull']);
+  expect((await texts(page))[0]).toBe('Dear «LeFull»:');
+});

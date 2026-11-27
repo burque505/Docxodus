@@ -67,6 +67,7 @@ import { STYLE_DIALOG_CSS, STYLE_DIALOG_HTML, StyleDialog, paragraphDifference, 
 import { COPY_STYLES_DIALOG_CSS, COPY_STYLES_DIALOG_HTML, CopyStylesDialog } from "./ribbon-copy-styles-dialog.js";
 import { BOOKMARK_DIALOG_CSS, BOOKMARK_DIALOG_HTML, BookmarkDialog } from "./ribbon-bookmark-dialog.js";
 import { MERGE_FIELDS_PANE_CSS, MergeFieldsPane } from "./ribbon-mergefields-pane.js";
+import { ADDRESS_DIALOG_CSS, ADDRESS_DIALOG_HTML, AddressDialog } from "./ribbon-address-dialog.js";
 import { CROSSREF_DIALOG_CSS, CROSSREF_DIALOG_HTML, CrossReferenceDialog } from "./ribbon-crossref-dialog.js";
 import { CAPTION_DIALOG_CSS, CAPTION_DIALOG_HTML, CaptionDialog, TableOfFiguresDialog } from "./ribbon-caption-dialog.js";
 import { crossReferenceOptionsFor, crossReferencePart } from "./cross-reference.js";
@@ -265,6 +266,8 @@ export interface RibbonOptions extends DocxEditorOptions {
   mergeColumns?: string[];
   /** The data source's name the Merge Fields pane shows ("" none). */
   mergeSource?: string;
+  /** The data source's first rows (cells in the columns' order), for Address Block's and Greeting Line's preview. */
+  mergeRows?: string[][];
   /** Called after any document opens, with the live editor. */
   onOpen?: (editor: DocxEditor) => void;
   /** Called whenever the status line changes. */
@@ -426,8 +429,10 @@ export interface RibbonEditor {
   setRulerVisible(on: boolean): void;
   /** Open the Bookmark dialog (Word's Insert > Bookmark) on the selection; false when no document is open. */
   openBookmarkDialog(): boolean;
-  /** The data source's columns (Select Recipients) and its name ("" none), listed first by the Merge Fields pane. */
-  setMergeColumns(columns: string[], source?: string): void;
+  /** The data source's columns (Select Recipients), its name ("" none) and its first rows (for previews). */
+  setMergeColumns(columns: string[], source?: string, rows?: string[][]): void;
+  /** Open Mailings > Address Block… or Greeting Line…; false when no document is open. */
+  openAddressDialog(mode: "address" | "greeting"): boolean;
   /** Show or hide the Merge Fields pane (Mailings > Insert Merge Field). */
   setMergeFieldsPaneVisible(on: boolean): void;
   /** Open the Cross-reference dialog (Word's Insert > Cross-reference) at the selection; false when
@@ -566,7 +571,7 @@ function ensureStyles(doc: Document): void {
   existing?.remove();
   const style = doc.createElement("style");
   style.setAttribute(RIBBON_STYLE_ATTR, RIBBON_STYLE_VERSION);
-  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + FONT_DIALOG_CSS + STYLE_DIALOG_CSS + COPY_STYLES_DIALOG_CSS + BOOKMARK_DIALOG_CSS + MERGE_FIELDS_PANE_CSS + CROSSREF_DIALOG_CSS + CAPTION_DIALOG_CSS + NAV_PANE_CSS + STYLES_PANE_CSS + RULER_CSS;
+  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + FONT_DIALOG_CSS + STYLE_DIALOG_CSS + COPY_STYLES_DIALOG_CSS + BOOKMARK_DIALOG_CSS + MERGE_FIELDS_PANE_CSS + ADDRESS_DIALOG_CSS + CROSSREF_DIALOG_CSS + CAPTION_DIALOG_CSS + NAV_PANE_CSS + STYLES_PANE_CSS + RULER_CSS;
   (doc.head ?? doc.documentElement).appendChild(style);
 }
 
@@ -683,6 +688,8 @@ class RibbonSurface implements RibbonEditor {
   private mergeFieldsPane!: MergeFieldsPane;
   private mergeColumns: string[] = [];
   private mergeSource = "";
+  private mergeRows: string[][] = [];
+  private addressDialog!: AddressDialog;
   private highlightMerge = false;
   private crossRefDialog!: CrossReferenceDialog;
   private captionDialog!: CaptionDialog;
@@ -741,7 +748,7 @@ class RibbonSurface implements RibbonEditor {
     root.className = "dxr";
     root.dataset.state = "idle";
     root.dataset.frame = this.options.frame ?? "flush";
-    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML + TABLE_DIALOG_HTML + LINE_NUMBERS_DIALOG_HTML + TABS_DIALOG_HTML + FONT_DIALOG_HTML + STYLE_DIALOG_HTML + COPY_STYLES_DIALOG_HTML + BOOKMARK_DIALOG_HTML + CROSSREF_DIALOG_HTML + CAPTION_DIALOG_HTML;
+    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML + TABLE_DIALOG_HTML + LINE_NUMBERS_DIALOG_HTML + TABS_DIALOG_HTML + FONT_DIALOG_HTML + STYLE_DIALOG_HTML + COPY_STYLES_DIALOG_HTML + BOOKMARK_DIALOG_HTML + ADDRESS_DIALOG_HTML + CROSSREF_DIALOG_HTML + CAPTION_DIALOG_HTML;
     for (const el of Array.from(root.querySelectorAll<HTMLElement>("[data-dxr]"))) {
       el.id = this.idPrefix + el.dataset.dxr;
     }
@@ -2184,9 +2191,13 @@ class RibbonSurface implements RibbonEditor {
 
   // ─── Mailings: the Merge Fields pane, Highlight Merge Fields; the host's merge commands ─────
 
-  setMergeColumns(columns: string[], source = ""): void {
+  setMergeColumns(columns: string[], source = "", rows: string[][] = []): void {
+    // (rows keep the columns' order: a column given twice keeps its first place)
+    const keep = columns.map((c, i) => ({ c: c.trim(), i }));
     const seen = new Set<string>();
-    this.mergeColumns = columns.map((c) => c.trim()).filter((c) => c && !seen.has(c.toLowerCase()) && !!seen.add(c.toLowerCase()));
+    const kept = keep.filter(({ c }) => c && !seen.has(c.toLowerCase()) && !!seen.add(c.toLowerCase()));
+    this.mergeColumns = kept.map(({ c }) => c);
+    this.mergeRows = rows.map((r) => kept.map(({ i }) => r[i] ?? ""));
     this.mergeSource = source;
     this.mergeFieldsPane?.refresh();
   }
@@ -2207,6 +2218,13 @@ class RibbonSurface implements RibbonEditor {
     return result;
   }
 
+  openAddressDialog(mode: "address" | "greeting"): boolean {
+    if (!this.live) return false;
+    this.closePopovers();
+    this.addressDialog.show(mode);
+    return true;
+  }
+
   setMergeFieldsPaneVisible(on: boolean): void {
     this.mergeFieldsPane.setVisible(on);
     this.control("mergefieldbtn")?.setAttribute("aria-pressed", String(on));
@@ -2215,7 +2233,34 @@ class RibbonSurface implements RibbonEditor {
 
   private wireMailings(): void {
     this.mergeColumns = [];
-    this.setMergeColumns(this.options.mergeColumns ?? [], this.options.mergeSource ?? "");
+    this.setMergeColumns(this.options.mergeColumns ?? [], this.options.mergeSource ?? "", this.options.mergeRows ?? []);
+    this.addressDialog = new AddressDialog(this.require<HTMLDialogElement>("addressdialog"), {
+      columns: () => this.mergeColumns,
+      rows: () => this.mergeRows,
+      insert: async (html) => {
+        const live = this.live;
+        if (!live) return false;
+        const at = live.selectionDocumentRange();
+        if (at) live.placeCaretAt(at);
+        const started = performance.now();
+        const ok = await live.pasteHtml(html);
+        // (recorded as the paste it is: a script repeats it with exec("pasteHtml"))
+        if (ok) this.options.onCommand?.("insert address", performance.now() - started, cmd("pasteHtml", { html }));
+        this.mergeFieldsPane?.refresh();
+        return ok;
+      },
+      closed: () => {
+        const live = this.live;
+        const at = live?.selectionDocumentRange();
+        if (live && at) live.placeCaretAt(at);
+      },
+    });
+    for (const [name, mode] of [["addressblock", "address"], ["greetingline", "greeting"]] as const) {
+      const button = this.control(name);
+      if (!button) continue;
+      this.keepSelection(button);
+      button.addEventListener("click", () => { this.openAddressDialog(mode); });
+    }
     const host = this.options.onMailings;
     this.mergeFieldsPane = new MergeFieldsPane(this.require("mergefieldspane"), {
       columns: () => this.mergeColumns,
