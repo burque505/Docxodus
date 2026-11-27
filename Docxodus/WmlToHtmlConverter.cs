@@ -3975,7 +3975,8 @@ namespace Docxodus
                 && (Internal.ReferenceFieldInstr.TryParse((string?)element.Attribute(W.instr))
                     ?? Internal.MergeFieldInstr.TryParse((string?)element.Attribute(W.instr))) is { } simpleReference)
             {
-                return ReferenceFieldSpan(simpleReference, element.Elements(), CreateBorderDivs(wordDoc, settings, element.Elements()));
+                return ReferenceFieldSpan(simpleReference, element.Elements(), CreateBorderDivs(wordDoc, settings, element.Elements()),
+                    (string?)element.Attribute(W.instr));
             }
 
             // Transform smart tags and simple fields.
@@ -12682,11 +12683,16 @@ namespace Docxodus
         /// REF / PAGEREF / NOTEREF result.</summary>
         /// <remarks><c>data-field-cached</c> is the text the session counts for <paramref name="source"/>: a tab or
         /// break is one character there, and the rendered result shows none.</remarks>
+        /// <remarks>A merge field (MERGEFIELD, IF, =, ...) also carries its code, <c>data-field-code</c> (nested
+        /// fields in braces), for an editor to show and change its format.</remarks>
         private static XElement ReferenceFieldSpan((string Kind, string Target, bool Hyperlink) field,
-            IEnumerable<XElement> source, object content) =>
+            IEnumerable<XElement> source, object content, string? instrText = null) =>
             new XElement(Xhtml.span,
                 new XAttribute("data-field", field.Kind),
                 new XAttribute("data-field-target", field.Target),
+                Internal.MergeFieldInstr.IsMergeKind(field.Kind) && !string.IsNullOrWhiteSpace(instrText)
+                    ? new XAttribute("data-field-code", instrText.Trim())
+                    : null,
                 new XAttribute("data-field-cached", string.Concat(source.SelectMany(e => e.DescendantsAndSelf(W.r)
                         .Where(r => ReferenceEquals(r.Ancestors(W.p).FirstOrDefault(), e.Ancestors(W.p).FirstOrDefault())))
                     .Where(r => !r.Ancestors().TakeWhile(a => a.Name != W.p).Any(a => a.Name == W.del || a.Name == W.moveFrom))
@@ -12745,7 +12751,7 @@ namespace Docxodus
                         var referenceContent = ConvertContentThatCanContainFields(wordDoc, settings, g, key);
                         if (!settings.ShowDeletedRevisionContent && FieldRetriever.IsDeletedField(g.First().Ancestors().Last(), (int)key))
                             return referenceContent;
-                        return PreserveJoinedFieldSources(InsideRevision(ReferenceFieldSpan(reference, g, referenceContent)));
+                        return PreserveJoinedFieldSources(InsideRevision(ReferenceFieldSpan(reference, g, referenceContent, instrText)));
                     }
 
                     // A HYPERLINK field already inside a w:hyperlink renders as that link's content:

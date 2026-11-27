@@ -1,93 +1,125 @@
 import { test, expect, type Page } from '@playwright/test';
 
 /**
- * Mailings: Insert Merge Field ▾ (the host's columns, then the document's own fields), the Insert
- * Merge Field dialog (formats, \b/\f, code and sample, the last format per field), Highlight Merge
- * Fields, and the host's Start / Select Recipients / Finish buttons (shown only with onMailings).
+ * Mailings: the Merge Fields pane (the host's columns, then the document's own fields; filter;
+ * Format with the last format per field; code and sample; Insert; the field at the caret read back
+ * and changed), Select Recipients ▾ and the host's Start / Finish (shown only with onMailings),
+ * Highlight Merge Fields.
  */
 
 const HOST = '#mm-host';
 const blocks = `${HOST} [data-anchor][contenteditable="true"]`;
+const COLUMNS = Array.from({ length: 60 }, (_, i) => `Field${String(i + 1).padStart(2, '0')}`).concat(['First', 'Amount']);
 
-async function mount(page: Page, withHost: boolean) {
+async function mount(page: Page, withHost: boolean, type = true) {
   await page.goto('/test-harness.html');
   await page.waitForFunction(() => (window as any).DocxodusReady === true, { timeout: 30000 });
-  await page.evaluate((withHost) => {
+  await page.evaluate(({ withHost, columns }) => {
     const host = document.createElement('div');
     host.id = 'mm-host';
     host.style.height = '700px';
     document.body.appendChild(host);
     (window as any).__mailings = [];
     const r = (window as any).DocxodusEditor.mountRibbon(host, withHost
-      ? { onMailings: (c: string) => (window as any).__mailings.push(c), mergeColumns: ['First', 'Amount'] }
+      ? { onMailings: (c: string) => (window as any).__mailings.push(c), mergeColumns: columns, mergeSource: 'people.csv' }
       : {});
     r.setExports((window as any).Docxodus);
     r.openBlank('mm.docx');
     r.loader.done();
     (window as any).__ribbon = r;
-  }, withHost);
+  }, { withHost, columns: COLUMNS });
   await page.locator(blocks).first().click();
-  await page.evaluate(() => (window as any).__ribbon.editor.exec('pasteText', { text: 'Dear ' }));
-  await page.locator(blocks).first().click();
-  await page.keyboard.press('End');
+  // (typed, not pasted: the empty paragraph's placeholder NBSP must not put the field one off)
+  if (type) await page.keyboard.type('Dear ');
   await page.locator(`${HOST} .dxr-tab[data-tab="mailings"]`).click();
 }
 
-const field = (page: Page) => page.locator(`${HOST} [data-field="MERGEFIELD"]`);
+const pane = (page: Page) => page.locator(`${HOST} [data-dxr="mergefieldspane"]`);
+const merge = (page: Page) => page.locator(`${HOST} [data-field="MERGEFIELD"]`);
+const firstText = (page: Page) => page.locator(blocks).first()
+  .evaluate((b) => (b.textContent ?? '').replace(/^[\s ]+/, '').replace(/[\s ]+$/, ''));
 
-test('Insert Merge Field ▾ lists the host columns and inserts one', async ({ page }) => {
+async function openPane(page: Page) {
+  await page.locator(`${HOST} [data-dxr="mergefieldbtn"]`).click();
+  await expect(pane(page)).toBeVisible();
+}
+
+test('the pane lists every column, scrolls, filters and inserts on Enter', async ({ page }) => {
   await mount(page, true);
-  await page.locator(`${HOST} [data-dxr="mergefieldbtn"]`).click();
-  const menu = page.locator(`${HOST} [data-dxr="mergefieldmenu"]`);
-  await expect(menu.locator('[data-mfname]')).toHaveText(['First', 'Amount']);
-  await menu.locator('[data-mfname="First"]').click();
-  await expect(field(page)).toHaveText('«First»');
-  // the document's own field is listed once, the host's columns first
-  await page.evaluate(() => (window as any).__ribbon.setMergeColumns(['Amount']));
-  await page.locator(`${HOST} [data-dxr="mergefieldbtn"]`).click();
-  await expect(menu.locator('[data-mfname]')).toHaveText(['Amount', 'First']);
+  await openPane(page);
+  await expect(pane(page).locator('[data-mf="source"]')).toHaveText('people.csv');
+  const items = pane(page).locator('.dxr-mfitem');
+  await expect(items).toHaveCount(62);
+  // (the list scrolls inside the pane: its last name can be reached)
+  await items.last().scrollIntoViewIfNeeded();
+  await expect(items.last()).toBeInViewport();
+  await pane(page).locator('input[data-mf="filter"]').fill('firs');
+  await expect(items).toHaveText(['First']);
+  await pane(page).locator('input[data-mf="filter"]').press('Enter');
+  await expect(merge(page)).toHaveText('«First»');
+  await page.keyboard.type(',');
+  await expect.poll(() => firstText(page)).toBe('Dear «First»,');
+  // the field is now in the document too: still listed once
+  await pane(page).locator('[data-mf="clearfilter"]').click();
+  await expect(items).toHaveCount(62);
 });
 
-test('the dialog builds the code, shows a sample and remembers the format', async ({ page }) => {
+test('a format is chosen in the pane, shown as code and sample, and remembered per field', async ({ page }) => {
   await mount(page, true);
-  await page.locator(`${HOST} [data-dxr="mergefieldbtn"]`).click();
-  await page.locator(`${HOST} [data-mfmenu="dialog"]`).click();
-  const dialog = page.locator(`${HOST} [data-dxr="mergefielddialog"]`);
-  await expect(dialog).toBeVisible();
-  await dialog.locator('select[data-mf="list"]').selectOption('Amount');
-  await dialog.locator('select[data-mf="format"]').selectOption('currency');
-  await dialog.locator('input[data-mf="sample"]').fill('1234.5');
-  await expect(dialog.locator('[data-mf="code"]')).toHaveText('{ MERGEFIELD Amount \\# $,0.00 }');
-  await expect(dialog.locator('[data-mf="result"]')).toHaveText('$1,234.50');
-  await dialog.locator('select[data-mf="format"]').selectOption('percent');
-  await expect(dialog.locator('[data-mf="code"]')).toHaveText('{ = { MERGEFIELD Amount } * 100 \\# "0.00%" }');
-  await dialog.locator('select[data-mf="format"]').selectOption('cardtext');
-  await dialog.locator('input[data-mf="sample"]').fill('42');
-  await expect(dialog.locator('[data-mf="result"]')).toHaveText('forty-two');
-  await dialog.locator('select[data-mf="format"]').selectOption('upper');
-  await dialog.locator('input[data-mf="before"]').fill('To ');
-  await expect(dialog.locator('[data-mf="code"]')).toHaveText('{ MERGEFIELD Amount \\* Upper \\b "To " }');
-  await dialog.locator('[data-mf="insert"]').click();
-  await expect(field(page)).toHaveCount(1);
-  // another field, then back: the last format comes back
-  await dialog.locator('select[data-mf="list"]').selectOption('First');
-  await expect(dialog.locator('select[data-mf="format"]')).toHaveValue('text');
-  await dialog.locator('select[data-mf="list"]').selectOption('Amount');
-  await expect(dialog.locator('select[data-mf="format"]')).toHaveValue('upper');
-  await expect(dialog.locator('input[data-mf="before"]')).toHaveValue('To ');
+  await openPane(page);
+  const p = pane(page);
+  await p.locator('input[data-mf="filter"]').fill('Amount');
+  await p.locator('select[data-mf="format"]').selectOption('currency');
+  await p.locator('input[data-mf="sample"]').fill('1234.5');
+  await expect(p.locator('[data-mf="code"]')).toHaveText('{ MERGEFIELD Amount \\# $,0.00 }');
+  await expect(p.locator('[data-mf="result"]')).toHaveText('$1,234.50');
+  await p.locator('select[data-mf="format"]').selectOption('cardtext');
+  await p.locator('input[data-mf="sample"]').fill('42');
+  await expect(p.locator('[data-mf="result"]')).toHaveText('forty-two');
+  await p.locator('select[data-mf="format"]').selectOption('iftf');
+  await expect(p.locator('input[data-mf="before"]')).toBeHidden();
+  await p.locator('select[data-mf="format"]').selectOption('upper');
+  await p.locator('input[data-mf="before"]').fill('To ');
+  await expect(p.locator('[data-mf="code"]')).toHaveText('{ MERGEFIELD Amount \\* Upper \\b "To " }');
+  await p.locator('[data-mf="insert"]').click();
+  await expect(merge(page)).toHaveCount(1);
+  await p.locator('input[data-mf="filter"]').fill('First');
+  await expect(p.locator('select[data-mf="format"]')).toHaveValue('text');
+  await p.locator('input[data-mf="filter"]').fill('Amount');
+  await expect(p.locator('select[data-mf="format"]')).toHaveValue('upper');
+  await expect(p.locator('input[data-mf="before"]')).toHaveValue('To ');
 });
 
-test('If True / False builds an IF field', async ({ page }) => {
+test('the field at the caret shows its format, and Apply to Field changes it', async ({ page }) => {
   await mount(page, true);
-  await page.evaluate(() => (window as any).__ribbon.openMergeFieldDialog('Member'));
-  const dialog = page.locator(`${HOST} [data-dxr="mergefielddialog"]`);
-  await dialog.locator('select[data-mf="format"]').selectOption('iftf');
-  await dialog.locator('input[data-mf="iftrue"]').fill('Welcome back');
-  await dialog.locator('input[data-mf="iffalse"]').fill('Welcome');
-  await expect(dialog.locator('input[data-mf="before"]')).toBeHidden();
-  await expect(dialog.locator('[data-mf="code"]')).toHaveText('{ IF { MERGEFIELD Member } = True "Welcome back" "Welcome" }');
-  await dialog.locator('[data-mf="insert"]').click();
-  await expect(page.locator(`${HOST} [data-field="IF"]`)).toHaveCount(1);
+  await page.evaluate(() => (window as any).__ribbon.editor.exec('insertField', { code: 'MERGEFIELD Amount \\# $,0.00' }));
+  await expect(merge(page)).toHaveCount(1);
+  await expect(merge(page)).toHaveAttribute('data-field-code', 'MERGEFIELD Amount \\# $,0.00');
+  await openPane(page);
+  const p = pane(page);
+  // (the caret is just after the inserted field)
+  await expect(p.locator('[data-mf="at"]')).toBeVisible();
+  await expect(p.locator('[data-mf="atcode"]')).toHaveText('{ MERGEFIELD Amount \\# $,0.00 }');
+  await expect(p.locator('input[data-mf="name"]')).toHaveValue('Amount');
+  await expect(p.locator('select[data-mf="format"]')).toHaveValue('currency');
+  await p.locator('select[data-mf="format"]').selectOption('dollartext');
+  await p.locator('[data-mf="apply"]').click();
+  await expect(merge(page)).toHaveCount(1);
+  await expect(merge(page)).toHaveAttribute('data-field-code', 'MERGEFIELD Amount \\* DollarText');
+  await expect.poll(() => firstText(page)).toBe('Dear «Amount»');
+  // one undo step brings the old format back
+  await page.evaluate(() => (window as any).__ribbon.editor.exec('undo', {}));
+  await expect(merge(page)).toHaveAttribute('data-field-code', 'MERGEFIELD Amount \\# $,0.00');
+});
+
+test('a code the pane has no format for is shown as it is', async ({ page }) => {
+  await mount(page, true);
+  await page.evaluate(() => (window as any).__ribbon.editor.exec('insertField', { code: 'MERGEFIELD Amount \\# "#,##0" \\* Upper' }));
+  await openPane(page);
+  const p = pane(page);
+  await expect(p.locator('select[data-mf="format"]')).toHaveValue('other');
+  await expect(p.locator('[data-mf="code"]')).toHaveText('{ MERGEFIELD Amount \\# "#,##0" \\* Upper }');
+  await expect(p.locator('[data-mf="insert"]')).toBeDisabled();
 });
 
 test('Highlight Merge Fields toggles the shading', async ({ page }) => {
@@ -100,42 +132,29 @@ test('Highlight Merge Fields toggles the shading', async ({ page }) => {
   expect(await page.evaluate(() => (window as any).__ribbon.editor.highlightMergeFields)).toBe(false);
 });
 
-test('the host buttons call onMailings, and are hidden without it', async ({ page }) => {
+test('Select Recipients, Browse and Clear go to the host; without one they are hidden', async ({ page }) => {
   await mount(page, true);
   await page.locator(`${HOST} [data-dxr="mailmerge"]`).click();
-  await page.locator(`${HOST} [data-dxr="mailrecipients"]`).click();
+  for (const recip of ['recipients', 'fieldlist', 'editrecipients', 'clearrecipients']) {
+    await page.locator(`${HOST} [data-dxr="mailrecipients"]`).click();
+    await page.locator(`${HOST} [data-recip="${recip}"]`).click();
+  }
+  await openPane(page);
+  await pane(page).locator('[data-mf="browse"]').click();
+  await pane(page).locator('[data-mf="clearsource"]').click();
   await page.locator(`${HOST} [data-dxr="mailfinishbtn"]`).click();
-  expect(await page.evaluate(() => (window as any).__mailings)).toEqual(['start', 'recipients', 'finish']);
+  expect(await page.evaluate(() => (window as any).__mailings))
+    .toEqual(['start', 'recipients', 'fieldlist', 'editrecipients', 'clearrecipients', 'recipients', 'clearrecipients', 'finish']);
+  // the host clears the source: the pane follows
+  await page.evaluate(() => (window as any).__ribbon.setMergeColumns([], ''));
+  await expect(pane(page).locator('[data-mf="source"]')).toHaveText('(none)');
+  await expect(pane(page).locator('[data-mf="clearsource"]')).toBeDisabled();
+
   await page.evaluate(() => document.getElementById('mm-host')!.remove());
-  await mount(page, false);
+  await mount(page, false, false);
   await expect(page.locator(`${HOST} [data-dxr="mailstart"]`)).toBeHidden();
   await expect(page.locator(`${HOST} [data-dxr="mailfinish"]`)).toBeHidden();
-  await page.locator(`${HOST} [data-dxr="mergefieldbtn"]`).click();
-  await expect(page.locator(`${HOST} [data-dxr="mergefieldmenu"] button:disabled`)).toHaveText('(no fields yet)');
-});
-
-test('a field goes in right after text typed into a new document', async ({ page }) => {
-  await page.goto('/test-harness.html');
-  await page.waitForFunction(() => (window as any).DocxodusReady === true, { timeout: 30000 });
-  await page.evaluate(() => {
-    const host = document.createElement('div');
-    host.id = 'mm-host';
-    host.style.height = '700px';
-    document.body.appendChild(host);
-    const r = (window as any).DocxodusEditor.mountRibbon(host, { mergeColumns: ['First'] });
-    r.setExports((window as any).Docxodus);
-    r.openBlank('mm.docx');
-    r.loader.done();
-    (window as any).__ribbon = r;
-  });
-  // (typed, not pasted: the empty paragraph's placeholder NBSP must not stay in front of the text)
-  await page.locator(blocks).first().click();
-  await page.keyboard.type('Dear ');
-  await page.locator(`${HOST} .dxr-tab[data-tab="mailings"]`).click();
-  await page.locator(`${HOST} [data-dxr="mergefieldbtn"]`).click();
-  await page.locator(`${HOST} [data-mfname="First"]`).click();
-  await expect(field(page)).toHaveText('«First»');
-  await page.keyboard.type(',');
-  await expect.poll(() => page.locator(blocks).first().evaluate((b) => (b.textContent ?? '').replace(/\s+$/, '')))
-    .toBe('Dear «First»,');
+  await openPane(page);
+  await expect(pane(page).locator('[data-mf="browse"]')).toBeHidden();
+  await expect(pane(page).locator('.dxr-mfempty')).toBeVisible();
 });

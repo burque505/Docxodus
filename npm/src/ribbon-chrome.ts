@@ -29,6 +29,7 @@
  */
 import { NAV_PANE_HTML } from "./ribbon-navpane.js";
 import { STYLES_PANE_HTML } from "./ribbon-stylespane.js";
+import { MERGE_FIELDS_PANE_HTML } from "./ribbon-mergefields-pane.js";
 
 /** Bumped whenever RIBBON_CSS changes, so a stale injected stylesheet is replaced. */
 export const RIBBON_STYLE_VERSION = "28";
@@ -1391,14 +1392,14 @@ export const RIBBON_HTML = `
           <button type="button" data-dxr="mailmerge" title="Fill this document's merge fields: from values typed, or from a data source, row by row">&#9993; Start Mail Merge&#8230;</button>
         </div>
         <div class="dxr-row">
-          <button type="button" data-dxr="mailrecipients" title="Choose the data source (a spreadsheet, CSV, JSON or Access table) whose columns the merge fields name">&#128101; Select Recipients&#8230;</button>
+          <button type="button" data-dxr="mailrecipients" aria-haspopup="menu" aria-expanded="false" title="Choose, edit or clear the data source whose columns the merge fields name">&#128101; Select Recipients &#9662;</button>
         </div>
       </div>
       <div class="dxr-group">
         <span class="dxr-glabel">Write &amp; Insert Fields</span>
         <div class="dxr-row">
-          <button type="button" data-dxr="mergefieldbtn" aria-haspopup="menu" aria-expanded="false"
-                  title="Insert a merge field: a column of the data source, or a field the document has">&#171;&#187; Insert Merge Field &#9662;</button>
+          <button type="button" data-dxr="mergefieldbtn" aria-pressed="false"
+                  title="Show the Merge Fields pane: the data source's fields, a filter, each field's format, and the format of the field at the caret">&#171;&#187; Insert Merge Field</button>
           <button type="button" data-dxr="highlightmerge" aria-pressed="false" title="Shade the merge fields grey, to see where they are">Highlight Merge Fields</button>
         </div>
         <div class="dxr-row">
@@ -1747,6 +1748,7 @@ ${NAV_PANE_HTML}
 </div>
 </div>
 ${STYLES_PANE_HTML}
+${MERGE_FIELDS_PANE_HTML}
 </div>
 
 <!-- Status bar — live engine state (the anchor rail), Word's page/word cells, and zoom. -->
@@ -1796,11 +1798,12 @@ ${STYLES_PANE_HTML}
   <button type="button" role="menuitem" data-paste="text" title="The text only, taking the formatting where it lands" aria-keyshortcuts="Control+Alt+Shift+V"><span>Keep Text Only</span><kbd aria-hidden="true">Ctrl+Alt+Shift+V</kbd></button>
 </div>
 
-<div class="dxr-pop dxr-filemenu" data-dxr="mergefieldmenu" role="menu" aria-label="Insert Merge Field">
-  <div data-dxr="mergefielditems"></div>
+<div class="dxr-pop dxr-filemenu" data-dxr="mailrecipmenu" role="menu" aria-label="Select Recipients">
+  <button type="button" role="menuitem" data-recip="recipients" title="A spreadsheet, CSV, JSON or Access table: its columns are the fields, its rows the recipients"><span>Use an Existing List&#8230;</span><kbd aria-hidden="true"></kbd></button>
+  <button type="button" role="menuitem" data-recip="fieldlist" title="A text file of field names, one per line (or a CSV of names): the fields to insert, without recipients"><span>Use a Field List&#8230;</span><kbd aria-hidden="true"></kbd></button>
   <div class="dxr-filesep"></div>
-  <button type="button" role="menuitem" data-mfmenu="dialog" title="Choose a field and its format: text case, number, currency, percent, date, If True/False..."><span>Insert Merge Field&#8230;</span><kbd aria-hidden="true"></kbd></button>
-  <span hidden data-mfmenu-text="none">(no fields yet)</span>
+  <button type="button" role="menuitem" data-recip="editrecipients" title="Choose the rows to merge: tick, untick, filter"><span>Edit Recipient List&#8230;</span><kbd aria-hidden="true"></kbd></button>
+  <button type="button" role="menuitem" data-recip="clearrecipients" title="Forget this document's data source"><span>Clear Recipients</span><kbd aria-hidden="true"></kbd></button>
 </div>
 
 <div class="dxr-pop dxr-filemenu" data-dxr="tblselectmenu" role="menu" aria-label="Select">

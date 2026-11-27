@@ -66,7 +66,7 @@ import { FONT_DIALOG_CSS, FONT_DIALOG_HTML, FontDialog } from "./ribbon-font-dia
 import { STYLE_DIALOG_CSS, STYLE_DIALOG_HTML, StyleDialog, paragraphDifference, paragraphOf, runDifference } from "./ribbon-style-dialog.js";
 import { COPY_STYLES_DIALOG_CSS, COPY_STYLES_DIALOG_HTML, CopyStylesDialog } from "./ribbon-copy-styles-dialog.js";
 import { BOOKMARK_DIALOG_CSS, BOOKMARK_DIALOG_HTML, BookmarkDialog } from "./ribbon-bookmark-dialog.js";
-import { MERGE_FIELD_DIALOG_CSS, MERGE_FIELD_DIALOG_HTML, MergeFieldDialog, mergeFieldCode } from "./ribbon-mergefield-dialog.js";
+import { MERGE_FIELDS_PANE_CSS, MergeFieldsPane } from "./ribbon-mergefields-pane.js";
 import { CROSSREF_DIALOG_CSS, CROSSREF_DIALOG_HTML, CrossReferenceDialog } from "./ribbon-crossref-dialog.js";
 import { CAPTION_DIALOG_CSS, CAPTION_DIALOG_HTML, CaptionDialog, TableOfFiguresDialog } from "./ribbon-caption-dialog.js";
 import { crossReferenceOptionsFor, crossReferencePart } from "./cross-reference.js";
@@ -256,11 +256,15 @@ export interface RibbonOptions extends DocxEditorOptions {
   /** Find's options were changed in the find bar's Options menu, for a host to keep (only the
    *  options that are on). */
   onFindOptionsChange?: (options: FindOptions) => void;
-  /** Mailings > Start Mail Merge…, Select Recipients… and Finish & Merge…, for the host to do
-   *  (they need its data sources and files). Without it those buttons are hidden. */
-  onMailings?: (command: "start" | "recipients" | "finish") => void;
-  /** The data source's columns at the start, listed first by Insert Merge Field; `setMergeColumns` changes them. */
+  /** Mailings > Start Mail Merge…, Select Recipients (Use an Existing List…, Use a Field List…,
+   *  Edit Recipient List…, Clear Recipients) and Finish & Merge…, for the host to do (they need its
+   *  data sources and files); the Merge Fields pane's Browse… is "recipients", its Clear
+   *  "clearrecipients". Without it those buttons are hidden. */
+  onMailings?: (command: MailingsCommand) => void;
+  /** The data source's columns at the start, listed first by the Merge Fields pane; `setMergeColumns` changes them. */
   mergeColumns?: string[];
+  /** The data source's name the Merge Fields pane shows ("" none). */
+  mergeSource?: string;
   /** Called after any document opens, with the live editor. */
   onOpen?: (editor: DocxEditor) => void;
   /** Called whenever the status line changes. */
@@ -285,6 +289,9 @@ export interface RibbonRecentEntry {
   /** The entry's tooltip, such as the full path. */
   title?: string;
 }
+
+/** Mailings commands a host does (`onMailings`). */
+export type MailingsCommand = "start" | "recipients" | "fieldlist" | "editrecipients" | "clearrecipients" | "finish";
 
 /** One of the host's commands in the File menu (`fileMenu`, `setFileMenu`, `onFileMenu`). */
 export interface RibbonFileMenuItem {
@@ -419,10 +426,10 @@ export interface RibbonEditor {
   setRulerVisible(on: boolean): void;
   /** Open the Bookmark dialog (Word's Insert > Bookmark) on the selection; false when no document is open. */
   openBookmarkDialog(): boolean;
-  /** The data source's columns (Select Recipients), listed first by Mailings > Insert Merge Field. */
-  setMergeColumns(columns: string[]): void;
-  /** Open Mailings > Insert Merge Field… (on field `name` when given); false when no document is open. */
-  openMergeFieldDialog(name?: string): boolean;
+  /** The data source's columns (Select Recipients) and its name ("" none), listed first by the Merge Fields pane. */
+  setMergeColumns(columns: string[], source?: string): void;
+  /** Show or hide the Merge Fields pane (Mailings > Insert Merge Field). */
+  setMergeFieldsPaneVisible(on: boolean): void;
   /** Open the Cross-reference dialog (Word's Insert > Cross-reference) at the selection; false when
    *  no document is open. */
   openCrossReferenceDialog(): boolean;
@@ -559,7 +566,7 @@ function ensureStyles(doc: Document): void {
   existing?.remove();
   const style = doc.createElement("style");
   style.setAttribute(RIBBON_STYLE_ATTR, RIBBON_STYLE_VERSION);
-  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + FONT_DIALOG_CSS + STYLE_DIALOG_CSS + COPY_STYLES_DIALOG_CSS + BOOKMARK_DIALOG_CSS + MERGE_FIELD_DIALOG_CSS + CROSSREF_DIALOG_CSS + CAPTION_DIALOG_CSS + NAV_PANE_CSS + STYLES_PANE_CSS + RULER_CSS;
+  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + FONT_DIALOG_CSS + STYLE_DIALOG_CSS + COPY_STYLES_DIALOG_CSS + BOOKMARK_DIALOG_CSS + MERGE_FIELDS_PANE_CSS + CROSSREF_DIALOG_CSS + CAPTION_DIALOG_CSS + NAV_PANE_CSS + STYLES_PANE_CSS + RULER_CSS;
   (doc.head ?? doc.documentElement).appendChild(style);
 }
 
@@ -673,8 +680,9 @@ class RibbonSurface implements RibbonEditor {
   private rulerObserver: ResizeObserver | null = null;
   private focusRing: HTMLElement | null = null;
   private bookmarkDialog!: BookmarkDialog;
-  private mergeFieldDialog!: MergeFieldDialog;
+  private mergeFieldsPane!: MergeFieldsPane;
   private mergeColumns: string[] = [];
+  private mergeSource = "";
   private highlightMerge = false;
   private crossRefDialog!: CrossReferenceDialog;
   private captionDialog!: CaptionDialog;
@@ -733,7 +741,7 @@ class RibbonSurface implements RibbonEditor {
     root.className = "dxr";
     root.dataset.state = "idle";
     root.dataset.frame = this.options.frame ?? "flush";
-    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML + TABLE_DIALOG_HTML + LINE_NUMBERS_DIALOG_HTML + TABS_DIALOG_HTML + FONT_DIALOG_HTML + STYLE_DIALOG_HTML + COPY_STYLES_DIALOG_HTML + BOOKMARK_DIALOG_HTML + MERGE_FIELD_DIALOG_HTML + CROSSREF_DIALOG_HTML + CAPTION_DIALOG_HTML;
+    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML + TABLE_DIALOG_HTML + LINE_NUMBERS_DIALOG_HTML + TABS_DIALOG_HTML + FONT_DIALOG_HTML + STYLE_DIALOG_HTML + COPY_STYLES_DIALOG_HTML + BOOKMARK_DIALOG_HTML + CROSSREF_DIALOG_HTML + CAPTION_DIALOG_HTML;
     for (const el of Array.from(root.querySelectorAll<HTMLElement>("[data-dxr]"))) {
       el.id = this.idPrefix + el.dataset.dxr;
     }
@@ -1322,6 +1330,7 @@ class RibbonSurface implements RibbonEditor {
     this.refreshRailAnchor();
     this.scheduleStats();
     this.live.setHighlightMergeFields(this.highlightMerge);
+    this.mergeFieldsPane?.refresh();
     this.options.onOpen?.(this.live);
     return this.live;
   }
@@ -2173,18 +2182,13 @@ class RibbonSurface implements RibbonEditor {
     this.wireMailings();
   }
 
-  // ─── Mailings: Insert Merge Field, Highlight Merge Fields; the host's merge commands ─────
+  // ─── Mailings: the Merge Fields pane, Highlight Merge Fields; the host's merge commands ─────
 
-  setMergeColumns(columns: string[]): void {
+  setMergeColumns(columns: string[], source = ""): void {
     const seen = new Set<string>();
     this.mergeColumns = columns.map((c) => c.trim()).filter((c) => c && !seen.has(c.toLowerCase()) && !!seen.add(c.toLowerCase()));
-  }
-
-  /** The data source's columns, then the document's own merge fields not among them. */
-  private mergeNames(): string[] {
-    const names = [...this.mergeColumns];
-    for (const n of this.live?.mergeFieldNames() ?? []) if (!names.some((m) => m.toLowerCase() === n.toLowerCase())) names.push(n);
-    return names;
+    this.mergeSource = source;
+    this.mergeFieldsPane?.refresh();
   }
 
   private insertMergeField(code: string): { ok: boolean; code?: string } {
@@ -2195,27 +2199,56 @@ class RibbonSurface implements RibbonEditor {
     return result;
   }
 
-  openMergeFieldDialog(name = ""): boolean {
-    if (!this.live) return false;
-    this.closePopovers();
-    this.mergeFieldDialog.show(name);
-    return true;
+  private replaceMergeField(code: string): { ok: boolean; code?: string } {
+    const live = this.live;
+    if (!live) return { ok: false };
+    let result: { ok: boolean; code?: string } = { ok: false };
+    this.run("change field", () => { result = live.replaceMergeField(code); }, () => result.ok ? cmd("replaceMergeField", { code }) : undefined);
+    return result;
+  }
+
+  setMergeFieldsPaneVisible(on: boolean): void {
+    this.mergeFieldsPane.setVisible(on);
+    this.control("mergefieldbtn")?.setAttribute("aria-pressed", String(on));
+    this.scheduleRuler();
   }
 
   private wireMailings(): void {
-    this.setMergeColumns(this.options.mergeColumns ?? []);
-    this.mergeFieldDialog = new MergeFieldDialog(this.require<HTMLDialogElement>("mergefielddialog"), {
-      names: () => this.mergeNames(),
+    this.mergeColumns = [];
+    this.setMergeColumns(this.options.mergeColumns ?? [], this.options.mergeSource ?? "");
+    const host = this.options.onMailings;
+    this.mergeFieldsPane = new MergeFieldsPane(this.require("mergefieldspane"), {
+      columns: () => this.mergeColumns,
+      source: () => this.mergeSource,
+      documentFields: () => this.live?.mergeFieldNames() ?? [],
       insert: (code) => this.insertMergeField(code),
-      closed: () => {
+      replace: (code) => this.replaceMergeField(code),
+      fieldAtCaret: () => {
+        const at = this.live?.mergeFieldAt();
+        return at ? { code: at.code, name: at.name } : null;
+      },
+      browse: host ? () => host("recipients") : null,
+      clearSource: host ? () => host("clearrecipients") : null,
+      refocus: () => {
         const live = this.live;
         const at = live?.selectionDocumentRange();
         if (live && at) live.placeCaretAt(at);
       },
+      close: () => this.setMergeFieldsPaneVisible(false),
     });
-    const host = this.options.onMailings;
+    const paneButton = this.control("mergefieldbtn");
+    if (paneButton) {
+      this.keepSelection(paneButton);
+      paneButton.addEventListener("click", () => this.setMergeFieldsPaneVisible(!this.mergeFieldsPane.visible));
+    }
+    // (a merge field shows its code when the pointer rests on it)
+    this.control("editor")?.addEventListener("mouseover", (event) => {
+      const field = (event.target as HTMLElement).closest?.<HTMLElement>("[data-field-code]");
+      if (field && !field.title) field.title = `{ ${field.dataset.fieldCode} }`;
+    });
+
     for (const name of ["mailstart", "mailfinish"]) { const g = this.control(name); if (g) g.hidden = !host; }
-    for (const [name, command] of [["mailmerge", "start"], ["mailrecipients", "recipients"], ["mailfinishbtn", "finish"]] as const)
+    for (const [name, command] of [["mailmerge", "start"], ["mailfinishbtn", "finish"]] as const)
       this.control(name)?.addEventListener("click", () => this.options.onMailings?.(command));
 
     const highlight = this.control("highlightmerge");
@@ -2231,41 +2264,26 @@ class RibbonSurface implements RibbonEditor {
       });
     }
 
-    const button = this.control("mergefieldbtn"), menu = this.control("mergefieldmenu"), items = this.control("mergefielditems");
-    if (!button || !menu || !items) return;
-    this.keepSelection(button);
+    const button = this.control("mailrecipients"), menu = this.control("mailrecipmenu");
+    if (!button || !menu) return;
     button.addEventListener("click", () => {
       if (menu.hasAttribute("data-open")) { this.closePopovers(); return; }
-      if (!this.live) return;
       this.closePopovers();
-      const doc = this.element.ownerDocument;
-      const entry = (text: string, name?: string) => {
-        const b = doc.createElement("button");
-        b.type = "button";
-        b.setAttribute("role", "menuitem");
-        if (name) b.dataset.mfname = name;
-        else b.disabled = true;
-        const label = doc.createElement("span");
-        label.textContent = text;
-        b.append(label);
-        return b;
-      };
-      const names = this.mergeNames();
-      items.replaceChildren(...(names.length
-        ? names.map((n) => entry(n, n))
-        : [entry(menu.querySelector("[data-mfmenu-text=none]")?.textContent ?? "")]));
+      const clear = menu.querySelector<HTMLButtonElement>('[data-recip="clearrecipients"]');
+      if (clear) clear.disabled = !this.mergeSource;
+      const edit = menu.querySelector<HTMLButtonElement>('[data-recip="editrecipients"]');
+      if (edit) edit.disabled = !this.mergeSource;
       menu.setAttribute("data-open", "");
       button.setAttribute("aria-expanded", "true");
       this.positionPopover(menu, button);
+      menu.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
     });
     menu.addEventListener("mousedown", (event) => event.preventDefault());
     menu.addEventListener("click", (event) => {
-      const chosen = (event.target as HTMLElement).closest<HTMLButtonElement>("button");
+      const chosen = (event.target as HTMLElement).closest<HTMLButtonElement>("button[data-recip]");
       if (!chosen || chosen.disabled) return;
       this.closePopovers();
-      if (chosen.dataset.mfmenu === "dialog") { this.openMergeFieldDialog(); return; }
-      const name = chosen.dataset.mfname;
-      if (name) this.insertMergeField(mergeFieldCode({ name, format: "text" }));
+      this.options.onMailings?.(chosen.dataset.recip as MailingsCommand);
     });
     menu.addEventListener("keydown", (event) => {
       const list = Array.from(menu.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
@@ -2738,6 +2756,7 @@ class RibbonSurface implements RibbonEditor {
       this.drawBookmarks();
       if (this.navPane?.visible) this.navPane.refresh();
       if (this.stylesPane?.visible) this.stylesPane.refresh();
+      if (this.mergeFieldsPane?.visible) this.mergeFieldsPane.syncCaret();
       if (!this.ruler.element.hidden) this.ruler.refresh();
     });
   }
@@ -4345,8 +4364,8 @@ class RibbonSurface implements RibbonEditor {
     this.control("pastemore")?.setAttribute("aria-expanded", "false");
     this.control("tblselectmenu")?.removeAttribute("data-open");
     this.control("tblselect")?.setAttribute("aria-expanded", "false");
-    this.control("mergefieldmenu")?.removeAttribute("data-open");
-    this.control("mergefieldbtn")?.setAttribute("aria-expanded", "false");
+    this.control("mailrecipmenu")?.removeAttribute("data-open");
+    this.control("mailrecipients")?.setAttribute("aria-expanded", "false");
     this.control("casemenu")?.removeAttribute("data-open");
     this.control("changecase")?.setAttribute("aria-expanded", "false");
     this.control("stylemenu")?.removeAttribute("data-open");
@@ -4365,7 +4384,7 @@ class RibbonSurface implements RibbonEditor {
     const target = event.target as Node;
     const picMenu = this.control("picturemenu");
     if (picMenu?.hasAttribute("data-open") && !picMenu.contains(target)) picMenu.removeAttribute("data-open");
-    for (const [popName, buttonName] of [["gridpicker", "table"], ["linkpop", "link"], ["filemenu", "filebutton"], ["pastemenu", "pastemore"], ["tblselectmenu", "tblselect"], ["mergefieldmenu", "mergefieldbtn"], ["casemenu", "changecase"], ["stylemenu", "stylemenubtn"], ["findoptmenu", "findoptions"], ["findspecialmenu", "findspecial"]] as const) {
+    for (const [popName, buttonName] of [["gridpicker", "table"], ["linkpop", "link"], ["filemenu", "filebutton"], ["pastemenu", "pastemore"], ["tblselectmenu", "tblselect"], ["mailrecipmenu", "mailrecipients"], ["casemenu", "changecase"], ["stylemenu", "stylemenubtn"], ["findoptmenu", "findoptions"], ["findspecialmenu", "findspecial"]] as const) {
       const pop = this.control(popName);
       if (!pop?.hasAttribute("data-open")) continue;
       if (pop.contains(target) || this.control(buttonName)?.contains(target)) continue;
@@ -4373,7 +4392,7 @@ class RibbonSurface implements RibbonEditor {
       if (popName === "filemenu") this.control("filebutton")?.setAttribute("aria-expanded", "false");
       if (popName === "pastemenu") this.control("pastemore")?.setAttribute("aria-expanded", "false");
       if (popName === "tblselectmenu") this.control("tblselect")?.setAttribute("aria-expanded", "false");
-      if (popName === "mergefieldmenu") this.control("mergefieldbtn")?.setAttribute("aria-expanded", "false");
+      if (popName === "mailrecipmenu") this.control("mailrecipients")?.setAttribute("aria-expanded", "false");
       if (popName === "casemenu") this.control("changecase")?.setAttribute("aria-expanded", "false");
       if (popName === "stylemenu") this.control("stylemenubtn")?.setAttribute("aria-expanded", "false");
       if (popName === "findoptmenu") this.control("findoptions")?.setAttribute("aria-expanded", "false");

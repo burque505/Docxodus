@@ -11,6 +11,10 @@ namespace Docxodus.Internal;
 /// </summary>
 internal static class MergeFieldInstr
 {
+    /// <summary>A kind <see cref="TryParse"/> gives.</summary>
+    internal static bool IsMergeKind(string kind) => kind is "MERGEFIELD" or "IF" or "=" or "FILLIN" or "ASK" or "NEXT"
+        or "NEXTIF" or "SKIPIF" or "MERGEREC" or "MERGESEQ";
+
     internal static (string Kind, string Target, bool Hyperlink)? TryParse(string? instrText)
     {
         if (string.IsNullOrWhiteSpace(instrText)) return null;

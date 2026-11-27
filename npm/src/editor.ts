@@ -8557,9 +8557,12 @@ export class DocxEditor {
     const fullId = this.anchorIdOf(block);
     if (!fullId) return null;
     const unid = block.getAttribute("data-anchor");
+    // (a selection's span is in the session's offsets already: selectionSpanIn trims it; a caret's is the DOM's)
     let span = selectionSpanIn(block);
+    let fromDom = false;
     if (!span) {
       const caret = caretOffsetIn(block);
+      fromDom = caret !== null || !(this.lastSelection && this.lastSelection.unid === unid);
       if (caret !== null) span = { start: caret, length: 0 };
       else if (this.lastSelection && this.lastSelection.unid === unid) span = this.lastSelection.span;
       else if (this.lastCaret && this.lastCaret.unid === unid) span = { start: this.lastCaret.offset, length: 0 };
@@ -8567,15 +8570,77 @@ export class DocxEditor {
     }
     const id = this.syncBlock(block, fullId);
     if (!id) return null;
-    // The DOM can keep the placeholder space an empty paragraph rendered as in front of what was
-    // typed into it, which the session's text does not have: offsets measured in the DOM are then
-    // past the session's by that much (a paragraph that does start with spaces has them in both).
-    const lead = (blockContentText(block).match(LEADING_SPACES)?.[0] ?? "").length;
-    if (lead > 0 && !LEADING_SPACES.test(this.sessionTextOf(id) ?? " ")) {
-      const start = Math.max(0, span.start - lead);
-      span = { start, length: Math.max(0, span.start + span.length - lead) - start };
-    }
+    if (fromDom) span = this.sessionSpanOf(block, id, span);
     return { startAnchorId: id, startOffset: span.start, endAnchorId: id, endOffset: span.start + span.length };
+  }
+
+  /**
+   * A span measured in `block`'s DOM, in the session's offsets (the block committed, as `id`).
+   * The DOM can keep the placeholder space an empty paragraph rendered as in front of what was
+   * typed into it, which the session's text does not have: offsets measured in the DOM are then
+   * past the session's by that much (a paragraph that does start with spaces has them in both).
+   */
+  private sessionSpanOf(block: HTMLElement, id: string, span: { start: number; length: number }): { start: number; length: number } {
+    const lead = (blockContentText(block).match(LEADING_SPACES)?.[0] ?? "").length;
+    if (lead === 0 || LEADING_SPACES.test(this.sessionTextOf(id) ?? " ")) return span;
+    const start = Math.max(0, span.start - lead);
+    return { start, length: Math.max(0, span.start + span.length - lead) - start };
+  }
+
+  /**
+   * Word's merge field at the selection (MERGEFIELD, IF, =, FILLIN...: one the converter marked
+   * with its code): the one the selection holds, else the one just before the caret, else the one
+   * just after it. Its code (nested fields in braces), kind, MERGEFIELD name and document range.
+   */
+  mergeFieldAt(): { code: string; kind: string; name: string; range: DocumentRange } | null {
+    if (this.closed) return null;
+    const block = this.activeBlock;
+    if (!block?.isConnected) return null;
+    const fields = Array.from(block.querySelectorAll<HTMLElement>("[data-field-code]"))
+      .filter((f) => !f.parentElement?.closest("[data-field-code]"));
+    if (fields.length === 0) return null;
+    const startOf = (f: HTMLElement) => contentOffsetOf(block, f.parentNode!, Array.prototype.indexOf.call(f.parentNode!.childNodes, f));
+    const lengthOf = (f: HTMLElement) => stripBidi(atomText(f) ?? "").length;
+    const sel = typeof window !== "undefined" ? window.getSelection() : null;
+    const range = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
+    const beside = (caret: number) =>
+      fields.find((f) => startOf(f) + lengthOf(f) === caret) ?? fields.find((f) => startOf(f) === caret);
+    let field: HTMLElement | undefined;
+    const unid = block.getAttribute("data-anchor");
+    const seen = this.textSelection;
+    if (range && block.contains(range.startContainer)) {
+      if (!range.collapsed) field = fields.find((f) => range.intersectsNode(f));
+      if (!field) {
+        const inside = fields.find((f) => f === range.startContainer || f.contains(range.startContainer));
+        field = inside ?? beside(contentOffsetOf(block, range.startContainer, range.startOffset));
+      }
+    } else if (seen && seen.startUnid === unid) {
+      // (the focus is outside the document, in a pane beside it: the selection it last had, in the DOM's offsets)
+      const lo = Math.min(seen.startOffset, seen.endUnid === unid ? seen.endOffset : seen.startOffset);
+      const hi = Math.max(seen.startOffset, seen.endUnid === unid ? seen.endOffset : seen.startOffset);
+      if (hi > lo) field = fields.find((f) => startOf(f) < hi && startOf(f) + lengthOf(f) > lo);
+      field ??= beside(lo);
+    }
+    if (!field) return null;
+    const domSpan = { start: startOf(field), length: lengthOf(field) };
+    const fullId = this.anchorIdOf(block);
+    if (!fullId) return null;
+    const id = this.syncBlock(block, fullId);
+    if (!id) return null;
+    const span = this.sessionSpanOf(block, id, domSpan);
+    return {
+      code: field.dataset.fieldCode ?? "",
+      kind: field.dataset.field ?? "",
+      name: field.dataset.fieldTarget ?? "",
+      range: { startAnchorId: id, startOffset: span.start, endAnchorId: id, endOffset: span.start + span.length },
+    };
+  }
+
+  /** Change the merge field at the selection ({@link mergeFieldAt}) to field `code`: one undo step. */
+  replaceMergeField(code: string): { ok: boolean; code?: string; after?: DocumentRange } {
+    const field = this.mergeFieldAt();
+    if (!field) return { ok: false, code: "no_field" };
+    return this.insertField(code, field.range);
   }
 
   /** The document range of the selection (or caret) the editor last saw in the text, its blocks'

@@ -490,6 +490,14 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
       must(r.ok, "insertField", r.code ? `the engine refused it (${r.code})` : "there is no caret in the document");
     },
   },
+  replaceMergeField: {
+    group: "insert", description: "Change the merge field at the caret (the one selected, else the one just before the caret, else just after) to field `code`, as insertField takes it.",
+    args: { code: "string" },
+    run: (e, a) => {
+      const r = e.replaceMergeField(a.string("code"));
+      must(r.ok, "replaceMergeField", r.code === "no_field" ? "there is no merge field at the caret" : `the engine refused it (${r.code ?? "?"})`);
+    },
+  },
   highlightMergeFields: {
     group: "view", description: "Shade merge fields grey (Word's Highlight Merge Fields); without `on`, toggle.",
     args: { "on?": "boolean" },

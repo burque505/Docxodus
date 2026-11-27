@@ -121,4 +121,18 @@ public class DocxSessionInsertFieldTests
         Assert.StartsWith("«IF X = True", iff.Value);
         Assert.Equal(iff.Value, (string?)iff.Attribute("data-field-cached"));
     }
+
+    [Fact]
+    public void IF008_StampReferenceFields_CarriesMergeFieldCode()
+    {
+        using var session = new DocxSession(DocxSessionTests.BuildDS001_SimpleTwoParagraphs());
+        var ps = BodyParagraphs(session);
+        Assert.True(session.InsertField(ps[0], 0, @"MERGEFIELD Amount \# $,0.00").Success);
+        Assert.True(session.InsertField(ps[1], 0, @"IF { MERGEFIELD X } = True ""a"" ""b""").Success);
+        var html = XElement.Parse(HtmlConversionOps.ConvertToHtml(session.Save(), new HtmlConversionOptions { StampReferenceFields = true }));
+        var merge = html.Descendants().Single(e => (string?)e.Attribute("data-field") == "MERGEFIELD");
+        Assert.Equal(@"MERGEFIELD Amount \# $,0.00", (string?)merge.Attribute("data-field-code"));
+        var iff = html.Descendants().Single(e => (string?)e.Attribute("data-field") == "IF");
+        Assert.Matches(@"^IF \{ ?MERGEFIELD X ?\} = True ""a"" ""b""$", (string?)iff.Attribute("data-field-code"));
+    }
 }
