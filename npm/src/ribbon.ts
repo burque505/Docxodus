@@ -2252,7 +2252,7 @@ class RibbonSurface implements RibbonEditor {
   /** The document's shown paragraphs, the first one first. */
   private bodyBlocks(): HTMLElement[] {
     return Array.from(this.require("editor").querySelectorAll<HTMLElement>('[data-anchor][contenteditable="true"]'))
-      .filter((b) => !b.closest("[data-docx-header], [data-docx-footer], .dxr-hf, [data-hf-story]"));
+      .filter((b) => !b.hasAttribute("data-hf-anchor") && !b.closest("[data-hf-band]"));
   }
 
   /**
@@ -2260,7 +2260,7 @@ class RibbonSurface implements RibbonEditor {
    * content at the start), or, when it has text already, the envelope goes in front of it as a
    * section of its own (a section break at the start, the first section made the envelope).
    */
-  private async makeEnvelope(size: { widthTwips: number; heightTwips: number; margin: number }, html: string,
+  private async makeEnvelope(size: { widthTwips: number; heightTwips: number; marginLeft: number; marginTop: number; marginRight: number; marginBottom: number }, html: string,
     place: { returnLines: number; deliveryLines: number; indentTwips: number; beforeTwips: number }): Promise<boolean> {
     const live = this.live;
     if (!live) return false;
@@ -2281,7 +2281,9 @@ class RibbonSurface implements RibbonEditor {
     }
     const setup = {
       pageWidthTwips: size.widthTwips, pageHeightTwips: size.heightTwips, landscape: true,
-      marginTopTwips: size.margin, marginBottomTwips: size.margin, marginLeftTwips: size.margin, marginRightTwips: size.margin,
+      marginTopTwips: size.marginTop, marginBottomTwips: size.marginBottom, marginLeftTwips: size.marginLeft, marginRightTwips: size.marginRight,
+      // (the header and footer at the edges: an envelope's page has none of its own)
+      headerDistanceTwips: Math.min(360, size.marginTop), footerDistanceTwips: Math.min(360, size.marginBottom),
     };
     if (!live.setPageSetup(setup)) return false;
     if (!caretAtStart()) return false;
@@ -2300,6 +2302,13 @@ class RibbonSurface implements RibbonEditor {
       for (let i = 0; i < place.returnLines; i++) format(i, { spacingBefore: 0, spacingAfter: 0, leftIndent: 0, firstLineIndent: 0 });
       for (let i = 0; i < place.deliveryLines; i++)
         format(place.returnLines + i, { spacingBefore: i === 0 ? place.beforeTwips : 0, spacingAfter: 0, leftIndent: place.indentTwips, firstLineIndent: 0 });
+      // No page number on the envelope: its page (the section's first, and only) gets a header and footer of its own,
+      // empty (Word's Different First Page); the letter after it keeps its own. (Turning it on opens the header:
+      // closed again, the caret back in the envelope.)
+      if (caretAtStart() && !live.headerFooterKindEnabled("first")) {
+        live.setHeaderFooterKindEnabled("first", true);
+        live.closeHeaderFooter();
+      }
       // (the caret after the delivery address)
       const last = this.bodyBlocks()[place.returnLines + place.deliveryLines - 1];
       if (last) { last.focus(); last.ownerDocument.getSelection()?.collapse(last, last.childNodes.length); }

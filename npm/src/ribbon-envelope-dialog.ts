@@ -26,13 +26,24 @@ export const ENVELOPE_SIZES: EnvelopeSize[] = [
 /** The texts the dialog writes from code (the sizes), for a host's translation tables. */
 export const ENVELOPE_DIALOG_TEXTS: readonly string[] = [...ENVELOPE_SIZES.map((s) => s.label), "Custom size"];
 
-/** Where an envelope's parts go (twips): the margin all round, the delivery address's indent and space above. */
-export function envelopeLayout(widthTwips: number, heightTwips: number) {
-  const margin = Math.round(0.4 * IN);
+/** Where an envelope's addresses go, from its top left corner (twips). */
+export interface EnvelopePlaces { returnLeft: number; returnTop: number; deliveryLeft: number; deliveryTop: number }
+
+/** Word's places for a size: the return address half an inch in (a printer cannot print at the very edge), the
+ *  delivery address about 4 x 2 inches in on a #10 envelope, in proportion on the others. */
+export function defaultPlaces(widthTwips: number, heightTwips: number): EnvelopePlaces {
   return {
-    margin,
-    deliveryIndent: Math.round(widthTwips * 0.42) - margin,
-    deliveryTop: Math.max(0, Math.round(heightTwips * 0.42) - margin),
+    returnLeft: Math.round(0.5 * IN), returnTop: Math.round(0.5 * IN),
+    deliveryLeft: Math.round(widthTwips * 0.42), deliveryTop: Math.round(heightTwips * 0.48),
+  };
+}
+
+/** The page margins and the delivery address's indent and space above, for places (twips). */
+export function envelopeLayout(widthTwips: number, heightTwips: number, places = defaultPlaces(widthTwips, heightTwips)) {
+  return {
+    marginLeft: places.returnLeft, marginTop: places.returnTop, marginRight: Math.round(0.5 * IN), marginBottom: Math.round(0.4 * IN),
+    deliveryIndent: Math.max(0, places.deliveryLeft - places.returnLeft),
+    deliveryTop: Math.max(0, places.deliveryTop - places.returnTop),
   };
 }
 
@@ -66,8 +77,8 @@ function lineHtml(line: Line): string {
 }
 
 /** The envelope's content: the return address's lines, then the delivery address's, indented and lower down. */
-export function envelopeHtml(ret: Line[], delivery: Line[], widthTwips: number, heightTwips: number): string {
-  const { deliveryIndent, deliveryTop } = envelopeLayout(widthTwips, heightTwips);
+export function envelopeHtml(ret: Line[], delivery: Line[], widthTwips: number, heightTwips: number, places?: EnvelopePlaces): string {
+  const { deliveryIndent, deliveryTop } = envelopeLayout(widthTwips, heightTwips, places);
   const retLines = ret.map((l) => `<p style="margin:0">${lineHtml(l)}</p>`).join("");
   // (the delivery address's top: its space before, less what the return address's lines take)
   const used = ret.length * 276;
@@ -90,6 +101,7 @@ export const ENVELOPE_DIALOG_CSS = `
   box-shadow: 0 1px 3px rgba(0,0,0,.15); margin: 4px auto 0; overflow: hidden; font-family: Calibri, "Segoe UI", sans-serif; }
 .dxr-envdialog .dxr-envpreview div { position: absolute; white-space: pre; line-height: 1.15; }
 .dxr-envdialog .dxr-envnote { color: var(--dxr-muted); font-size: 11.5px; }
+.dxr-envdialog .dxr-envplaces { display: grid; grid-template-columns: max-content repeat(2, minmax(0, 6em)); gap: 4px 8px; align-items: center; }
 .dxr-envdialog [hidden] { display: none !important; }
 `;
 
@@ -111,13 +123,18 @@ export const ENVELOPE_DIALOG_HTML = `
         <label>Return address <textarea data-ev="return" title="Kept for the next envelope"></textarea></label>
         <label class="dxr-dcheck"><input type="checkbox" data-ev="omit" /> Omit</label>
       </div>
+      <div class="dxr-envwide dxr-envplaces">
+        <span></span><span>From left (in)</span><span>From top (in)</span>
+        <span>Return address</span><input type="text" data-ev="retleft" aria-label="Return address from left" /><input type="text" data-ev="rettop" aria-label="Return address from top" />
+        <span>Delivery address</span><input type="text" data-ev="delleft" aria-label="Delivery address from left" /><input type="text" data-ev="deltop" aria-label="Delivery address from top" />
+      </div>
       <div class="dxr-envwide">
         <span>Preview</span>
         <div class="dxr-envpreview" data-ev="preview"></div>
       </div>
       <span class="dxr-envnote dxr-envwide" data-ev="where"></span>
     </div>
-    <div class="dxr-derror" role="alert"><span data-ev-msg="size" hidden>Give the custom size in inches (2 to 22 wide, 2 to 14 high).</span><span data-ev-msg="empty" hidden>Type a delivery address, or choose the columns of one.</span><span data-ev-msg="refused" hidden>The envelope could not be made here.</span></div>
+    <div class="dxr-derror" role="alert"><span data-ev-msg="size" hidden>Give the custom size in inches (2 to 22 wide, 2 to 14 high).</span><span data-ev-msg="places" hidden>Give each address's place in inches, inside the envelope.</span><span data-ev-msg="empty" hidden>Type a delivery address, or choose the columns of one.</span><span data-ev-msg="refused" hidden>The envelope could not be made here.</span></div>
     <div class="dxr-dfoot">
       <button type="submit" value="ok" data-ev="ok">OK</button>
       <button type="submit" value="cancel" formnovalidate>Cancel</button>
@@ -139,7 +156,7 @@ export interface EnvelopeDialogHost {
   hasContent(): boolean;
   /** Make the envelope: the page `size`, the content `html` (the return address's `place.returnLines`, then the
    *  delivery address's `place.deliveryLines`), the delivery address indented and lower down as `place` says. */
-  make(size: { widthTwips: number; heightTwips: number; margin: number }, html: string,
+  make(size: { widthTwips: number; heightTwips: number; marginLeft: number; marginTop: number; marginRight: number; marginBottom: number }, html: string,
     place: { returnLines: number; deliveryLines: number; indentTwips: number; beforeTwips: number }): Promise<boolean>;
   translate(text: string): string;
   closed(): void;
@@ -151,6 +168,9 @@ export class EnvelopeDialog {
     for (const el of Array.from(dialog.querySelectorAll<HTMLElement>("input, select, textarea")))
       el.addEventListener(el.tagName === "SELECT" || (el as HTMLInputElement).type === "checkbox" ? "change" : "input", () => this.update());
     this.select("prefix").addEventListener("change", () => { this.fillDelivery(); this.update(); });
+    // (another size: Word's places for it)
+    this.select("size").addEventListener("change", () => { this.fillPlaces(); this.update(); });
+    for (const key of ["width", "height"]) this.input(key).addEventListener("change", () => { this.fillPlaces(); this.update(); });
     const form = dialog.querySelector("form")!;
     form.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -180,6 +200,7 @@ export class EnvelopeDialog {
     const row = this.dialog.querySelector<HTMLElement>('[data-ev-row="prefix"]');
     if (row) row.hidden = !(prefixes.length > 1 || (prefixes.length === 1 && prefixes[0] !== ""));
     this.fillDelivery();
+    this.fillPlaces();
     this.textarea("return").value = this.host.returnAddress();
     this.part("where").textContent = this.dialog.querySelector(`[data-ev-text=${this.host.hasContent() ? "add" : "new"}]`)?.textContent ?? "";
     this.showError(null);
@@ -206,6 +227,26 @@ export class EnvelopeDialog {
     return { key: "custom", label: "", widthTwips: Math.round(long * IN), heightTwips: Math.round(short * IN) };
   }
 
+  private fillPlaces(): void {
+    const size = this.size();
+    if (!size) return;
+    const p = defaultPlaces(size.widthTwips, size.heightTwips);
+    const inches = (t: number) => String(Math.round((t / IN) * 100) / 100);
+    this.input("retleft").value = inches(p.returnLeft);
+    this.input("rettop").value = inches(p.returnTop);
+    this.input("delleft").value = inches(p.deliveryLeft);
+    this.input("deltop").value = inches(p.deliveryTop);
+  }
+
+  /** The addresses' places as typed (twips), or null for one outside the envelope. */
+  places(size: EnvelopeSize): EnvelopePlaces | null {
+    const v = (key: string) => Number(this.input(key).value.replace(",", "."));
+    const p = { returnLeft: v("retleft"), returnTop: v("rettop"), deliveryLeft: v("delleft"), deliveryTop: v("deltop") };
+    const w = size.widthTwips / IN, h = size.heightTwips / IN;
+    if ([p.returnLeft, p.deliveryLeft].some((x) => !(x >= 0.1 && x < w - 1)) || [p.returnTop, p.deliveryTop].some((y) => !(y >= 0.1 && y < h - 0.5))) return null;
+    return { returnLeft: Math.round(p.returnLeft * IN), returnTop: Math.round(p.returnTop * IN), deliveryLeft: Math.round(p.deliveryLeft * IN), deliveryTop: Math.round(p.deliveryTop * IN) };
+  }
+
   private fillDelivery(): void {
     const match = matchAddress(this.host.columns(), this.select("prefix").value);
     this.textarea("delivery").value = textOf(addressLines(match, { name: match.full ? "full" : "titlefirstlast", company: true, address: true, country: false }));
@@ -216,38 +257,42 @@ export class EnvelopeDialog {
     const size = this.size();
     const preview = this.part("preview");
     const doc = this.dialog.ownerDocument;
-    if (size) {
+    const places = size ? this.places(size) : null;
+    if (size && places) {
       const scale = 300 / size.widthTwips;
-      const { margin, deliveryIndent, deliveryTop } = envelopeLayout(size.widthTwips, size.heightTwips);
       preview.style.width = `${Math.round(size.widthTwips * scale)}px`;
       preview.style.height = `${Math.round(size.heightTwips * scale)}px`;
       preview.style.fontSize = `${Math.max(5, 220 * scale)}px`;
       const ret = doc.createElement("div");
-      ret.style.left = ret.style.top = `${Math.round(margin * scale)}px`;
+      ret.style.left = `${Math.round(places.returnLeft * scale)}px`;
+      ret.style.top = `${Math.round(places.returnTop * scale)}px`;
       ret.textContent = this.input("omit").checked ? "" : this.textarea("return").value;
       const del = doc.createElement("div");
-      del.style.left = `${Math.round((margin + deliveryIndent) * scale)}px`;
-      del.style.top = `${Math.round((margin + deliveryTop) * scale)}px`;
+      del.style.left = `${Math.round(places.deliveryLeft * scale)}px`;
+      del.style.top = `${Math.round(places.deliveryTop * scale)}px`;
       del.textContent = this.textarea("delivery").value;
       preview.replaceChildren(ret, del);
     }
-    this.button("ok").disabled = !size || !this.textarea("delivery").value.trim();
+    this.button("ok").disabled = !size || !places || !this.textarea("delivery").value.trim();
   }
 
   private async ok(): Promise<void> {
     const size = this.size();
     if (!size) { this.showError("size"); return; }
+    const places = this.places(size);
+    if (!places) { this.showError("places"); return; }
     const delivery = linesOf(this.textarea("delivery").value);
     if (!delivery.length) { this.showError("empty"); return; }
     const returnText = this.textarea("return").value;
     this.host.keepReturnAddress(returnText);
     const ret = this.input("omit").checked ? [] : linesOf(returnText).map((l) => l.map((p) => ("field" in p ? { text: `«${p.field}»` } : p)));
-    const html = envelopeHtml(ret, delivery, size.widthTwips, size.heightTwips);
-    const layout = envelopeLayout(size.widthTwips, size.heightTwips);
+    const html = envelopeHtml(ret, delivery, size.widthTwips, size.heightTwips, places);
+    const layout = envelopeLayout(size.widthTwips, size.heightTwips, places);
     // (the delivery address's top: its space before, less what the return address's lines take, at about 13.8pt a line)
     const place = { returnLines: ret.length, deliveryLines: delivery.length, indentTwips: layout.deliveryIndent, beforeTwips: Math.max(0, layout.deliveryTop - ret.length * 276) };
     this.dialog.close();
-    if (!(await this.host.make({ widthTwips: size.widthTwips, heightTwips: size.heightTwips, margin: layout.margin }, html, place))) {
+    if (!(await this.host.make({ widthTwips: size.widthTwips, heightTwips: size.heightTwips, marginLeft: layout.marginLeft, marginTop: layout.marginTop,
+      marginRight: layout.marginRight, marginBottom: layout.marginBottom }, html, place))) {
       this.dialog.showModal();
       this.showError("refused");
       return;
@@ -255,7 +300,7 @@ export class EnvelopeDialog {
     this.host.closed();
   }
 
-  private showError(which: "size" | "empty" | "refused" | null): void {
+  private showError(which: "size" | "places" | "empty" | "refused" | null): void {
     for (const el of Array.from(this.dialog.querySelectorAll<HTMLElement>("[data-ev-msg]"))) el.hidden = el.dataset.evMsg !== which;
   }
 

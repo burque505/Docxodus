@@ -225,7 +225,8 @@ async function mountParties(page: Page) {
 
 const dialog = (page: Page) => page.locator(`${HOST} [data-dxr="addressdialog"]`);
 const fieldCodes = (page: Page) => page.locator(`${HOST} [data-field-code]`).evaluateAll((els) => els.map((e) => e.getAttribute('data-field-code')));
-const texts = (page: Page) => page.locator(blocks).evaluateAll((bs) => bs.map((b) => (b.textContent ?? '').replace(/^[\s\u00a0]+|[\s\u00a0]+$/g, '')));
+// (the document's paragraphs: not a header's or footer's)
+const texts = (page: Page) => page.locator(blocks).evaluateAll((bs) => bs.filter((b) => !b.hasAttribute('data-hf-anchor') && !b.closest('[data-hf-band]')).map((b) => (b.textContent ?? '').replace(/^[\s\u00a0]+|[\s\u00a0]+$/g, '')));
 
 test('Address Block: a party of prefixed columns, previewed with its rows, inserted as plain merge fields', async ({ page }) => {
   await mountParties(page);
@@ -331,12 +332,14 @@ const envDialog = (page: Page) => page.locator(`${HOST} [data-dxr="envelopedialo
 /** The section of paragraph `index` (its size in twips). */
 const sectionOf = (page: Page, index: number) => page.evaluate(async (index) => {
   const r = (window as any).__ribbon;
-  const block = document.querySelectorAll<HTMLElement>('#mm-host [data-anchor][contenteditable="true"]')[index];
+  const block = Array.from(document.querySelectorAll<HTMLElement>('#mm-host [data-anchor][contenteditable="true"]'))
+    .filter((b) => !b.hasAttribute('data-hf-anchor') && !b.closest('[data-hf-band]'))[index];
   block.focus();
   getSelection()!.collapse(block, 0);
   await new Promise((done) => setTimeout(done, 50));
   const info = r.editor.sectionInfo();
-  return { width: info.pageWidthTwips, height: info.pageHeightTwips, landscape: info.landscape, left: info.marginLeftTwips };
+  return { width: info.pageWidthTwips, height: info.pageHeightTwips, landscape: info.landscape, left: info.marginLeftTwips,
+    top: info.marginTopTwips, firstPage: r.editor.headerFooterKindEnabled('first') };
 }, index);
 
 test('Envelopes: an empty document becomes the envelope, the delivery address merge fields', async ({ page }) => {
@@ -381,4 +384,34 @@ test('Envelopes: a document with text gets the envelope in front, as a section o
   const letter = await sectionOf(page, all.length - 1);
   expect(envelope.width).toBe(Math.round(9.5 * 1440));
   expect(letter.width).not.toBe(envelope.width);
+});
+
+test('Envelopes: half an inch in, and no page number on the envelope', async ({ page }) => {
+  await mountParties(page);
+  await page.evaluate(() => (window as any).__ribbon.editor.exec('pasteText', { text: 'The letter.' }));
+  // a footer with a page number, as a letter has
+  await page.locator(`${HOST} .dxr-tab[data-tab="references"]`).click();
+  await page.locator(`${HOST} [data-dxr="pagenum"]`).click();
+  await page.locator(`${HOST} .dxr-tab[data-tab="mailings"]`).click();
+  await page.locator(`${HOST} [data-dxr="envelopes"]`).click();
+  const d = envDialog(page);
+  await expect(d.locator('input[data-ev="retleft"]')).toHaveValue('0.5');
+  await expect(d.locator('input[data-ev="rettop"]')).toHaveValue('0.5');
+  await expect(d.locator('input[data-ev="delleft"]')).toHaveValue('3.99');
+  await expect(d.locator('input[data-ev="deltop"]')).toHaveValue('1.98');
+  await d.locator('input[data-ev="retleft"]').fill('0.75');
+  await d.locator('[data-ev="ok"]').click();
+  await expect(d).toBeHidden();
+  const envelope = await sectionOf(page, 0);
+  expect(envelope.left).toBe(1080);
+  expect(envelope.top).toBe(720);
+  expect(envelope.firstPage).toBe(true);
+  // page view: the envelope's page shows no footer text; the letter's page keeps its number
+  await page.evaluate(() => (window as any).__ribbon.editor.setPaginated(true));
+  const pages = page.locator(`${HOST} .page-box`);
+  await expect(pages).toHaveCount(2);
+  const footers = await pages.evaluateAll((ps) => ps.map((p) => Array.from(p.querySelectorAll<HTMLElement>('[data-docx-footer], [data-hf="footer"], .page-footer, footer'))
+    .map((f) => (f.textContent ?? '').trim()).join('|')));
+  expect(footers[0]).not.toMatch(/\d/);
+  expect(footers[1]).toMatch(/\d/);
 });
