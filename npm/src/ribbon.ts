@@ -66,6 +66,7 @@ import { FONT_DIALOG_CSS, FONT_DIALOG_HTML, FontDialog } from "./ribbon-font-dia
 import { STYLE_DIALOG_CSS, STYLE_DIALOG_HTML, StyleDialog, paragraphDifference, paragraphOf, runDifference } from "./ribbon-style-dialog.js";
 import { COPY_STYLES_DIALOG_CSS, COPY_STYLES_DIALOG_HTML, CopyStylesDialog } from "./ribbon-copy-styles-dialog.js";
 import { BOOKMARK_DIALOG_CSS, BOOKMARK_DIALOG_HTML, BookmarkDialog } from "./ribbon-bookmark-dialog.js";
+import { MERGE_FIELD_DIALOG_CSS, MERGE_FIELD_DIALOG_HTML, MergeFieldDialog, mergeFieldCode } from "./ribbon-mergefield-dialog.js";
 import { CROSSREF_DIALOG_CSS, CROSSREF_DIALOG_HTML, CrossReferenceDialog } from "./ribbon-crossref-dialog.js";
 import { CAPTION_DIALOG_CSS, CAPTION_DIALOG_HTML, CaptionDialog, TableOfFiguresDialog } from "./ribbon-caption-dialog.js";
 import { crossReferenceOptionsFor, crossReferencePart } from "./cross-reference.js";
@@ -255,6 +256,11 @@ export interface RibbonOptions extends DocxEditorOptions {
   /** Find's options were changed in the find bar's Options menu, for a host to keep (only the
    *  options that are on). */
   onFindOptionsChange?: (options: FindOptions) => void;
+  /** Mailings > Start Mail Merge…, Select Recipients… and Finish & Merge…, for the host to do
+   *  (they need its data sources and files). Without it those buttons are hidden. */
+  onMailings?: (command: "start" | "recipients" | "finish") => void;
+  /** The data source's columns at the start, listed first by Insert Merge Field; `setMergeColumns` changes them. */
+  mergeColumns?: string[];
   /** Called after any document opens, with the live editor. */
   onOpen?: (editor: DocxEditor) => void;
   /** Called whenever the status line changes. */
@@ -413,6 +419,10 @@ export interface RibbonEditor {
   setRulerVisible(on: boolean): void;
   /** Open the Bookmark dialog (Word's Insert > Bookmark) on the selection; false when no document is open. */
   openBookmarkDialog(): boolean;
+  /** The data source's columns (Select Recipients), listed first by Mailings > Insert Merge Field. */
+  setMergeColumns(columns: string[]): void;
+  /** Open Mailings > Insert Merge Field… (on field `name` when given); false when no document is open. */
+  openMergeFieldDialog(name?: string): boolean;
   /** Open the Cross-reference dialog (Word's Insert > Cross-reference) at the selection; false when
    *  no document is open. */
   openCrossReferenceDialog(): boolean;
@@ -549,7 +559,7 @@ function ensureStyles(doc: Document): void {
   existing?.remove();
   const style = doc.createElement("style");
   style.setAttribute(RIBBON_STYLE_ATTR, RIBBON_STYLE_VERSION);
-  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + FONT_DIALOG_CSS + STYLE_DIALOG_CSS + COPY_STYLES_DIALOG_CSS + BOOKMARK_DIALOG_CSS + CROSSREF_DIALOG_CSS + CAPTION_DIALOG_CSS + NAV_PANE_CSS + STYLES_PANE_CSS + RULER_CSS;
+  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + FONT_DIALOG_CSS + STYLE_DIALOG_CSS + COPY_STYLES_DIALOG_CSS + BOOKMARK_DIALOG_CSS + MERGE_FIELD_DIALOG_CSS + CROSSREF_DIALOG_CSS + CAPTION_DIALOG_CSS + NAV_PANE_CSS + STYLES_PANE_CSS + RULER_CSS;
   (doc.head ?? doc.documentElement).appendChild(style);
 }
 
@@ -663,6 +673,9 @@ class RibbonSurface implements RibbonEditor {
   private rulerObserver: ResizeObserver | null = null;
   private focusRing: HTMLElement | null = null;
   private bookmarkDialog!: BookmarkDialog;
+  private mergeFieldDialog!: MergeFieldDialog;
+  private mergeColumns: string[] = [];
+  private highlightMerge = false;
   private crossRefDialog!: CrossReferenceDialog;
   private captionDialog!: CaptionDialog;
   private tofDialog!: TableOfFiguresDialog;
@@ -720,7 +733,7 @@ class RibbonSurface implements RibbonEditor {
     root.className = "dxr";
     root.dataset.state = "idle";
     root.dataset.frame = this.options.frame ?? "flush";
-    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML + TABLE_DIALOG_HTML + LINE_NUMBERS_DIALOG_HTML + TABS_DIALOG_HTML + FONT_DIALOG_HTML + STYLE_DIALOG_HTML + COPY_STYLES_DIALOG_HTML + BOOKMARK_DIALOG_HTML + CROSSREF_DIALOG_HTML + CAPTION_DIALOG_HTML;
+    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML + TABLE_DIALOG_HTML + LINE_NUMBERS_DIALOG_HTML + TABS_DIALOG_HTML + FONT_DIALOG_HTML + STYLE_DIALOG_HTML + COPY_STYLES_DIALOG_HTML + BOOKMARK_DIALOG_HTML + MERGE_FIELD_DIALOG_HTML + CROSSREF_DIALOG_HTML + CAPTION_DIALOG_HTML;
     for (const el of Array.from(root.querySelectorAll<HTMLElement>("[data-dxr]"))) {
       el.id = this.idPrefix + el.dataset.dxr;
     }
@@ -1308,6 +1321,7 @@ class RibbonSurface implements RibbonEditor {
     this.refreshRailCounts();
     this.refreshRailAnchor();
     this.scheduleStats();
+    this.live.setHighlightMergeFields(this.highlightMerge);
     this.options.onOpen?.(this.live);
     return this.live;
   }
@@ -2156,6 +2170,112 @@ class RibbonSurface implements RibbonEditor {
     this.wireCrossReferences();
     this.wireCaptions();
     this.wireFields();
+    this.wireMailings();
+  }
+
+  // ─── Mailings: Insert Merge Field, Highlight Merge Fields; the host's merge commands ─────
+
+  setMergeColumns(columns: string[]): void {
+    const seen = new Set<string>();
+    this.mergeColumns = columns.map((c) => c.trim()).filter((c) => c && !seen.has(c.toLowerCase()) && !!seen.add(c.toLowerCase()));
+  }
+
+  /** The data source's columns, then the document's own merge fields not among them. */
+  private mergeNames(): string[] {
+    const names = [...this.mergeColumns];
+    for (const n of this.live?.mergeFieldNames() ?? []) if (!names.some((m) => m.toLowerCase() === n.toLowerCase())) names.push(n);
+    return names;
+  }
+
+  private insertMergeField(code: string): { ok: boolean; code?: string } {
+    const live = this.live;
+    if (!live) return { ok: false };
+    let result: { ok: boolean; code?: string } = { ok: false };
+    this.run("insert field", () => { result = live.insertField(code); }, () => result.ok ? cmd("insertField", { code }) : undefined);
+    return result;
+  }
+
+  openMergeFieldDialog(name = ""): boolean {
+    if (!this.live) return false;
+    this.closePopovers();
+    this.mergeFieldDialog.show(name);
+    return true;
+  }
+
+  private wireMailings(): void {
+    this.setMergeColumns(this.options.mergeColumns ?? []);
+    this.mergeFieldDialog = new MergeFieldDialog(this.require<HTMLDialogElement>("mergefielddialog"), {
+      names: () => this.mergeNames(),
+      insert: (code) => this.insertMergeField(code),
+      closed: () => {
+        const live = this.live;
+        const at = live?.selectionDocumentRange();
+        if (live && at) live.placeCaretAt(at);
+      },
+    });
+    const host = this.options.onMailings;
+    for (const name of ["mailstart", "mailfinish"]) { const g = this.control(name); if (g) g.hidden = !host; }
+    for (const [name, command] of [["mailmerge", "start"], ["mailrecipients", "recipients"], ["mailfinishbtn", "finish"]] as const)
+      this.control(name)?.addEventListener("click", () => this.options.onMailings?.(command));
+
+    const highlight = this.control("highlightmerge");
+    if (highlight) {
+      this.keepSelection(highlight);
+      highlight.addEventListener("click", () => {
+        const on = !this.highlightMerge;
+        this.run("highlight merge fields", () => {
+          this.highlightMerge = on;
+          this.live?.setHighlightMergeFields(on);
+          highlight.setAttribute("aria-pressed", String(on));
+        }, cmd("highlightMergeFields", { on }));
+      });
+    }
+
+    const button = this.control("mergefieldbtn"), menu = this.control("mergefieldmenu"), items = this.control("mergefielditems");
+    if (!button || !menu || !items) return;
+    this.keepSelection(button);
+    button.addEventListener("click", () => {
+      if (menu.hasAttribute("data-open")) { this.closePopovers(); return; }
+      if (!this.live) return;
+      this.closePopovers();
+      const doc = this.element.ownerDocument;
+      const entry = (text: string, name?: string) => {
+        const b = doc.createElement("button");
+        b.type = "button";
+        b.setAttribute("role", "menuitem");
+        if (name) b.dataset.mfname = name;
+        else b.disabled = true;
+        const label = doc.createElement("span");
+        label.textContent = text;
+        b.append(label);
+        return b;
+      };
+      const names = this.mergeNames();
+      items.replaceChildren(...(names.length
+        ? names.map((n) => entry(n, n))
+        : [entry(menu.querySelector("[data-mfmenu-text=none]")?.textContent ?? "")]));
+      menu.setAttribute("data-open", "");
+      button.setAttribute("aria-expanded", "true");
+      this.positionPopover(menu, button);
+    });
+    menu.addEventListener("mousedown", (event) => event.preventDefault());
+    menu.addEventListener("click", (event) => {
+      const chosen = (event.target as HTMLElement).closest<HTMLButtonElement>("button");
+      if (!chosen || chosen.disabled) return;
+      this.closePopovers();
+      if (chosen.dataset.mfmenu === "dialog") { this.openMergeFieldDialog(); return; }
+      const name = chosen.dataset.mfname;
+      if (name) this.insertMergeField(mergeFieldCode({ name, format: "text" }));
+    });
+    menu.addEventListener("keydown", (event) => {
+      const list = Array.from(menu.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
+      const at = list.indexOf(event.target as HTMLButtonElement);
+      let next = -1;
+      if (event.key === "ArrowDown") next = (at + 1) % list.length;
+      else if (event.key === "ArrowUp") next = (at - 1 + list.length) % list.length;
+      else if (event.key === "Escape") { event.preventDefault(); this.closePopovers(); button.focus(); return; }
+      if (next >= 0) { event.preventDefault(); list[next].focus(); }
+    });
   }
 
   /** Update Table (Insert), F9 (see handleShortcut) and the right-click Update Field on a field. */
@@ -4225,6 +4345,8 @@ class RibbonSurface implements RibbonEditor {
     this.control("pastemore")?.setAttribute("aria-expanded", "false");
     this.control("tblselectmenu")?.removeAttribute("data-open");
     this.control("tblselect")?.setAttribute("aria-expanded", "false");
+    this.control("mergefieldmenu")?.removeAttribute("data-open");
+    this.control("mergefieldbtn")?.setAttribute("aria-expanded", "false");
     this.control("casemenu")?.removeAttribute("data-open");
     this.control("changecase")?.setAttribute("aria-expanded", "false");
     this.control("stylemenu")?.removeAttribute("data-open");
@@ -4243,7 +4365,7 @@ class RibbonSurface implements RibbonEditor {
     const target = event.target as Node;
     const picMenu = this.control("picturemenu");
     if (picMenu?.hasAttribute("data-open") && !picMenu.contains(target)) picMenu.removeAttribute("data-open");
-    for (const [popName, buttonName] of [["gridpicker", "table"], ["linkpop", "link"], ["filemenu", "filebutton"], ["pastemenu", "pastemore"], ["tblselectmenu", "tblselect"], ["casemenu", "changecase"], ["stylemenu", "stylemenubtn"], ["findoptmenu", "findoptions"], ["findspecialmenu", "findspecial"]] as const) {
+    for (const [popName, buttonName] of [["gridpicker", "table"], ["linkpop", "link"], ["filemenu", "filebutton"], ["pastemenu", "pastemore"], ["tblselectmenu", "tblselect"], ["mergefieldmenu", "mergefieldbtn"], ["casemenu", "changecase"], ["stylemenu", "stylemenubtn"], ["findoptmenu", "findoptions"], ["findspecialmenu", "findspecial"]] as const) {
       const pop = this.control(popName);
       if (!pop?.hasAttribute("data-open")) continue;
       if (pop.contains(target) || this.control(buttonName)?.contains(target)) continue;
@@ -4251,6 +4373,7 @@ class RibbonSurface implements RibbonEditor {
       if (popName === "filemenu") this.control("filebutton")?.setAttribute("aria-expanded", "false");
       if (popName === "pastemenu") this.control("pastemore")?.setAttribute("aria-expanded", "false");
       if (popName === "tblselectmenu") this.control("tblselect")?.setAttribute("aria-expanded", "false");
+      if (popName === "mergefieldmenu") this.control("mergefieldbtn")?.setAttribute("aria-expanded", "false");
       if (popName === "casemenu") this.control("changecase")?.setAttribute("aria-expanded", "false");
       if (popName === "stylemenu") this.control("stylemenubtn")?.setAttribute("aria-expanded", "false");
       if (popName === "findoptmenu") this.control("findoptions")?.setAttribute("aria-expanded", "false");

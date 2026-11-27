@@ -276,6 +276,7 @@ export const RIBBON_CSS = `
   border-right: 1px solid var(--dxr-rule);
 }
 .dxr-group:last-child { border-right: none; }
+.dxr-group[hidden] { display: none; }
 .dxr-group:first-child { padding-left: 0; }
 .dxr-glabel {
   color: var(--dxr-faint);
@@ -1004,6 +1005,7 @@ export const RIBBON_HTML = `
     <button type="button" class="dxr-tab" role="tab" data-tab="insert" aria-selected="false">Insert</button>
     <button type="button" class="dxr-tab" role="tab" data-tab="layout" aria-selected="false">Layout</button>
     <button type="button" class="dxr-tab" role="tab" data-tab="references" aria-selected="false">References</button>
+    <button type="button" class="dxr-tab" role="tab" data-tab="mailings" aria-selected="false">Mailings</button>
     <button type="button" class="dxr-tab" role="tab" data-tab="review" aria-selected="false">Review</button>
     <button type="button" class="dxr-tab" role="tab" data-tab="view" aria-selected="false">View</button>
     <button type="button" class="dxr-tab" role="tab" data-tab="table" data-contextual aria-selected="false" hidden>Table</button>
@@ -1377,6 +1379,38 @@ export const RIBBON_HTML = `
         <div class="dxr-row">
           <button type="button" data-dxr="pagenum" title="Add a page-number field to the footer">Page number</button>
           <button type="button" data-dxr="totalpages" title="Add a total-pages field to the footer">Total pages</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- MAILINGS ──────────────────────────────────────────────────────────── -->
+    <div class="dxr-panel" data-panel="mailings">
+      <div class="dxr-group" data-dxr="mailstart" hidden>
+        <span class="dxr-glabel">Start Mail Merge</span>
+        <div class="dxr-row">
+          <button type="button" data-dxr="mailmerge" title="Fill this document's merge fields: from values typed, or from a data source, row by row">&#9993; Start Mail Merge&#8230;</button>
+        </div>
+        <div class="dxr-row">
+          <button type="button" data-dxr="mailrecipients" title="Choose the data source (a spreadsheet, CSV, JSON or Access table) whose columns the merge fields name">&#128101; Select Recipients&#8230;</button>
+        </div>
+      </div>
+      <div class="dxr-group">
+        <span class="dxr-glabel">Write &amp; Insert Fields</span>
+        <div class="dxr-row">
+          <button type="button" data-dxr="mergefieldbtn" aria-haspopup="menu" aria-expanded="false"
+                  title="Insert a merge field: a column of the data source, or a field the document has">&#171;&#187; Insert Merge Field &#9662;</button>
+          <button type="button" data-dxr="highlightmerge" aria-pressed="false" title="Shade the merge fields grey, to see where they are">Highlight Merge Fields</button>
+        </div>
+        <div class="dxr-row">
+          <button type="button" data-dxr="addressblock" disabled title="Insert an address block (coming)">Address Block&#8230;</button>
+          <button type="button" data-dxr="greetingline" disabled title="Insert a greeting line (coming)">Greeting Line&#8230;</button>
+          <button type="button" data-dxr="mergerules" disabled title="If&#8230;Then&#8230;Else, Fill-in, Ask, Next Record, Skip Record If (coming)">Rules &#9662;</button>
+        </div>
+      </div>
+      <div class="dxr-group" data-dxr="mailfinish" hidden>
+        <span class="dxr-glabel">Finish</span>
+        <div class="dxr-row">
+          <button type="button" data-dxr="mailfinishbtn" title="Merge: one document, a document per row, or a PDF per row">&#10003; Finish &amp; Merge&#8230;</button>
         </div>
       </div>
     </div>
@@ -1760,6 +1794,13 @@ ${STYLES_PANE_HTML}
   <button type="button" role="menuitem" data-paste="keep" title="The source's fonts, sizes and colors come along"><span>Keep Source Formatting</span><kbd aria-hidden="true"></kbd></button>
   <button type="button" role="menuitem" data-paste="merge" title="Paragraphs, headings, lists, tables, links and emphasis come along; fonts, sizes and colors are the document's" aria-keyshortcuts="Control+V"><span>Merge Formatting</span><kbd aria-hidden="true">Ctrl+V</kbd></button>
   <button type="button" role="menuitem" data-paste="text" title="The text only, taking the formatting where it lands" aria-keyshortcuts="Control+Alt+Shift+V"><span>Keep Text Only</span><kbd aria-hidden="true">Ctrl+Alt+Shift+V</kbd></button>
+</div>
+
+<div class="dxr-pop dxr-filemenu" data-dxr="mergefieldmenu" role="menu" aria-label="Insert Merge Field">
+  <div data-dxr="mergefielditems"></div>
+  <div class="dxr-filesep"></div>
+  <button type="button" role="menuitem" data-mfmenu="dialog" title="Choose a field and its format: text case, number, currency, percent, date, If True/False..."><span>Insert Merge Field&#8230;</span><kbd aria-hidden="true"></kbd></button>
+  <span hidden data-mfmenu-text="none">(no fields yet)</span>
 </div>
 
 <div class="dxr-pop dxr-filemenu" data-dxr="tblselectmenu" role="menu" aria-label="Select">
