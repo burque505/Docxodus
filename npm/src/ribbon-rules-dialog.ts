@@ -50,6 +50,10 @@ export const RULE_DIALOG_HTML = `
             <option value="&gt;">Greater than</option>
             <option value="&lt;=">Less than or equal</option>
             <option value="&gt;=">Greater than or equal</option>
+            <option value="contains">Contains</option>
+            <option value="notcontains">Does not contain</option>
+            <option value="starts">Starts with</option>
+            <option value="ends">Ends with</option>
             <option value="blank">Is blank</option>
             <option value="notblank">Is not blank</option>
           </select>
@@ -91,11 +95,20 @@ export interface RuleChoice {
   once?: boolean;
 }
 
-/** A condition: `{ MERGEFIELD X } op "value"` (blank: compared with ""). */
+/**
+ * A condition: `{ MERGEFIELD X } op "value"` (blank: compared with ""). Word has no "contains": it
+ * compares with wildcards (* any text, ? any character) after = and <>, so contains is = "*value*".
+ */
 function condition(c: RuleChoice): string {
-  const left = `{ MERGEFIELD ${fieldName(c.field ?? "")} }`;
+  // (in quotes, as Word wants it: a value with spaces is then one value, not several words)
+  const left = `"{ MERGEFIELD ${fieldName(c.field ?? "")} }"`;
+  const v = c.value ?? "";
   if (c.op === "blank") return `${left} = ""`;
   if (c.op === "notblank") return `${left} <> ""`;
+  if (c.op === "contains") return `${left} = ${quote(`*${v}*`)}`;
+  if (c.op === "notcontains") return `${left} <> ${quote(`*${v}*`)}`;
+  if (c.op === "starts") return `${left} = ${quote(`${v}*`)}`;
+  if (c.op === "ends") return `${left} = ${quote(`*${v}`)}`;
   return `${left} ${c.op ?? "="} ${quote(c.value ?? "")}`;
 }
 

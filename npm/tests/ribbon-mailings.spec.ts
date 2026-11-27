@@ -286,17 +286,26 @@ test('Rules: If…Then…Else and Skip Record If from a comparison; Next Record 
   await expect(d.locator('input[data-rd="value"]')).toBeHidden();
   await d.locator('input[data-rd="then"]').fill(', ');
   await d.locator('input[data-rd="else"]').fill('');
-  await expect(d.locator('[data-rd="code"]')).toHaveText('{ IF { MERGEFIELD LeStatus } <> "" ", " "" }');
+  await expect(d.locator('[data-rd="code"]')).toHaveText('{ IF "{ MERGEFIELD LeStatus }" <> "" ", " "" }');
   await d.locator('[data-rd="ok"]').click();
   await expect(d).toBeHidden();
   await rule(page, 'skipif');
   await d.locator('select[data-rd="field"]').selectOption('LeZip');
   await d.locator('select[data-rd="op"]').selectOption('<');
   await d.locator('input[data-rd="value"]').fill('80000');
-  await expect(d.locator('[data-rd="code"]')).toHaveText('{ SKIPIF { MERGEFIELD LeZip } < "80000" }');
+  await expect(d.locator('[data-rd="code"]')).toHaveText('{ SKIPIF "{ MERGEFIELD LeZip }" < "80000" }');
   await d.locator('[data-rd="ok"]').click();
+  // (Word compares with wildcards: contains is = "*value*")
+  await rule(page, 'if');
+  await d.locator('select[data-rd="field"]').selectOption('LeShort');
+  await d.locator('select[data-rd="op"]').selectOption('contains');
+  await d.locator('input[data-rd="value"]').fill('Flanagan');
+  await d.locator('input[data-rd="then"]').fill('Is a Flanagan');
+  await d.locator('input[data-rd="else"]').fill('Is not a Flanagan');
+  await expect(d.locator('[data-rd="code"]')).toHaveText('{ IF "{ MERGEFIELD LeShort }" = "*Flanagan*" "Is a Flanagan" "Is not a Flanagan" }');
+  await d.locator('[data-rd="cancel"], button[value="cancel"]').first().click();
   await rule(page, 'next');
-  expect(await fieldCodes(page)).toEqual(['IF { MERGEFIELD LeStatus } <> "" ", " ""', 'SKIPIF { MERGEFIELD LeZip } < "80000"', 'NEXT']);
+  expect(await fieldCodes(page)).toEqual(['IF "{ MERGEFIELD LeStatus }" <> "" ", " ""', 'SKIPIF "{ MERGEFIELD LeZip }" < "80000"', 'NEXT']);
 });
 
 test('Rules: Ask with its answer shown (ASK, then REF); a bookmark name is checked', async ({ page }) => {
