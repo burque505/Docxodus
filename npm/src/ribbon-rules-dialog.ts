@@ -17,8 +17,8 @@ export const RULES_MENU_HTML = `
   <button type="button" role="menuitem" data-rule="mergerec" title="The data source row's number"><span>Merge Record #</span><kbd aria-hidden="true"></kbd></button>
   <button type="button" role="menuitem" data-rule="mergeseq" title="The merged record's number (records left out not counted)"><span>Merge Sequence #</span><kbd aria-hidden="true"></kbd></button>
   <button type="button" role="menuitem" data-rule="next" title="The fields after this one take the next row (labels: several records a page)"><span>Next Record</span><kbd aria-hidden="true"></kbd></button>
-  <button type="button" role="menuitem" data-rule="nextif" title="The next row, when a merge field compares with a value"><span>Next Record If&#8230;</span><kbd aria-hidden="true"></kbd></button>
-  <button type="button" role="menuitem" data-rule="skipif" title="Leave the record out of the merge, when a merge field compares with a value"><span>Skip Record If&#8230;</span><kbd aria-hidden="true"></kbd></button>
+  <button type="button" role="menuitem" data-rule="nextif" title="Moves to the next row within the same copy (labels), when a merge field compares with a value. It does not leave records out: to filter, use Skip Record If"><span>Next Record If&#8230;</span><kbd aria-hidden="true"></kbd></button>
+  <button type="button" role="menuitem" data-rule="skipif" title="Leaves the record out of the merge when a merge field compares with a value: the way to filter recipients"><span>Skip Record If&#8230;</span><kbd aria-hidden="true"></kbd></button>
 </div>
 `;
 
