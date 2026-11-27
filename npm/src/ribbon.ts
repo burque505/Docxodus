@@ -2237,6 +2237,7 @@ class RibbonSurface implements RibbonEditor {
     this.addressDialog = new AddressDialog(this.require<HTMLDialogElement>("addressdialog"), {
       columns: () => this.mergeColumns,
       rows: () => this.mergeRows,
+      translate: (text) => this.translateText(text),
       insert: async (html) => {
         const live = this.live;
         if (!live) return false;

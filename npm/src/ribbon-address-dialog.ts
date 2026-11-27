@@ -83,6 +83,9 @@ export const NAME_FORMATS: Array<{ value: NameFormat; label: string; parts: Addr
   { value: "short", label: "Short Name", parts: ["short"] },
 ];
 
+/** The texts the dialog writes from code (the address parts and name formats), for a host's translation tables. */
+export const ADDRESS_DIALOG_TEXTS: readonly string[] = [...ADDRESS_PARTS.map((p) => p.label), ...NAME_FORMATS.map((f) => f.label)];
+
 /** A line of the block: fields (by column) and literal text between them. */
 export type LinePiece = { field: string } | { text: string };
 export type Line = LinePiece[];
@@ -241,6 +244,8 @@ export interface AddressDialogHost {
   columns(): string[];
   /** The data source's first rows (cells in the columns' order), for the preview. */
   rows(): string[][];
+  /** A text in the ribbon's language (see ADDRESS_DIALOG_TEXTS). */
+  translate(text: string): string;
   /** Paste the block's HTML at the caret. */
   insert(html: string): Promise<boolean>;
   closed(): void;
@@ -255,8 +260,6 @@ export class AddressDialog {
 
   constructor(private readonly dialog: HTMLDialogElement, private readonly host: AddressDialogHost) {
     makeDialogMovable(dialog, dialog.querySelector<HTMLElement>("[data-ad-title]")!);
-    const nameSelect = this.select("name");
-    for (const f of NAME_FORMATS) nameSelect.append(new Option(f.label, f.value));
     this.select("prefix").addEventListener("change", () => { this.match = matchAddress(this.host.columns(), this.select("prefix").value); this.fillMatch(); this.update(); });
     for (const el of Array.from(dialog.querySelectorAll<HTMLElement>('[data-ad="name"], [data-ad="punctuation"], [data-ad="company"], [data-ad="address"], [data-ad="country"]')))
       el.addEventListener("change", () => this.update());
@@ -280,6 +283,8 @@ export class AddressDialog {
   show(mode: "address" | "greeting"): void {
     this.mode = mode;
     for (const el of Array.from(this.dialog.querySelectorAll<HTMLElement>("[data-ad-mode]"))) el.hidden = el.dataset.adMode !== mode;
+    // (written each time: the ribbon's language may have changed)
+    this.select("name").replaceChildren(...NAME_FORMATS.map((f) => new Option(this.host.translate(f.label), f.value)));
     const columns = this.host.columns();
     const prefixes = addressPrefixes(columns);
     const prefix = this.select("prefix");
@@ -324,7 +329,7 @@ export class AddressDialog {
     const columns = this.host.columns();
     box.replaceChildren(...ADDRESS_PARTS.flatMap((part) => {
       const label = doc.createElement("span");
-      label.textContent = part.label;
+      label.textContent = this.host.translate(part.label);
       const select = doc.createElement("select");
       select.dataset.part = part.key;
       select.append(new Option(none, ""), ...columns.map((c) => new Option(c, c)));
