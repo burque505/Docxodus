@@ -57,6 +57,22 @@ public class DocxSessionInsertFieldTests
     }
 
     [Fact]
+    public void IF009_AtTheEndOfAFieldsResult_GoesAfterTheField()
+    {
+        using var session = new DocxSession(DocxSessionTests.BuildDS001_SimpleTwoParagraphs());
+        var p = BodyParagraphs(session)[0];
+
+        Assert.True(session.InsertField(p, 0, "NEXT").Success);
+        var shown = "«Next Record»".Length;
+        Assert.True(session.InsertField(p, shown, "MERGEFIELD Name").Success);
+
+        // two fields side by side: NEXT ends before the name begins
+        var xml = Para(session, p);
+        Assert.Equal(new[] { "begin", "separate", "end", "begin", "separate", "end" }, FldChars(xml));
+        Assert.StartsWith("«Next Record»«Name»", session.GetAnchorInfo(p)!.VisibleText);
+    }
+
+    [Fact]
     public void IF003_Formula_SummaryDropsSwitches_CachedResultWins()
     {
         using var session = new DocxSession(DocxSessionTests.BuildDS001_SimpleTwoParagraphs());

@@ -71,6 +71,7 @@ public sealed partial class DocxSession
             foreach (var node in insertion) UnidHelper.AssignToSelfAndDescendants(node);
             InsertInlineAtOffset(element, characterOffset, insertion[0]);
             for (int i = 1; i < insertion.Count; i++) insertion[i - 1].AddAfterSelf(insertion[i]);
+            CloseFieldsEndingHere(element, insertion[0], insertion[^1]);
             InvalidateProjectionCache();
             return new EditResult
             {
@@ -82,6 +83,35 @@ public sealed partial class DocxSession
         catch (Exception ex)
         {
             return FailInternal(ex, anchorId);
+        }
+    }
+
+    /// <summary>
+    /// An offset at the end of a field's result is also just after the field: a new field put there (after the
+    /// result's last run) would be inside the field, part of its result, and go with it when the field is updated
+    /// or merged ("«Next Record»«Name»" made Name part of NEXT). The field ends that follow it at once, with no
+    /// text between, are moved in front of it, so the fields it was inside end first.
+    /// </summary>
+    private static void CloseFieldsEndingHere(XElement paragraph, XElement first, XElement last)
+    {
+        for (var guard = 0; guard < 100; guard++)
+        {
+            if (last.ElementsAfterSelf().FirstOrDefault() is not { } next || next.Name != W.r) return;
+            var content = next.Elements().Where(e => e.Name != W.rPr).ToList();
+            if (content.Count != 1 || content[0].Name != W.fldChar || (string?)content[0].Attribute(W.fldCharType) != "end") return;
+            // (only when the new field is inside an open field: the fields begun before it, less those ended)
+            var depth = 0;
+            foreach (var node in paragraph.Descendants())
+            {
+                if (node == first) break;
+                if (node.Name != W.fldChar) continue;
+                var type = (string?)node.Attribute(W.fldCharType);
+                if (type == "begin") depth++;
+                else if (type == "end") depth--;
+            }
+            if (depth <= 0) return;
+            next.Remove();
+            first.AddBeforeSelf(next);
         }
     }
 

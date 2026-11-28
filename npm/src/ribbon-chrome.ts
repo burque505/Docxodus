@@ -1429,6 +1429,7 @@ export const RIBBON_HTML = `
           <button type="button" class="dxr-icon" data-dxr="previewnext" title="Next record">&#9654;</button>
           <button type="button" class="dxr-icon" data-dxr="previewlast" title="Last record">&#9654;&#9654;</button>
           <span class="dxr-note" data-dxr="previewcount"></span>
+          <span class="dxr-note" data-dxr="previewskipped" hidden title="A Skip Record If leaves this record out of the merge">Skipped</span>
         </div>
       </div>
       <div class="dxr-group" data-dxr="mailfinish" hidden>

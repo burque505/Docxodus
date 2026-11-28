@@ -2230,7 +2230,7 @@ class RibbonSurface implements RibbonEditor {
   setPreviewResults(on: boolean): void {
     const editor = this.control("editor");
     const live = on && this.mergeRows.length > 0 && !!editor;
-    if (live) this.mergePreview ??= new MergePreview(editor!);
+    if (live && !this.mergePreview) { this.mergePreview = new MergePreview(editor!); this.mergePreview.onChange = () => this.updatePreview(); }
     if (!live) this.mergePreview?.hide();
     this.control("previewresults")?.setAttribute("aria-pressed", String(live));
     if (live) this.showPreviewRecord(this.previewIndex);
@@ -2258,6 +2258,8 @@ class RibbonSurface implements RibbonEditor {
     if (box && box.ownerDocument.activeElement !== box) box.value = String(this.previewIndex + 1);
     const count = this.control("previewcount");
     if (count) count.textContent = rows ? `/ ${rows}` : "";
+    const skipped = this.control("previewskipped");
+    if (skipped) skipped.hidden = !(on && this.mergePreview!.skipped);
     for (const [name, off] of [["previewfirst", this.previewIndex === 0], ["previewprev", this.previewIndex === 0],
       ["previewnext", this.previewIndex >= rows - 1], ["previewlast", this.previewIndex >= rows - 1]] as const) {
       const b = this.control<HTMLButtonElement>(name);

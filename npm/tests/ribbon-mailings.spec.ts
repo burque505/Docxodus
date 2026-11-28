@@ -534,3 +534,39 @@ test('Preview Results: each label a recipient, stepped through, and off again', 
   await page.locator(`${HOST} [data-dxr="previewresults"]`).click();
   await expect.poll(shown).toEqual([null, null, null]);
 });
+
+test('Preview Results evaluates the rules as the merge does', async () => {
+  const { fieldResult, fieldCondition } = await import('../src/merge-preview');
+  const row: Record<string, string> = { First: 'Ann', Status: 'married', Zip: '87501', Rate: '0.125', Amount: '1234.5', Empty: '' };
+  const ctx = { value: (n: string) => row[n] ?? '', record: 3, asked: new Map([['closing', 'soon']]) };
+  expect(fieldResult('IF "{ MERGEFIELD Status }" <> "" ", " ""', ctx)).toBe(', ');
+  expect(fieldResult('IF "{ MERGEFIELD Empty }" <> "" ", " ""', ctx)).toBe('');
+  expect(fieldResult('IF { MERGEFIELD Status } = "marr*" "Wed" "Single"', ctx)).toBe('Wed');
+  expect(fieldResult('IF { MERGEFIELD Zip } > 80000 "North" "South"', ctx)).toBe('North');
+  expect(fieldResult('IF { MERGEFIELD First } "Dear { MERGEFIELD First }," "Dear Sir,"', ctx)).toBe('Dear Ann,');
+  expect(fieldResult('= { MERGEFIELD Rate } * 100 \\# "0.00%"', ctx)).toBe('12.50%');
+  expect(fieldResult('MERGEFIELD Amount \\# $,0.00', ctx)).toBe('$1,234.50');
+  expect(fieldResult('FILLIN "Your name?" \\d "Bob"', ctx)).toBe('Bob');
+  expect(fieldResult('REF Closing', ctx)).toBe('soon');
+  expect(fieldResult('MERGEREC', ctx)).toBe('3');
+  expect(fieldCondition('SKIPIF "{ MERGEFIELD Zip }" < "80000"', ctx)).toBe(false);
+  expect(fieldCondition('SKIPIF { MERGEFIELD Status } = "married"', ctx)).toBe(true);
+  expect(fieldCondition('NEXTIF { MERGEFIELD Empty }', ctx)).toBe(false);
+});
+
+test('Preview Results: an If rule shows its text for the record; a Skip Record If marks the record', async ({ page }) => {
+  await mountParties(page);
+  await page.evaluate(() => {
+    const e = (window as any).__ribbon.editor;
+    e.exec('insertField', { code: 'SKIPIF "{ MERGEFIELD LeStreet }" = ""' });
+    e.exec('insertField', { code: 'IF "{ MERGEFIELD LeStatus }" = "an unmarried*" "Single" "Other"' });
+  });
+  await page.locator(`${HOST} [data-dxr="previewresults"]`).click();
+  const ifShown = () => page.locator(`${HOST} [data-field-code^="IF"]`).first().getAttribute('data-merge-preview');
+  await expect.poll(ifShown).toBe('Single');
+  await expect(page.locator(`${HOST} [data-dxr="previewskipped"]`)).toBeHidden();
+  await page.locator(`${HOST} [data-dxr="previewnext"]`).click();
+  await expect.poll(ifShown).toBe('Other');
+  // (Westgro has no street: Skip Record If leaves it out)
+  await expect(page.locator(`${HOST} [data-dxr="previewskipped"]`)).toBeVisible();
+});
