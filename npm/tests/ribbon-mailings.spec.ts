@@ -415,3 +415,92 @@ test('Envelopes: half an inch in, and no page number on the envelope', async ({ 
   expect(footers[0]).not.toMatch(/\d/);
   expect(footers[1]).toMatch(/\d/);
 });
+
+// ─── Labels ───────────────────────────────────────────────────────────────────
+
+const lblDialog = (page: Page) => page.locator(`${HOST} [data-dxr="labelsdialog"]`);
+/** The first table's shape and the Table Properties of its first cell. */
+const labelTable = (page: Page) => page.evaluate(async () => {
+  const r = (window as any).__ribbon;
+  const table = document.querySelector<HTMLElement>('#mm-host table')!;
+  const rows = Array.from(table.querySelectorAll('tr')).filter((tr) => tr.closest('table') === table);
+  const first = table.querySelector<HTMLElement>('[data-anchor][contenteditable="true"]')!;
+  first.focus();
+  getSelection()!.collapse(first, 0);
+  await new Promise((done) => setTimeout(done, 50));
+  const props = r.editor.tableProperties();
+  const format = r.editor.paragraphFormats()[0];
+  return { rows: rows.length, cells: rows[0].querySelectorAll('td').length, widths: props.columnWidthsTwips, height: props.rowHeightTwips,
+    rule: props.rowHeightRule, margins: props.cellMargins, after: format?.spacingAfter ?? null };
+});
+
+test('Labels: Avery 5160 on an empty document, a different recipient on each label', async ({ page }) => {
+  await mountParties(page);
+  await page.locator(`${HOST} [data-dxr="labels"]`).click();
+  const d = lblDialog(page);
+  await expect(d).toBeVisible();
+  await expect(d.locator('select[data-lb="product"]')).toHaveValue('5160');
+  await expect(d.locator('textarea[data-lb="text"]')).toHaveValue('«LeFull»\n«LeStreet»\n«LeCity», «LeState» «LeZip»');
+  await expect(d.locator('input[data-lb="next"]')).toBeChecked();
+  await expect(d.locator('[data-lb="where"]')).toHaveText('This document becomes the sheet of labels.');
+  await expect(d.locator('[data-lb="preview"] div')).toHaveCount(30);
+  await d.locator('[data-lb="ok"]').click();
+  await expect(d).toBeHidden();
+  const codes = await fieldCodes(page);
+  expect(codes.filter((c) => c === 'NEXT')).toHaveLength(29);
+  expect(codes.filter((c) => c === 'MERGEFIELD LeFull')).toHaveLength(30);
+  // (the first label has no Next Record; the second starts with it)
+  expect(codes.slice(0, 6)).toEqual(['MERGEFIELD LeFull', 'MERGEFIELD LeStreet', 'MERGEFIELD LeCity', 'MERGEFIELD LeState', 'MERGEFIELD LeZip', 'NEXT']);
+  const t = await labelTable(page);
+  expect(t.rows).toBe(10);
+  expect(t.cells).toBe(5);
+  expect(t.widths).toEqual([3780, 180, 3780, 180, 3780]);
+  expect(t.height).toBe(1440);
+  expect(t.rule).toBe('exact');
+  expect(t.margins?.leftTwips).toBe(86);
+  expect(t.after).toBe(0);
+  const section = await sectionOf(page, 0);
+  expect(section.width).toBe(12240);
+  expect(section.height).toBe(15840);
+  expect(section.landscape).toBe(false);
+  expect(section.left).toBe(270);
+  expect(section.top).toBe(720);
+});
+
+test('Labels: a custom A4 sheet, every label the same, in front of a letter', async ({ page }) => {
+  await mountParties(page);
+  await page.evaluate(() => (window as any).__ribbon.editor.exec('pasteText', { text: 'The letter.' }));
+  await page.locator(`${HOST} [data-dxr="labels"]`).click();
+  const d = lblDialog(page);
+  await expect(d.locator('[data-lb="where"]')).toHaveText('The labels go in front of the document, as a section of its own.');
+  await d.locator('select[data-lb="product"]').selectOption('custom');
+  // (a custom label starts from the product chosen before)
+  await expect(d.locator('input[data-lb="hpitch"]')).toHaveValue('2.75');
+  await d.locator('select[data-lb="page"]').selectOption('a4');
+  await d.locator('input[data-lb="across"]').fill('2');
+  await d.locator('input[data-lb="down"]').fill('3');
+  await d.locator('input[data-lb="width"]').fill('3');
+  await d.locator('input[data-lb="hpitch"]').fill('2');
+  // the pitch less than the label: refused
+  await expect(d.locator('[data-lb="ok"]')).toBeDisabled();
+  await d.locator('input[data-lb="hpitch"]').fill('3');
+  await d.locator('input[data-lb="vpitch"]').fill('2');
+  await d.locator('input[data-lb="next"]').uncheck();
+  await d.locator('textarea[data-lb="text"]').fill('Burque Law\n«LeFull»');
+  await expect(d.locator('[data-lb="preview"] div')).toHaveCount(6);
+  await d.locator('[data-lb="ok"]').click();
+  await expect(d).toBeHidden();
+  const codes = await fieldCodes(page);
+  expect(codes).toEqual(Array(6).fill('MERGEFIELD LeFull'));
+  const t = await labelTable(page);
+  expect(t.rows).toBe(3);
+  // (no gap: the pitch is the label's width)
+  expect(t.widths).toEqual([4320, 4320]);
+  expect(t.height).toBe(2880);
+  const all = await texts(page);
+  expect(all[all.length - 1]).toBe('The letter.');
+  const sheet = await sectionOf(page, 0);
+  const letter = await sectionOf(page, all.length - 1);
+  expect(sheet.width).toBe(11906);
+  expect(letter.width).not.toBe(11906);
+});

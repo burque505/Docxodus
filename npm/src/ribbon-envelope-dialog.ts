@@ -70,7 +70,8 @@ export function textOf(lines: Line[]): string {
 const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const pt = (twips: number) => `${(twips / 20).toFixed(1)}pt`;
 
-function lineHtml(line: Line): string {
+/** A line as HTML: a field a span the paste makes a field again, text escaped. */
+export function lineHtml(line: Line): string {
   return line.map((piece) => "field" in piece
     ? `<span data-field-code="${escapeHtml(mergeFieldCode({ name: piece.field, format: "text" }))}">«${escapeHtml(piece.field)}»</span>`
     : escapeHtml(piece.text)).join("") || "&#8203;";

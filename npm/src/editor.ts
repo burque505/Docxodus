@@ -78,6 +78,8 @@ import type {
   TablePropertiesOp,
   TablePropertiesInfo,
   TableRowOptions,
+  TableRowHeightRule,
+  TableCellMargins,
   CellPropertiesOp,
   TableCellScope,
   TableOfContentsOptions,
@@ -10405,6 +10407,61 @@ export class DocxEditor {
     });
   }
 
+  /**
+   * Lay the caret's table out as a fixed grid, as one edit and one undo step (Mailings > Labels):
+   * its grid columns' widths, every row's height (exact unless `heightRule` says otherwise), its
+   * cell margins and indent, and every paragraph in it formatted with `paragraph` (a label's lines
+   * with no space between them). False outside a table or when the engine refuses a part.
+   */
+  formatTableGrid(spec: {
+    columnWidthsTwips: number[];
+    rowHeightTwips: number;
+    heightRule?: TableRowHeightRule;
+    cellMargins?: TableCellMargins;
+    indentTwips?: number;
+    paragraph?: EditorParagraphFormat;
+  }): boolean {
+    const bridge = this.exports.DocxSessionBridge;
+    const block = this.activeBlock;
+    const table = block?.closest<HTMLElement>("table");
+    const cell = block?.closest<HTMLElement>("td, th");
+    if (this.closed || !block || !table || !cell || typeof bridge.SetTableRowOptions !== "function"
+      || typeof bridge.SetColumnWidths !== "function" || typeof bridge.SetTableProperties !== "function") return false;
+    if (spec.columnWidthsTwips.some((w) => !(w > 0)) || !(spec.rowHeightTwips > 0)) return false;
+    const paragraphId = this.anchorIdOf(block);
+    const cellId = this.anchorIdOf(cell);
+    if (!paragraphId || !cellId) return false;
+    const idx = this.blockIndex(block);
+    if (!this.syncBlock(block, paragraphId)) return false;
+    // (this table's own rows and paragraphs, not a nested table's)
+    const rows = Array.from(table.querySelectorAll<HTMLElement>("tr")).filter((tr) => tr.closest("table") === table);
+    const rowCells = rows.map((tr) => Array.from(tr.children).find((c) => /^(TD|TH)$/.test(c.tagName)) as HTMLElement | undefined)
+      .map((c) => (c ? this.anchorIdOf(c) : undefined));
+    const paragraphs = Array.from(table.querySelectorAll<HTMLElement>('[data-anchor][contenteditable="true"]'))
+      .filter((p) => p.closest("table") === table).map((p) => this.anchorIdOf(p));
+    if (!rowCells.length || rowCells.some((id) => !id) || paragraphs.some((id) => !id)) return false;
+    const tx = typeof bridge.BeginTransaction === "function" ? bridge.BeginTransaction(this.handle) : 0;
+    let ok = true;
+    const step = (json: string): void => {
+      if (!ok) return;
+      try { ok = (JSON.parse(json) as { success?: boolean }).success === true; } catch { ok = false; }
+    };
+    step(bridge.SetColumnWidths(this.handle, cellId, JSON.stringify(spec.columnWidthsTwips.map((w) => Math.round(w)))));
+    for (const id of rowCells) step(bridge.SetTableRowOptions(this.handle, id!, null, null, Math.round(spec.rowHeightTwips), spec.heightRule ?? "exact"));
+    if (spec.paragraph) for (const id of paragraphs) step(bridge.SetParagraphFormat(this.handle, id!, JSON.stringify(spec.paragraph)));
+    // (the table's own properties last: SetColumnWidths sizes the table to its columns' sum)
+    const tableOp: TablePropertiesOp = {};
+    if (spec.cellMargins) tableOp.cellMargins = spec.cellMargins;
+    if (spec.indentTwips !== undefined) tableOp.indentTwips = Math.round(spec.indentTwips);
+    if (Object.keys(tableOp).length) step(bridge.SetTableProperties(this.handle, cellId, JSON.stringify(tableOp)));
+    if (tx) {
+      if (ok) bridge.CommitTransaction!(tx);
+      else bridge.RollbackTransaction?.(tx);
+    }
+    this.refreshAfter(block, idx, false, true);
+    return ok;
+  }
+
   /** Delete the whole table the caret is in. */
   deleteTable(): void {
     const block = this.activeBlock;
@@ -11460,8 +11517,24 @@ export class DocxEditor {
    */
   private restorePastedFields(res: EditResultLite, codes: string[]): boolean {
     const bridge = this.exports.DocxSessionBridge;
-    const refs = [...(res.modified ?? []), ...(res.created ?? [])];
+    const refs: Array<{ id: string }> = [...(res.modified ?? []), ...(res.created ?? [])];
+    // A table pasted is one block whose text is its cells': its paragraphs, which take the fields, are found by
+    // their markers (private-use characters only this paste put there).
+    let kinds: Record<string, AnchorTargetLite> | null = null;
+    try {
+      if (typeof bridge.ListAnchors === "function") kinds = (JSON.parse(bridge.ListAnchors(this.handle)) as { anchorIndex: Record<string, AnchorTargetLite> }).anchorIndex;
+    } catch { kinds = null; }
+    const grid = (id: string) => /^(tbl|tr|tc|col)$|table|row|cell/i.test(kinds?.[id]?.kind ?? "");
+    if (kinds && refs.some((r) => grid(r.id))) {
+      for (const [id, target] of Object.entries(kinds)) {
+        if (target.scope !== "body" || grid(id) || refs.some((r) => r.id === id)) continue;
+        const text = this.sessionTextOf(id);
+        FIELD_MARK_PATTERN.lastIndex = 0;
+        if (text !== null && FIELD_MARK_PATTERN.test(text)) refs.push({ id });
+      }
+    }
     for (const ref of refs) {
+      if (grid(ref.id)) continue;
       let id = ref.id;
       for (;;) {
         const text = this.sessionTextOf(id);

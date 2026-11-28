@@ -70,6 +70,7 @@ import { MERGE_FIELDS_PANE_CSS, MergeFieldsPane } from "./ribbon-mergefields-pan
 import { ADDRESS_DIALOG_CSS, ADDRESS_DIALOG_HTML, AddressDialog } from "./ribbon-address-dialog.js";
 import { RULE_DIALOG_CSS, RULE_DIALOG_HTML, RuleDialog, ruleCode, type RuleKind } from "./ribbon-rules-dialog.js";
 import { ENVELOPE_DIALOG_CSS, ENVELOPE_DIALOG_HTML, EnvelopeDialog } from "./ribbon-envelope-dialog.js";
+import { LABELS_DIALOG_CSS, LABELS_DIALOG_HTML, LabelsDialog } from "./ribbon-labels-dialog.js";
 import { CROSSREF_DIALOG_CSS, CROSSREF_DIALOG_HTML, CrossReferenceDialog } from "./ribbon-crossref-dialog.js";
 import { CAPTION_DIALOG_CSS, CAPTION_DIALOG_HTML, CaptionDialog, TableOfFiguresDialog } from "./ribbon-caption-dialog.js";
 import { crossReferenceOptionsFor, crossReferencePart } from "./cross-reference.js";
@@ -441,6 +442,8 @@ export interface RibbonEditor {
   setReturnAddress(text: string): void;
   /** Open Mailings > Envelopes…; false when no document is open. */
   openEnvelopeDialog(): boolean;
+  /** Open Mailings > Labels…; false when no document is open. */
+  openLabelsDialog(): boolean;
   /** Open Mailings > Address Block… or Greeting Line…; false when no document is open. */
   openAddressDialog(mode: "address" | "greeting"): boolean;
   /** Show or hide the Merge Fields pane (Mailings > Insert Merge Field). */
@@ -581,7 +584,7 @@ function ensureStyles(doc: Document): void {
   existing?.remove();
   const style = doc.createElement("style");
   style.setAttribute(RIBBON_STYLE_ATTR, RIBBON_STYLE_VERSION);
-  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + FONT_DIALOG_CSS + STYLE_DIALOG_CSS + COPY_STYLES_DIALOG_CSS + BOOKMARK_DIALOG_CSS + MERGE_FIELDS_PANE_CSS + ADDRESS_DIALOG_CSS + RULE_DIALOG_CSS + ENVELOPE_DIALOG_CSS + CROSSREF_DIALOG_CSS + CAPTION_DIALOG_CSS + NAV_PANE_CSS + STYLES_PANE_CSS + RULER_CSS;
+  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + FONT_DIALOG_CSS + STYLE_DIALOG_CSS + COPY_STYLES_DIALOG_CSS + BOOKMARK_DIALOG_CSS + MERGE_FIELDS_PANE_CSS + ADDRESS_DIALOG_CSS + RULE_DIALOG_CSS + ENVELOPE_DIALOG_CSS + LABELS_DIALOG_CSS + CROSSREF_DIALOG_CSS + CAPTION_DIALOG_CSS + NAV_PANE_CSS + STYLES_PANE_CSS + RULER_CSS;
   (doc.head ?? doc.documentElement).appendChild(style);
 }
 
@@ -702,6 +705,7 @@ class RibbonSurface implements RibbonEditor {
   private addressDialog!: AddressDialog;
   private ruleDialog!: RuleDialog;
   private envelopeDialog!: EnvelopeDialog;
+  private labelsDialog!: LabelsDialog;
   private returnAddress = "";
   private highlightMerge = false;
   private crossRefDialog!: CrossReferenceDialog;
@@ -761,7 +765,7 @@ class RibbonSurface implements RibbonEditor {
     root.className = "dxr";
     root.dataset.state = "idle";
     root.dataset.frame = this.options.frame ?? "flush";
-    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML + TABLE_DIALOG_HTML + LINE_NUMBERS_DIALOG_HTML + TABS_DIALOG_HTML + FONT_DIALOG_HTML + STYLE_DIALOG_HTML + COPY_STYLES_DIALOG_HTML + BOOKMARK_DIALOG_HTML + ADDRESS_DIALOG_HTML + RULE_DIALOG_HTML + ENVELOPE_DIALOG_HTML + CROSSREF_DIALOG_HTML + CAPTION_DIALOG_HTML;
+    root.innerHTML = RIBBON_HTML + PARAGRAPH_DIALOG_HTML + LIST_DIALOG_HTML + COLUMNS_DIALOG_HTML + PICTURE_DIALOG_HTML + PICTURE_MENU_HTML + TABLE_DIALOG_HTML + LINE_NUMBERS_DIALOG_HTML + TABS_DIALOG_HTML + FONT_DIALOG_HTML + STYLE_DIALOG_HTML + COPY_STYLES_DIALOG_HTML + BOOKMARK_DIALOG_HTML + ADDRESS_DIALOG_HTML + RULE_DIALOG_HTML + ENVELOPE_DIALOG_HTML + LABELS_DIALOG_HTML + CROSSREF_DIALOG_HTML + CAPTION_DIALOG_HTML;
     for (const el of Array.from(root.querySelectorAll<HTMLElement>("[data-dxr]"))) {
       el.id = this.idPrefix + el.dataset.dxr;
     }
@@ -2249,6 +2253,13 @@ class RibbonSurface implements RibbonEditor {
     return true;
   }
 
+  openLabelsDialog(): boolean {
+    if (!this.live) return false;
+    this.closePopovers();
+    this.labelsDialog.show();
+    return true;
+  }
+
   /** The document's shown paragraphs, the first one first. */
   private bodyBlocks(): HTMLElement[] {
     return Array.from(this.require("editor").querySelectorAll<HTMLElement>('[data-anchor][contenteditable="true"]'))
@@ -2316,6 +2327,60 @@ class RibbonSurface implements RibbonEditor {
     this.syncLayoutState();
     this.mergeFieldsPane?.refresh();
     return ok;
+  }
+
+  /**
+   * Labels' OK: the document becomes the sheet (page size, portrait, margins, then the table at the
+   * start, laid out as a fixed grid), or, when it has text already, the sheet goes in front of it as
+   * a section of its own, as Envelopes does.
+   */
+  private async makeLabels(page: { widthTwips: number; heightTwips: number; marginLeft: number; marginTop: number; marginRight: number; marginBottom: number }, html: string,
+    grid: { columnWidthsTwips: number[]; rowHeightTwips: number; cellSideTwips: number }): Promise<boolean> {
+    const live = this.live;
+    if (!live) return false;
+    const caretAtStart = () => {
+      const first = this.bodyBlocks()[0];
+      if (!first) return false;
+      first.focus();
+      first.ownerDocument.getSelection()?.collapse(first, 0);
+      return true;
+    };
+    const started = performance.now();
+    const filled = this.bodyBlocks().some((b) => (b.textContent ?? "").replace(/[\s\u00a0\u200b]/g, "") !== "");
+    if (!caretAtStart()) return false;
+    if (filled) {
+      if (!live.insertSectionBreak("nextPage")) return false;
+      if (!caretAtStart()) return false;
+    }
+    if (!live.setPageSetup({
+      pageWidthTwips: page.widthTwips, pageHeightTwips: page.heightTwips, landscape: false,
+      marginTopTwips: page.marginTop, marginBottomTwips: page.marginBottom, marginLeftTwips: page.marginLeft, marginRightTwips: page.marginRight,
+      headerDistanceTwips: Math.min(360, page.marginTop), footerDistanceTwips: Math.min(360, page.marginBottom),
+    })) return false;
+    if (!caretAtStart()) return false;
+    const ok = await live.pasteHtml(html);
+    if (!ok) return false;
+    this.options.onCommand?.("labels", performance.now() - started, cmd("pasteHtml", { html }));
+    // The table as a sheet of labels: its columns and rows the labels' size, no space between a label's lines.
+    const cell = this.bodyBlocks().find((b) => b.closest("table"));
+    if (!cell) return false;
+    cell.focus();
+    cell.ownerDocument.getSelection()?.collapse(cell, 0);
+    const spec = {
+      columnWidthsTwips: grid.columnWidthsTwips, rowHeightTwips: grid.rowHeightTwips, heightRule: "exact" as const,
+      cellMargins: { topTwips: 0, bottomTwips: 0, leftTwips: grid.cellSideTwips, rightTwips: grid.cellSideTwips }, indentTwips: 0,
+      paragraph: { spacingBefore: 0, spacingAfter: 0, leftIndent: 0, firstLineIndent: 0, lineSpacing: 240, lineSpacingRule: "auto" as const },
+    };
+    if (!live.formatTableGrid(spec)) return false;
+    // No page number on the sheet (Envelopes' way: its page gets an empty header and footer of its own).
+    if (caretAtStart() && !live.headerFooterKindEnabled("first")) {
+      live.setHeaderFooterKindEnabled("first", true);
+      live.closeHeaderFooter();
+    }
+    caretAtStart();
+    this.syncLayoutState();
+    this.mergeFieldsPane?.refresh();
+    return true;
   }
 
   /** Mailings > Rules: a rule with no choices goes in at once; the others open the Rules dialog. */
@@ -2400,6 +2465,18 @@ class RibbonSurface implements RibbonEditor {
       translate: (text) => this.translateText(text),
       closed: () => this.refocusDocument(),
     });
+    this.labelsDialog = new LabelsDialog(this.require<HTMLDialogElement>("labelsdialog"), {
+      columns: () => this.mergeColumns,
+      hasContent: () => this.bodyBlocks().some((b) => (b.textContent ?? "").replace(/[\s\u00a0\u200b]/g, "") !== ""),
+      make: (page, html, grid) => this.makeLabels(page, html, grid),
+      translate: (text) => this.translateText(text),
+      closed: () => this.refocusDocument(),
+    });
+    const labels = this.control("labels");
+    if (labels) {
+      this.keepSelection(labels);
+      labels.addEventListener("click", () => { this.openLabelsDialog(); });
+    }
     const envelopes = this.control("envelopes");
     if (envelopes) {
       this.keepSelection(envelopes);

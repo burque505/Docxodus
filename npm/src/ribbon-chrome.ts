@@ -1391,6 +1391,7 @@ export const RIBBON_HTML = `
         <span class="dxr-glabel">Create</span>
         <div class="dxr-row">
           <button type="button" data-dxr="envelopes" title="Make an envelope: its size, the delivery address (merge fields or text) and the return address">&#9993; Envelopes&#8230;</button>
+          <button type="button" data-dxr="labels" title="Make a sheet of labels: the product (or a custom size), the label's text (merge fields or text), a different recipient on each label">&#9638; Labels&#8230;</button>
         </div>
       </div>
       <div class="dxr-group" data-dxr="mailstart" hidden>
