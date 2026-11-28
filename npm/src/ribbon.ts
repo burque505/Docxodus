@@ -67,6 +67,7 @@ import { STYLE_DIALOG_CSS, STYLE_DIALOG_HTML, StyleDialog, paragraphDifference, 
 import { COPY_STYLES_DIALOG_CSS, COPY_STYLES_DIALOG_HTML, CopyStylesDialog } from "./ribbon-copy-styles-dialog.js";
 import { BOOKMARK_DIALOG_CSS, BOOKMARK_DIALOG_HTML, BookmarkDialog } from "./ribbon-bookmark-dialog.js";
 import { MERGE_FIELDS_PANE_CSS, MergeFieldsPane } from "./ribbon-mergefields-pane.js";
+import { MERGE_PREVIEW_CSS, MergePreview } from "./merge-preview.js";
 import { ADDRESS_DIALOG_CSS, ADDRESS_DIALOG_HTML, AddressDialog } from "./ribbon-address-dialog.js";
 import { RULE_DIALOG_CSS, RULE_DIALOG_HTML, RuleDialog, ruleCode, type RuleKind } from "./ribbon-rules-dialog.js";
 import { ENVELOPE_DIALOG_CSS, ENVELOPE_DIALOG_HTML, EnvelopeDialog } from "./ribbon-envelope-dialog.js";
@@ -442,6 +443,9 @@ export interface RibbonEditor {
   setReturnAddress(text: string): void;
   /** Open Mailings > Envelopes…; false when no document is open. */
   openEnvelopeDialog(): boolean;
+  /** Mailings > Preview Results on or off (off without rows); the record shown (0-based). */
+  setPreviewResults(on: boolean): void;
+  showPreviewRecord(index: number): void;
   /** Open Mailings > Labels…; false when no document is open. */
   openLabelsDialog(): boolean;
   /** Open Mailings > Address Block… or Greeting Line…; false when no document is open. */
@@ -584,7 +588,7 @@ function ensureStyles(doc: Document): void {
   existing?.remove();
   const style = doc.createElement("style");
   style.setAttribute(RIBBON_STYLE_ATTR, RIBBON_STYLE_VERSION);
-  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + FONT_DIALOG_CSS + STYLE_DIALOG_CSS + COPY_STYLES_DIALOG_CSS + BOOKMARK_DIALOG_CSS + MERGE_FIELDS_PANE_CSS + ADDRESS_DIALOG_CSS + RULE_DIALOG_CSS + ENVELOPE_DIALOG_CSS + LABELS_DIALOG_CSS + CROSSREF_DIALOG_CSS + CAPTION_DIALOG_CSS + NAV_PANE_CSS + STYLES_PANE_CSS + RULER_CSS;
+  style.textContent = RIBBON_CSS + PARAGRAPH_DIALOG_CSS + LIST_DIALOG_CSS + COLUMNS_DIALOG_CSS + PICTURE_DIALOG_CSS + TABLE_DIALOG_CSS + LINE_NUMBERS_DIALOG_CSS + TABS_DIALOG_CSS + FONT_DIALOG_CSS + STYLE_DIALOG_CSS + COPY_STYLES_DIALOG_CSS + BOOKMARK_DIALOG_CSS + MERGE_FIELDS_PANE_CSS + ADDRESS_DIALOG_CSS + RULE_DIALOG_CSS + ENVELOPE_DIALOG_CSS + LABELS_DIALOG_CSS + MERGE_PREVIEW_CSS + CROSSREF_DIALOG_CSS + CAPTION_DIALOG_CSS + NAV_PANE_CSS + STYLES_PANE_CSS + RULER_CSS;
   (doc.head ?? doc.documentElement).appendChild(style);
 }
 
@@ -706,6 +710,8 @@ class RibbonSurface implements RibbonEditor {
   private ruleDialog!: RuleDialog;
   private envelopeDialog!: EnvelopeDialog;
   private labelsDialog!: LabelsDialog;
+  private mergePreview: MergePreview | null = null;
+  private previewIndex = 0;
   private returnAddress = "";
   private highlightMerge = false;
   private crossRefDialog!: CrossReferenceDialog;
@@ -2217,6 +2223,72 @@ class RibbonSurface implements RibbonEditor {
     this.mergeRows = rows.map((r) => kept.map(({ i }) => r[i] ?? ""));
     this.mergeSource = source;
     this.mergeFieldsPane?.refresh();
+    this.updatePreview();
+  }
+
+  /** Mailings > Preview Results: on or off (off when there are no rows to show). */
+  setPreviewResults(on: boolean): void {
+    const editor = this.control("editor");
+    const live = on && this.mergeRows.length > 0 && !!editor;
+    if (live) this.mergePreview ??= new MergePreview(editor!);
+    if (!live) this.mergePreview?.hide();
+    this.control("previewresults")?.setAttribute("aria-pressed", String(live));
+    if (live) this.showPreviewRecord(this.previewIndex);
+    else this.updatePreview();
+  }
+
+  /** Preview Results: show record `index` (0-based; kept within the rows). */
+  showPreviewRecord(index: number): void {
+    this.previewIndex = Math.max(0, Math.min(this.mergeRows.length - 1, Math.round(index) || 0));
+    if (this.mergePreview?.active || this.control("previewresults")?.getAttribute("aria-pressed") === "true")
+      this.mergePreview?.show(this.mergeColumns, this.mergeRows, this.previewIndex);
+    this.updatePreview();
+  }
+
+  /** The Preview Results group: shown when there are rows; its record box and buttons as the rows and record are. */
+  private updatePreview(): void {
+    const group = this.control("mailpreview");
+    const rows = this.mergeRows.length;
+    if (group) group.hidden = rows === 0;
+    if (rows === 0 && this.mergePreview?.active) { this.mergePreview.hide(); this.control("previewresults")?.setAttribute("aria-pressed", "false"); }
+    if (this.previewIndex >= rows) this.previewIndex = Math.max(0, rows - 1);
+    const on = !!this.mergePreview?.active;
+    if (on) this.mergePreview!.show(this.mergeColumns, this.mergeRows, this.previewIndex);
+    const box = this.control<HTMLInputElement>("previewrecord");
+    if (box && box.ownerDocument.activeElement !== box) box.value = String(this.previewIndex + 1);
+    const count = this.control("previewcount");
+    if (count) count.textContent = rows ? `/ ${rows}` : "";
+    for (const [name, off] of [["previewfirst", this.previewIndex === 0], ["previewprev", this.previewIndex === 0],
+      ["previewnext", this.previewIndex >= rows - 1], ["previewlast", this.previewIndex >= rows - 1]] as const) {
+      const b = this.control<HTMLButtonElement>(name);
+      if (b) b.disabled = !on || off;
+    }
+    if (box) box.disabled = !on;
+  }
+
+  private wirePreview(): void {
+    const toggle = this.control("previewresults");
+    if (toggle) {
+      this.keepSelection(toggle);
+      toggle.addEventListener("click", () => this.setPreviewResults(toggle.getAttribute("aria-pressed") !== "true"));
+    }
+    const step: Array<[string, () => number]> = [
+      ["previewfirst", () => 0], ["previewprev", () => this.previewIndex - 1],
+      ["previewnext", () => this.previewIndex + 1], ["previewlast", () => this.mergeRows.length - 1],
+    ];
+    for (const [name, to] of step) {
+      const b = this.control(name);
+      if (!b) continue;
+      this.keepSelection(b);
+      b.addEventListener("click", () => this.showPreviewRecord(to()));
+    }
+    const box = this.control<HTMLInputElement>("previewrecord");
+    if (box) {
+      const go = () => this.showPreviewRecord(Number(box.value) - 1);
+      box.addEventListener("change", go);
+      box.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); go(); box.select(); } });
+    }
+    this.updatePreview();
   }
 
   private insertMergeField(code: string): { ok: boolean; code?: string } {
@@ -2414,6 +2486,7 @@ class RibbonSurface implements RibbonEditor {
   }
 
   private wireMailings(): void {
+    this.wirePreview();
     this.mergeColumns = [];
     this.setMergeColumns(this.options.mergeColumns ?? [], this.options.mergeSource ?? "", this.options.mergeRows ?? []);
     this.addressDialog = new AddressDialog(this.require<HTMLDialogElement>("addressdialog"), {

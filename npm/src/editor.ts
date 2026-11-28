@@ -11539,8 +11539,11 @@ export class DocxEditor {
       for (;;) {
         const text = this.sessionTextOf(id);
         if (text === null) break;
+        // The last marker first: a field then goes in before the ones made already, never at the end of one's
+        // result, where the engine would put it inside that field ("«Next Record»«Name»" became Name in NEXT).
         FIELD_MARK_PATTERN.lastIndex = 0;
-        const m = FIELD_MARK_PATTERN.exec(text);
+        let m: RegExpExecArray | null = null;
+        for (let x = FIELD_MARK_PATTERN.exec(text); x; x = FIELD_MARK_PATTERN.exec(text)) m = x;
         if (!m) break;
         const code = codes[Number(m[1])];
         const before = text.length;

@@ -1417,6 +1417,20 @@ export const RIBBON_HTML = `
           <button type="button" data-dxr="mergerules" aria-haspopup="menu" aria-expanded="false" title="Word's merge rules: Ask, Fill-in, If&#8230;Then&#8230;Else, Merge Record #, Merge Sequence #, Next Record, Next Record If, Skip Record If">Rules &#9662;</button>
         </div>
       </div>
+      <div class="dxr-group" data-dxr="mailpreview" hidden>
+        <span class="dxr-glabel">Preview Results</span>
+        <div class="dxr-row">
+          <button type="button" data-dxr="previewresults" aria-pressed="false" title="Show each merge field's value for a recipient, as the merge will fill it (the document does not change)">&#128065; Preview Results</button>
+        </div>
+        <div class="dxr-row">
+          <button type="button" class="dxr-icon" data-dxr="previewfirst" title="First record">&#9664;&#9664;</button>
+          <button type="button" class="dxr-icon" data-dxr="previewprev" title="Previous record">&#9664;</button>
+          <input type="text" data-dxr="previewrecord" value="1" size="4" aria-label="Record" title="The record shown: type its number" />
+          <button type="button" class="dxr-icon" data-dxr="previewnext" title="Next record">&#9654;</button>
+          <button type="button" class="dxr-icon" data-dxr="previewlast" title="Last record">&#9654;&#9654;</button>
+          <span class="dxr-note" data-dxr="previewcount"></span>
+        </div>
+      </div>
       <div class="dxr-group" data-dxr="mailfinish" hidden>
         <span class="dxr-glabel">Finish</span>
         <div class="dxr-row">

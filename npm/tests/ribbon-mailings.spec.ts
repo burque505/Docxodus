@@ -504,3 +504,33 @@ test('Labels: a custom A4 sheet, every label the same, in front of a letter', as
   expect(sheet.width).toBe(11906);
   expect(letter.width).not.toBe(11906);
 });
+
+test('Labels: Next Record stays a field of its own, the name after it (not inside its result)', async ({ page }) => {
+  await mountParties(page);
+  await page.locator(`${HOST} [data-dxr="labels"]`).click();
+  await lblDialog(page).locator('[data-lb="ok"]').click();
+  await expect(lblDialog(page)).toBeHidden();
+  await expect(page.locator(`${HOST} [data-field-code="NEXT"]`).first()).toHaveText('«Next Record»');
+  expect(await page.locator(`${HOST} [data-field-code="NEXT"] [data-field-code]`).count()).toBe(0);
+});
+
+test('Preview Results: each label a recipient, stepped through, and off again', async ({ page }) => {
+  await mountParties(page);
+  await expect(page.locator(`${HOST} [data-dxr="mailpreview"]`)).toBeVisible();
+  await page.locator(`${HOST} [data-dxr="labels"]`).click();
+  await lblDialog(page).locator('[data-lb="ok"]').click();
+  await expect(lblDialog(page)).toBeHidden();
+  const shown = () => page.locator(`${HOST} [data-field-code^="MERGEFIELD LeFull"]`).evaluateAll((els) => els.slice(0, 3).map((e) => e.getAttribute('data-merge-preview')));
+  await expect(page.locator(`${HOST} [data-dxr="previewnext"]`)).toBeDisabled();
+  await page.locator(`${HOST} [data-dxr="previewresults"]`).click();
+  await expect.poll(shown).toEqual(['Don Dwyer', 'Westgro LLC', '']);
+  await expect(page.locator(`${HOST} [data-dxr="previewcount"]`)).toHaveText('/ 2');
+  await page.locator(`${HOST} [data-dxr="previewnext"]`).click();
+  await expect.poll(shown).toEqual(['Westgro LLC', '', '']);
+  await expect(page.locator(`${HOST} input[data-dxr="previewrecord"]`)).toHaveValue('2');
+  await expect(page.locator(`${HOST} [data-dxr="previewnext"]`)).toBeDisabled();
+  // (the document's own text is untouched)
+  expect(await page.locator(`${HOST} [data-field-code="MERGEFIELD LeFull"]`).first().textContent()).toBe('«LeFull»');
+  await page.locator(`${HOST} [data-dxr="previewresults"]`).click();
+  await expect.poll(shown).toEqual([null, null, null]);
+});
