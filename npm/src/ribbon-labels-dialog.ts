@@ -37,10 +37,18 @@ const A4 = { pageWidthTwips: 11906, pageHeightTwips: 16838 };
 export const LABEL_PRODUCTS: LabelProduct[] = [
   { key: "5160", label: "Avery 5160 Address (1 x 2 5/8 in, 30 per sheet)", ...LETTER, widthTwips: Math.round(2.625 * IN), heightTwips: IN,
     across: 3, down: 10, topTwips: Math.round(0.5 * IN), sideTwips: Math.round(0.1875 * IN), hPitchTwips: Math.round(2.75 * IN), vPitchTwips: IN },
+  { key: "5161", label: "Avery 5161 Address (1 x 4 in, 20 per sheet)", ...LETTER, widthTwips: 4 * IN, heightTwips: IN,
+    across: 2, down: 10, topTwips: Math.round(0.5 * IN), sideTwips: Math.round(0.15625 * IN), hPitchTwips: Math.round(4.1875 * IN), vPitchTwips: IN },
+  { key: "5162", label: "Avery 5162 Address (1 1/3 x 4 in, 14 per sheet)", ...LETTER, widthTwips: 4 * IN, heightTwips: Math.round(1.3333 * IN),
+    across: 2, down: 7, topTwips: Math.round(0.8333 * IN), sideTwips: Math.round(0.15625 * IN), hPitchTwips: Math.round(4.1875 * IN), vPitchTwips: Math.round(1.3333 * IN) },
   { key: "5163", label: "Avery 5163 Shipping (2 x 4 in, 10 per sheet)", ...LETTER, widthTwips: 4 * IN, heightTwips: 2 * IN,
     across: 2, down: 5, topTwips: Math.round(0.5 * IN), sideTwips: Math.round(0.15625 * IN), hPitchTwips: Math.round(4.1875 * IN), vPitchTwips: 2 * IN },
+  { key: "5167", label: "Avery 5167 Return Address (1/2 x 1 3/4 in, 80 per sheet)", ...LETTER, widthTwips: Math.round(1.75 * IN), heightTwips: Math.round(0.5 * IN),
+    across: 4, down: 20, topTwips: Math.round(0.5 * IN), sideTwips: Math.round(0.3 * IN), hPitchTwips: Math.round(2.05 * IN), vPitchTwips: Math.round(0.5 * IN) },
   { key: "l7160", label: "Avery L7160 Address (63.5 x 38.1 mm, 21 per sheet)", ...A4, widthTwips: Math.round(63.5 * MM), heightTwips: Math.round(38.1 * MM),
     across: 3, down: 7, topTwips: Math.round(15.15 * MM), sideTwips: Math.round(7.21 * MM), hPitchTwips: Math.round(66.04 * MM), vPitchTwips: Math.round(38.1 * MM) },
+  { key: "l7163", label: "Avery L7163 Address (99.1 x 38.1 mm, 14 per sheet)", ...A4, widthTwips: Math.round(99.1 * MM), heightTwips: Math.round(38.1 * MM),
+    across: 2, down: 7, topTwips: Math.round(15.15 * MM), sideTwips: Math.round(4.65 * MM), hPitchTwips: Math.round(101.6 * MM), vPitchTwips: Math.round(38.1 * MM) },
 ];
 
 /** The texts the dialog writes from code (the products and pages), for a host's translation tables. */

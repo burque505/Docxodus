@@ -163,6 +163,15 @@ public sealed partial class DocxSession
             var name = Regex.Match(flat, @"^\s*MERGEFIELD\s+(""[^""]*""|\S+)", RegexOptions.IgnoreCase);
             if (name.Success) return "«" + name.Groups[1].Value.Trim('"') + "»";
         }
+        // (Word's names for the record fields)
+        switch (node.Word)
+        {
+            case "NEXT": return "«Next Record»";
+            case "NEXTIF": return "«Next Record If…»";
+            case "SKIPIF": return "«Skip Record If…»";
+            case "MERGEREC": return "«Merge Record #»";
+            case "MERGESEQ": return "«Merge Sequence #»";
+        }
         // drop switches (and what follows them), collapse spaces
         var cut = Regex.Replace(flat, @"\s\\[*#@!a-zA-Z].*$", "", RegexOptions.Singleline);
         cut = Regex.Replace(cut, @"\s+", " ").Trim();

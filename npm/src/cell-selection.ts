@@ -147,6 +147,7 @@ export const CELL_SELECTION_CSS = `
   font: 13px/13px system-ui, sans-serif; text-align: center; cursor: pointer; }
 .docx-table-handle:hover { background: #e5e7eb; border-color: #374151; }
 .docx-table-handle[hidden] { display: none; }
+@media print { .docx-table-handle { display: none !important; } }
 `;
 
 /**
