@@ -8,10 +8,13 @@
 import { mergeFieldSample, parseMergeFieldCode } from "./ribbon-mergefields-pane.js";
 
 const ATTR = "data-merge-preview";
+/** On a label (table cell) whose merge fields all read a row past the last: shown blank, as the merge leaves it. */
+const BLANK = "data-merge-preview-blank";
 
 export const MERGE_PREVIEW_CSS = `
 [${ATTR}], [${ATTR}] * { font-size: 0 !important; }
 [${ATTR}]::after { content: attr(${ATTR}); font-size: var(--dxr-merge-preview-size, 11pt) !important; }
+[${BLANK}] > * { visibility: hidden !important; }
 `;
 
 export class MergePreview {
@@ -48,6 +51,7 @@ export class MergePreview {
       el.removeAttribute(ATTR);
       el.style.removeProperty("--dxr-merge-preview-size");
     }
+    for (const el of Array.from(this.root.querySelectorAll<HTMLElement>(`[${BLANK}]`))) el.removeAttribute(BLANK);
   }
 
   private schedule(): void {
@@ -79,6 +83,7 @@ export class MergePreview {
       if (a.length > 1) asked.set(a[1].toLowerCase(), this.value(a[1], 0) || (fieldSwitch(code, "d") ?? ""));
     }
     let skipped = false;
+    const cells = new Map<HTMLElement, boolean>();
     fields.forEach((f, i) => {
       const code = codes[i];
       const word = fieldWord(code);
@@ -87,6 +92,8 @@ export class MergePreview {
       if (word === "NEXT") offset++;
       else if (word === "NEXTIF" && fieldCondition(code, here)) offset++;
       else if (word === "SKIPIF" && fieldCondition(code, here)) skipped = true;
+      const cell = word === "MERGEFIELD" ? f.closest<HTMLElement>("td, th") : null;
+      if (cell) cells.set(cell, (cells.get(cell) ?? true) && this.index + offset >= this.rows.length);
       const shown = fieldResult(code, here);
       if (shown === null) return;
       if (!f.hasAttribute(ATTR)) {
@@ -95,6 +102,8 @@ export class MergePreview {
       }
       if (f.getAttribute(ATTR) !== shown) f.setAttribute(ATTR, shown);
     });
+    for (const el of Array.from(this.root.querySelectorAll<HTMLElement>(`[${BLANK}]`))) if (!cells.get(el)) el.removeAttribute(BLANK);
+    for (const [cell, past] of cells) if (past && !cell.hasAttribute(BLANK)) cell.setAttribute(BLANK, "");
     if (skipped !== this.skipped) { this.skipped = skipped; this.onChange?.(); }
   }
 

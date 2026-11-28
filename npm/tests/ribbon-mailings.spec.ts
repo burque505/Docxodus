@@ -524,15 +524,19 @@ test('Preview Results: each label a recipient, stepped through, and off again', 
   await expect(page.locator(`${HOST} [data-dxr="previewnext"]`)).toBeDisabled();
   await page.locator(`${HOST} [data-dxr="previewresults"]`).click();
   await expect.poll(shown).toEqual(['Don Dwyer', 'Westgro LLC', '']);
+  // (the labels past the last row blank, as the merge leaves them)
+  await expect(page.locator(`${HOST} [data-merge-preview-blank]`)).toHaveCount(28);
   await expect(page.locator(`${HOST} [data-dxr="previewcount"]`)).toHaveText('/ 2');
   await page.locator(`${HOST} [data-dxr="previewnext"]`).click();
   await expect.poll(shown).toEqual(['Westgro LLC', '', '']);
+  await expect(page.locator(`${HOST} [data-merge-preview-blank]`)).toHaveCount(29);
   await expect(page.locator(`${HOST} input[data-dxr="previewrecord"]`)).toHaveValue('2');
   await expect(page.locator(`${HOST} [data-dxr="previewnext"]`)).toBeDisabled();
   // (the document's own text is untouched)
   expect(await page.locator(`${HOST} [data-field-code="MERGEFIELD LeFull"]`).first().textContent()).toBe('«LeFull»');
   await page.locator(`${HOST} [data-dxr="previewresults"]`).click();
   await expect.poll(shown).toEqual([null, null, null]);
+  await expect(page.locator(`${HOST} [data-merge-preview-blank]`)).toHaveCount(0);
 });
 
 test('Preview Results evaluates the rules as the merge does', async () => {
